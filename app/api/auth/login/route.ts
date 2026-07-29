@@ -1,13 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyPassword, createSessionToken, SESSION_COOKIE } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { hasProductionSessionSecret } from "@/lib/session-secret";
+import {
+  SESSION_SECRET_ENV_NAMES,
+  sessionSecretStatus,
+} from "@/lib/session-secret";
 
 export async function POST(req: NextRequest) {
-  if (process.env.NODE_ENV === "production" && !hasProductionSessionSecret()) {
+  const secret = sessionSecretStatus();
+  if (process.env.NODE_ENV === "production" && !secret.configured) {
     return NextResponse.json({
-      error: "SESSION_SECRET belum dikonfigurasi dengan aman. Isi minimal 32 karakter acak pada .env, lalu restart aplikasi.",
-    }, { status: 503 });
+      error: "Secret sesi server belum dikonfigurasi dengan aman.",
+      code: "SESSION_SECRET_NOT_CONFIGURED",
+      reason: secret.reason,
+      acceptedEnvironmentVariables: SESSION_SECRET_ENV_NAMES,
+    }, {
+      status: 503,
+      headers: { "Cache-Control": "no-store" },
+    });
   }
   const { username, password } = await req.json().catch(() => ({}));
   if (!username || !password) {

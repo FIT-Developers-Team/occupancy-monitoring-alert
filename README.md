@@ -107,9 +107,37 @@ Rule aktif: **R03** Over-Capacity (basis kebijakan) · **R11** Stok Negatif · *
 ## 7. Keamanan (sebelum dipakai tim)
 
 1. Ganti tiga password: `npm run hash-password -- "Baru#"` → `config/users.json`.
-2. `SESSION_SECRET` & `CRON_SECRET` acak panjang (`openssl rand -hex 32`).
-3. Di balik HTTPS set `COOKIE_SECURE=1`.
-4. Jangan commit `db/*.duckdb`, `.env`, cookie Superset (sudah di `.gitignore`).
+2. Buat secret sesi dengan `npm run secret:generate`, lalu simpan hasilnya sebagai
+   environment variable `SESSION_SECRET` pada server/hosting. `AUTH_SECRET` dan
+   `NEXTAUTH_SECRET` juga diterima sebagai alias. Jangan memakai awalan
+   `NEXT_PUBLIC_` karena nilainya tidak boleh masuk ke browser.
+3. Buat `CRON_SECRET` acak panjang (`openssl rand -hex 32`).
+4. Di balik HTTPS set `COOKIE_SECURE=1`.
+5. Jangan commit `db/*.duckdb`, `.env`, cookie Superset (sudah di `.gitignore`).
+
+### Deployment dan login produksi
+
+File `.env` sengaja tidak masuk Git/Docker image. Karena itu secret lokal tidak
+otomatis tersedia di deployment. Sebelum deploy atau redeploy:
+
+```bash
+npm run secret:generate
+```
+
+Salin satu baris keluarannya ke menu **Environment Variables / Secrets** milik
+platform hosting:
+
+```text
+SESSION_SECRET=<hasil-perintah-di-atas>
+COOKIE_SECURE=1
+APP_BASE_URL=https://alamat-aplikasi
+```
+
+Aktifkan nilai tersebut untuk environment produksi dan lakukan redeploy penuh.
+Untuk Docker Compose, letakkan nilai yang sama di `.env`; konfigurasi Compose
+akan berhenti lebih awal bila `SESSION_SECRET` kosong. Verifikasi setelah deploy:
+`GET /api/health` harus menampilkan
+`checks.authentication.status = "ok"` tanpa membocorkan nilai secret.
 
 ---
 

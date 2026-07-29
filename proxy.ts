@@ -1,4 +1,4 @@
-// Edge middleware: proteksi seluruh app dengan verifikasi HMAC cookie (Web Crypto).
+// Next.js Proxy: proteksi seluruh app dengan verifikasi HMAC cookie.
 import { NextRequest, NextResponse } from "next/server";
 import { configuredSessionSecret } from "@/lib/session-secret";
 
@@ -46,7 +46,7 @@ async function verify(token: string | undefined): Promise<boolean> {
   }
 }
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) return NextResponse.next();
 

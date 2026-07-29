@@ -16,20 +16,26 @@ function LoginForm() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true); setError("");
-    const res = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-    setBusy(false);
-    if (res.ok) {
-      router.replace(params.get("next") || "/");
-      router.refresh();
-    } else {
-      if (res.status === 503) setError(t("login.configError"));
-      else if (res.status === 400) setError(t("login.required"));
-      else if (res.status === 401) setError(t("login.invalid"));
-      else setError(t("login.unavailable"));
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ username, password }),
+      });
+      if (res.ok) {
+        router.replace(params.get("next") || "/");
+        router.refresh();
+      } else {
+        if (res.status === 503) setError(t("login.configError"));
+        else if (res.status === 400) setError(t("login.required"));
+        else if (res.status === 401) setError(t("login.invalid"));
+        else setError(t("login.unavailable"));
+      }
+    } catch {
+      setError(t("login.unavailable"));
+    } finally {
+      setBusy(false);
     }
   }
 

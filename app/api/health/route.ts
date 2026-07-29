@@ -2,9 +2,14 @@ import { NextResponse } from "next/server";
 import { historyDbExists, stateQuery } from "@/lib/db";
 import { getSyncHealth } from "@/lib/queries";
 import { getThresholds, getRules, getRecipients, getWarehouses, getCapacity } from "@/lib/config";
+import { sessionSecretStatus } from "@/lib/session-secret";
 
 export async function GET() {
   const checks: Record<string, unknown> = { history_db: historyDbExists() };
+  const session = sessionSecretStatus();
+  checks.authentication = session.configured
+    ? { status: "ok", source: session.source }
+    : { status: "error", reason: session.reason, required: "SESSION_SECRET or AUTH_SECRET" };
   try {
     getThresholds(); getRules(); getRecipients(); getWarehouses(); getCapacity();
     checks.config = "ok";
@@ -32,6 +37,7 @@ export async function GET() {
     checks.state_db = `error: ${(e as Error).message}`;
   }
   const healthy = checks.history_db === true
+    && session.configured
     && checks.config === "ok"
     && checks.state_db === "ok"
     && checks.snapshot_fresh === true;
