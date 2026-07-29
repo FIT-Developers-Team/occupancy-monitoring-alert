@@ -1,7 +1,8 @@
 node_modules
 .next
 out
-db
+db/*
+!db/schema.sql
 .env
 .env.*
 !/.env.example
