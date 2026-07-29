@@ -1,0 +1,15 @@
+{
+  "levels": [
+    { "level": 1, "name": "Warehouse Supervisor", "delay_minutes": 0,
+      "gchat_webhooks": [], "emails": [], "webhooks": [] },
+    { "level": 2, "name": "Warehouse Manager", "delay_minutes": 15,
+      "gchat_webhooks": [], "emails": [], "webhooks": [] },
+    { "level": 3, "name": "Operations Manager", "delay_minutes": 30,
+      "gchat_webhooks": [], "emails": [], "webhooks": [] },
+    { "level": 4, "name": "Head of Operations", "delay_minutes": 60,
+      "gchat_webhooks": [], "emails": [], "webhooks": [] }
+  ],
+  "severity_start_level": {
+    "INFO": 1, "WARNING": 1, "HIGH": 2, "CRITICAL": 3, "EMERGENCY": 3
+  }
+}

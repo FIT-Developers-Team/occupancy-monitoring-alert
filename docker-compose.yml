@@ -1,0 +1,36 @@
+# WIOM Control Tower — web app + sync loop
+# Jalankan: docker compose up -d
+services:
+  web:
+    build: .
+    ports: ["3000:3000"]
+    env_file: .env
+    volumes:
+      - ./db:/app/db            # history + state DuckDB hidup di host
+      - ./config:/app/config    # kebijakan bisa diedit tanpa rebuild
+    restart: unless-stopped
+
+  sync:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - ./scripts:/app/scripts
+      - ./db:/app/db
+    command: >
+      sh -c "pip install -q -r scripts/requirements.txt &&
+             python3 scripts/superset_to_duckdb.py
+               --config scripts/sync.config.production.json --loop 300"
+    restart: unless-stopped
+
+  scheduler:
+    image: node:22-alpine
+    working_dir: /app
+    env_file: .env
+    environment:
+      SCHEDULER_BASE_URL: http://web:3000
+    volumes:
+      - ./scripts/scheduler.mjs:/app/scheduler.mjs:ro
+    command: ["node", "/app/scheduler.mjs"]
+    depends_on:
+      - web
+    restart: unless-stopped

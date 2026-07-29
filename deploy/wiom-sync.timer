@@ -1,0 +1,12 @@
+# /etc/systemd/system/wiom-sync.timer
+# systemctl enable --now wiom-sync.timer
+[Unit]
+Description=Jadwal sync WIOM tiap 5 menit
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

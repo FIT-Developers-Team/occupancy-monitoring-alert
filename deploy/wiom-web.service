@@ -1,0 +1,15 @@
+# /etc/systemd/system/wiom-web.service
+[Unit]
+Description=WIOM Control Tower (Next.js)
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/wiom
+EnvironmentFile=/opt/wiom/.env
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=5
+User=wiom
+
+[Install]
+WantedBy=multi-user.target

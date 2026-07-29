@@ -1,0 +1,46 @@
+{
+  "rules": [
+    {
+      "id": "R03",
+      "name": "Over-Capacity SLOC",
+      "category": "Capacity",
+      "severity": "HIGH",
+      "enabled": true,
+      "params": {
+        "exclude_zones": [
+          "STG"
+        ]
+      },
+      "description": "Isi SLOC ≥100% kapasitas efektif (basis kebijakan). Zona STG dikecualikan."
+    },
+    {
+      "id": "R11",
+      "name": "Stok Negatif",
+      "category": "Inventory",
+      "severity": "EMERGENCY",
+      "enabled": true,
+      "params": {},
+      "description": "Qty negatif — indikasi transaksi ganda/urutan salah."
+    },
+    {
+      "id": "R13",
+      "name": "Bad Stock di Luar Area",
+      "category": "Quality",
+      "severity": "WARNING",
+      "enabled": true,
+      "params": {
+        "min_qty": 1
+      },
+      "description": "Stok status Bad berada di luar SLOC BADSTOCK/staging."
+    },
+    {
+      "id": "R14",
+      "name": "Stok Lost Terdeteksi",
+      "category": "Inventory",
+      "severity": "HIGH",
+      "enabled": true,
+      "params": {},
+      "description": "Ada stok berstatus Lost — kandidat investigasi ILSIM."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+node_modules
+.next
+out
+db
+.env
+.env.*
+!/.env.example
+scripts/sync.config.production.json
+*.duckdb
+*.duckdb.wal
+*.duckdb.lock
+.git
+npm-debug.log*

@@ -1,0 +1,14 @@
+# =============================================================================
+# WIOM Control Tower — contoh crontab (crontab -e)
+# Asumsi: app di /opt/wiom, berjalan via `npm run start` port 3000,
+#         CRON_SECRET di .env sama dengan yang dipakai di bawah.
+# =============================================================================
+
+# 1) Sync Superset → DuckDB tiap 5 menit (alternatif dari --loop 300)
+*/5 * * * * cd /opt/wiom && /usr/bin/python3 scripts/superset_to_duckdb.py --config scripts/sync.config.production.json >> /var/log/wiom-sync.log 2>&1
+
+# 2) Evaluasi rule + eskalasi tiap 5 menit (offset 1 menit setelah sync)
+1-59/5 * * * * curl -s -X POST -H "Authorization: Bearer GANTI_CRON_SECRET" http://localhost:3000/api/cron/tick >> /var/log/wiom-tick.log 2>&1
+
+# 3) Ringkasan harian 08:00 WIB (SOP-006). Server UTC → 01:00 UTC.
+0 1 * * * curl -s -X POST -H "Authorization: Bearer GANTI_CRON_SECRET" http://localhost:3000/api/cron/daily-summary >> /var/log/wiom-summary.log 2>&1

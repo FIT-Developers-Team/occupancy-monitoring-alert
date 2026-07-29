@@ -1,0 +1,9 @@
+# /etc/systemd/system/wiom-sync.service — dipicu oleh wiom-sync.timer
+[Unit]
+Description=WIOM Superset → DuckDB sync (satu pass)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/wiom
+ExecStart=/usr/bin/python3 scripts/superset_to_duckdb.py --config scripts/sync.config.production.json
+User=wiom
