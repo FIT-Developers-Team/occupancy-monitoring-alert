@@ -5,9 +5,6 @@ services:
     build: .
     ports: ["3000:3000"]
     env_file: .env
-    environment:
-      # Fail-fast: jangan jalankan image produksi dengan sesi tanpa secret.
-      SESSION_SECRET: "${SESSION_SECRET:?SESSION_SECRET wajib diisi; jalankan npm run secret:generate}"
     volumes:
       - ./db:/app/db            # history + state DuckDB hidup di host
       - ./config:/app/config    # kebijakan bisa diedit tanpa rebuild

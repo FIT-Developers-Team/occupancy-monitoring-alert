@@ -134,8 +134,17 @@ APP_BASE_URL=https://alamat-aplikasi
 ```
 
 Aktifkan nilai tersebut untuk environment produksi dan lakukan redeploy penuh.
-Untuk Docker Compose, letakkan nilai yang sama di `.env`; konfigurasi Compose
-akan berhenti lebih awal bila `SESSION_SECRET` kosong. Verifikasi setelah deploy:
+Untuk Docker Compose, letakkan nilai yang sama di `.env`.
+
+Sebagai fallback aman untuk deployment **single-instance**, `npm start` akan
+membuat secret acak 64 karakter dan menyimpannya sebagai
+`db/.wiom-session-secret` bila tidak ada environment secret. File ini berada di
+volume `db`, tidak masuk Git, dan dipakai kembali setelah restart. Pada filesystem
+read-only aplikasi memakai secret acak sementara sehingga sesi akan berakhir
+ketika proses restart. Untuk multi-instance, `SESSION_SECRET` eksplisit tetap
+wajib agar semua instance memakai key yang sama.
+
+Verifikasi setelah deploy:
 `GET /api/health` harus menampilkan
 `checks.authentication.status = "ok"` tanpa membocorkan nilai secret.
 

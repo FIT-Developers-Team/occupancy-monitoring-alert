@@ -8,7 +8,11 @@ export async function GET() {
   const checks: Record<string, unknown> = { history_db: historyDbExists() };
   const session = sessionSecretStatus();
   checks.authentication = session.configured
-    ? { status: "ok", source: session.source }
+    ? {
+        status: "ok",
+        source: session.source,
+        origin: process.env.WIOM_SESSION_SECRET_ORIGIN || "environment",
+      }
     : { status: "error", reason: session.reason, required: "SESSION_SECRET or AUTH_SECRET" };
   try {
     getThresholds(); getRules(); getRecipients(); getWarehouses(); getCapacity();

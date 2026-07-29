@@ -5,6 +5,7 @@ out/
 *.duckdb.wal
 *.duckdb.lock
 db/*.duckdb
+db/.wiom-session-secret
 .env.local
 .env*.local
 .env

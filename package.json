@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "node scripts/clean-next.mjs && next build --webpack",
-    "start": "next start -p 3000",
+    "start": "node scripts/start-production.mjs",
     "secret:generate": "node scripts/generate-secret.mjs",
     "seed": "node scripts/seed.mjs",
     "db:init": "node scripts/seed.mjs --schema-only",
