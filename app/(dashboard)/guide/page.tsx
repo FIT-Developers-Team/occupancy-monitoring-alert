@@ -372,12 +372,10 @@ export default async function GuidePage() {
 
       <Section eyebrow={t("guide.section.live.eyebrow")} title={t("guide.section.live.title")}>
         <div className="card card-pad text-[12.5px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
-          {t("guide.live.beforeConfig")} <span className="kbd">dataset.id</span>{" "}
-          {t("guide.live.afterConfig")} <span className="kbd">scripts/sync.config.production.json</span>.{" "}
-          {t("guide.live.defaultMode")} <span className="kbd">superset_dataset</span>{" "}
-          {t("guide.live.modeDetail")}{" "}
-          <span className="kbd">python3 superset_to_duckdb.py --loop</span>, {t("guide.live.then")}{" "}
-          <span className="kbd">npm run build &amp;&amp; npm start</span>. {t("guide.live.afterCommands")}
+          {t("guide.live.directSetup")} <span className="kbd">{t("guide.live.settingsPath")}</span>.{" "}
+          {t("guide.live.publicConfig")} <span className="kbd">config/superset-sync.json</span>,{" "}
+          {t("guide.live.secretConfig")} <span className="kbd">config/.superset-sync.secrets.json</span>.{" "}
+          {t("guide.live.daemon")}
         </div>
       </Section>
     </div>

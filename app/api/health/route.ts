@@ -3,6 +3,7 @@ import { historyDbExists, stateQuery } from "@/lib/db";
 import { getSyncHealth } from "@/lib/queries";
 import { getThresholds, getRules, getRecipients, getWarehouses, getCapacity } from "@/lib/config";
 import { sessionSecretStatus } from "@/lib/session-secret";
+import { getSupersetSyncConfig, getSupersetSyncStatus } from "@/lib/superset-sync";
 
 export async function GET() {
   const checks: Record<string, unknown> = { history_db: historyDbExists() };
@@ -19,6 +20,19 @@ export async function GET() {
     checks.config = "ok";
   } catch (e) {
     checks.config = `error: ${(e as Error).message}`;
+  }
+  try {
+    const syncConfig = getSupersetSyncConfig();
+    const syncStatus = getSupersetSyncStatus();
+    checks.superset_sync = {
+      configured: true,
+      enabled: syncConfig.schedule.enabled,
+      state: syncStatus.state,
+      finished_at: syncStatus.finished_at ?? null,
+      next_run_at: syncStatus.next_run_at ?? null,
+    };
+  } catch (e) {
+    checks.superset_sync = { configured: false, error: (e as Error).message };
   }
   if (checks.history_db) {
     try {

@@ -11,15 +11,21 @@ services:
     restart: unless-stopped
 
   sync:
-    image: python:3.12-slim
+    build:
+      context: .
+      target: sync
     working_dir: /app
+    environment:
+      SUPERSET_BASE_URL: ${SUPERSET_BASE_URL:-}
+      SUPERSET_USERNAME: ${SUPERSET_USERNAME:-}
+      SUPERSET_PASSWORD: ${SUPERSET_PASSWORD:-}
+      SUPERSET_COOKIE_HEADER: ${SUPERSET_COOKIE_HEADER:-}
+      SUPERSET_SESSION_COOKIE: ${SUPERSET_SESSION_COOKIE:-}
+      SUPERSET_ACCESS_TOKEN: ${SUPERSET_ACCESS_TOKEN:-}
     volumes:
-      - ./scripts:/app/scripts
       - ./db:/app/db
-    command: >
-      sh -c "pip install -q -r scripts/requirements.txt &&
-             python3 scripts/superset_to_duckdb.py
-               --config scripts/sync.config.production.json --loop 300"
+      - ./config:/app/config
+    command: ["python3", "scripts/superset_to_duckdb.py", "--config", "config/superset-sync.json", "--daemon"]
     restart: unless-stopped
 
   scheduler:

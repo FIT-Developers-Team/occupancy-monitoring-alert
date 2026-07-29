@@ -141,6 +141,72 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _read_json(path: str) -> Optional[Dict[str, Any]]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            value = json.load(handle)
+            return value if isinstance(value, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _write_json_atomic(path: str, value: Dict[str, Any]) -> None:
+    """Write small cross-process control files without exposing partial JSON."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    temp = f"{path}.{os.getpid()}.{int(time.time() * 1000)}.tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, path)
+
+
+def load_runtime_config(config_path: str) -> Dict[str, Any]:
+    """Load public settings and merge credentials from an ignored sidecar/env."""
+    config = _read_json(config_path)
+    if not config:
+        raise ValueError(f"Konfigurasi sync tidak valid atau tidak ditemukan: {config_path}")
+
+    secret_ref = config.get("secret_file")
+    secret_data: Dict[str, Any] = {}
+    if secret_ref:
+        secret_path = str(secret_ref)
+        if not os.path.isabs(secret_path):
+            secret_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), secret_path)
+        secret_data = _read_json(secret_path) or {}
+
+    superset = config.setdefault("superset", {})
+    auth = superset.setdefault("auth", {})
+    for key, value in (secret_data.get("auth") or {}).items():
+        if value and not auth.get(key):
+            auth[key] = value
+
+    base_url = (os.getenv("SUPERSET_BASE_URL") or "").strip()
+    if base_url:
+        superset["base_url"] = base_url
+    for key, env_name in {
+        "username": "SUPERSET_USERNAME",
+        "password": "SUPERSET_PASSWORD",
+        "access_token": "SUPERSET_ACCESS_TOKEN",
+    }.items():
+        value = (os.getenv(env_name) or "").strip()
+        if value:
+            auth[key] = value
+    cookie_header = (os.getenv("SUPERSET_COOKIE_HEADER") or "").strip()
+    session_cookie = (os.getenv("SUPERSET_SESSION_COOKIE") or "").strip()
+    if cookie_header:
+        auth["cookie_header"] = cookie_header
+    elif session_cookie:
+        auth["cookie_header"] = f"session={session_cookie}"
+    return config
+
+
+def _iso_after(seconds: float) -> str:
+    return datetime.fromtimestamp(time.time() + max(0, seconds), tz=timezone.utc).isoformat()
+
+
 # ----------------------------------------------------------------------------- #
 # 1) Superset client  --  auth + KEYSET-paginated SQL Lab extraction
 # ----------------------------------------------------------------------------- #
@@ -1134,6 +1200,7 @@ class SyncEngine:
         self.duckdb_path = config["duckdb_path"]
         self.jobs = [self._parse_job(j) for j in config["jobs"]]
         self._client: Optional[Any] = None
+        self.results: List[Dict[str, Any]] = []
 
     @staticmethod
     def _parse_job(j: Dict[str, Any]) -> Job:
@@ -1219,7 +1286,7 @@ class SyncEngine:
                     pass
 
     def run_all(self, only: Optional[str] = None,
-                fetch_pages=None) -> None:
+                fetch_pages=None) -> List[Dict[str, Any]]:
         """
         fetch_pages: injectable extractor for testing. Signature:
             fetch_pages(job, extra_where, start_after) -> Iterable[list[dict]]
@@ -1229,15 +1296,29 @@ class SyncEngine:
             con = duckdb.connect(self.duckdb_path)
             sink = DuckDBSink(con)
             try:
+                completed = {
+                    result["name"]
+                    for result in self.results
+                    if result.get("status") in ("OK", "SKIPPED")
+                }
                 for job in self.jobs:
                     if only and job.name != only:
                         continue
+                    # A retry continues after jobs that already committed
+                    # successfully, preventing duplicate snapshot batches.
+                    if job.name in completed:
+                        continue
                     if not job.enabled:
                         log.info("skip %s (disabled)", job.name)
+                        self.results.append({
+                            "name": job.name, "status": "SKIPPED",
+                            "rows_pulled": 0, "rows_written": 0, "duration_ms": 0,
+                        })
                         continue
                     self._run_job(job, sink, fetch_pages)
             finally:
                 con.close()
+        return list(self.results)
 
     def _run_job(self, job: Job, sink: DuckDBSink, fetch_pages) -> None:
         started = now_utc()
@@ -1267,7 +1348,13 @@ class SyncEngine:
         pulled = written = 0
         max_watermark = state["watermark"]
         max_key = state["key_max"]
+        transaction_open = False
         try:
+            # A failed page must not leave a partial snapshot/upsert behind.
+            # DuckDB supports transactional DDL, so table creation/alignment is
+            # rolled back together with the data changes.
+            sink.con.execute("BEGIN TRANSACTION")
+            transaction_open = True
             for rows in pages:
                 if pd is None:
                     raise RuntimeError("pandas is required for real sync (pip install pandas)")
@@ -1300,12 +1387,35 @@ class SyncEngine:
             sink.audit(job=job.name, mode=job.mode, started_at=started, finished_at=now_utc(),
                        rows_pulled=pulled, rows_written=written, watermark=max_watermark,
                        status="OK", message=f"purged={purged}")
+            sink.con.execute("COMMIT")
+            transaction_open = False
+            self.results.append({
+                "name": job.name, "status": "OK",
+                "rows_pulled": pulled, "rows_written": written,
+                "duration_ms": int((now_utc() - started).total_seconds() * 1000),
+                "message": f"purged={purged}",
+            })
             log.info("[%s] done: pulled=%d written=%d watermark=%s purged=%d",
                      job.name, pulled, written, max_watermark, purged)
         except Exception as e:  # noqa: BLE001
-            sink.audit(job=job.name, mode=job.mode, started_at=started, finished_at=now_utc(),
-                       rows_pulled=pulled, rows_written=written, watermark=max_watermark,
-                       status="ERROR", message=str(e)[:500])
+            if transaction_open:
+                try:
+                    sink.con.execute("ROLLBACK")
+                except Exception:  # noqa: BLE001
+                    log.exception("[%s] rollback gagal", job.name)
+            # Record the failed attempt after rollback so the audit survives.
+            try:
+                sink.audit(job=job.name, mode=job.mode, started_at=started, finished_at=now_utc(),
+                           rows_pulled=pulled, rows_written=0, watermark=max_watermark,
+                           status="ERROR", message=str(e)[:500])
+            except Exception:  # noqa: BLE001
+                log.exception("[%s] gagal menulis audit error", job.name)
+            self.results.append({
+                "name": job.name, "status": "ERROR",
+                "rows_pulled": pulled, "rows_written": 0,
+                "duration_ms": int((now_utc() - started).total_seconds() * 1000),
+                "message": str(e)[:500],
+            })
             log.exception("[%s] FAILED: %s", job.name, e)
             raise
 
@@ -1519,12 +1629,137 @@ def run_doctor(engine: "SyncEngine") -> None:
     log.info("=== DOCTOR selesai ===")
 
 
+def run_managed_daemon(config_path: str, only_job: Optional[str], default_retries: int) -> None:
+    """Reload settings every pass and bridge web Settings via small control files."""
+    service_started_at = now_utc().isoformat()
+    next_due = 0.0
+    last_request_id: Optional[str] = None
+    log.info("managed sync daemon started — configuration reload is active")
+
+    def run_with_retry(active_engine: SyncEngine, retries: int) -> List[Dict[str, Any]]:
+        delay = 5
+        for attempt in range(1, retries + 1):
+            try:
+                return active_engine.run_all(only=only_job)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("pass failed (attempt %d/%d): %s", attempt, retries, exc)
+                if attempt >= retries:
+                    raise
+                # Keep successful committed jobs, discard the transient error,
+                # and create a fresh authenticated client for the next attempt.
+                active_engine.results = [
+                    result
+                    for result in active_engine.results
+                    if result.get("status") in ("OK", "SKIPPED")
+                ]
+                active_engine._client = None
+                time.sleep(delay)
+                delay = min(delay * 2, 120)
+        return []
+
+    while True:
+        try:
+            config = load_runtime_config(config_path)
+            schedule = config.get("schedule", {}) or {}
+            control = config.get("control", {}) or {}
+            status_file = control.get("status_file", "db/.superset-sync-status.json")
+            request_file = control.get("request_file", "db/.superset-sync-request.json")
+            interval = max(30, int(schedule.get("interval_seconds", 300)))
+            enabled = bool(schedule.get("enabled", True))
+            request = _read_json(request_file)
+            request_id = str(request.get("request_id")) if request and request.get("request_id") else None
+            manual = bool(request_id and request_id != last_request_id)
+
+            if not enabled:
+                _write_json_atomic(status_file, {
+                    "state": "paused",
+                    "service_started_at": service_started_at,
+                    "next_run_at": None,
+                    "updated_at": now_utc().isoformat(),
+                })
+                time.sleep(2)
+                continue
+
+            if not manual and time.time() < next_due:
+                time.sleep(min(2, max(0.2, next_due - time.time())))
+                continue
+
+            trigger = "manual" if manual else "schedule"
+            started_at = now_utc()
+            active_engine = SyncEngine(config)
+            common = {
+                "service_started_at": service_started_at,
+                "started_at": started_at.isoformat(),
+                "trigger": trigger,
+                "request_id": request_id,
+                "requested_by": request.get("requested_by") if request else None,
+            }
+            _write_json_atomic(status_file, {
+                **common,
+                "state": "running",
+                "finished_at": None,
+                "next_run_at": None,
+                "updated_at": started_at.isoformat(),
+            })
+            try:
+                results = run_with_retry(
+                    active_engine,
+                    max(1, int(schedule.get("retry_count", default_retries))),
+                )
+                finished_at = now_utc()
+                next_due = time.time() + interval
+                _write_json_atomic(status_file, {
+                    **common,
+                    "state": "succeeded",
+                    "finished_at": finished_at.isoformat(),
+                    "next_run_at": _iso_after(interval),
+                    "duration_ms": int((finished_at - started_at).total_seconds() * 1000),
+                    "rows_pulled": sum(int(row.get("rows_pulled", 0)) for row in results),
+                    "rows_written": sum(int(row.get("rows_written", 0)) for row in results),
+                    "jobs": results,
+                    "error": None,
+                    "updated_at": finished_at.isoformat(),
+                })
+            except Exception as exc:  # noqa: BLE001
+                finished_at = now_utc()
+                next_due = time.time() + interval
+                _write_json_atomic(status_file, {
+                    **common,
+                    "state": "failed",
+                    "finished_at": finished_at.isoformat(),
+                    "next_run_at": _iso_after(interval),
+                    "duration_ms": int((finished_at - started_at).total_seconds() * 1000),
+                    "rows_pulled": sum(int(row.get("rows_pulled", 0)) for row in active_engine.results),
+                    "rows_written": sum(int(row.get("rows_written", 0)) for row in active_engine.results),
+                    "jobs": active_engine.results,
+                    "error": str(exc)[:500],
+                    "updated_at": finished_at.isoformat(),
+                })
+                log.error("managed pass failed: %s", exc)
+            finally:
+                if manual and request_id:
+                    last_request_id = request_id
+                    latest = _read_json(request_file)
+                    if latest and str(latest.get("request_id")) == request_id:
+                        try:
+                            os.remove(request_file)
+                        except OSError:
+                            pass
+        except KeyboardInterrupt:
+            raise
+        except Exception as daemon_error:  # noqa: BLE001
+            log.exception("daemon control error: %s", daemon_error)
+            time.sleep(3)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Auto live sync: Superset -> DuckDB (with history)")
     ap.add_argument("--config", required=True, help="Path to JSON config")
     ap.add_argument("--job", help="Run a single job by name")
     ap.add_argument("--loop", type=int, metavar="SECONDS",
                     help="Run continuously every N seconds")
+    ap.add_argument("--daemon", action="store_true",
+                    help="Run managed loop; reload config and accept Settings sync requests")
     ap.add_argument("--retry", type=int, default=3, help="Retries per pass (default 3)")
     ap.add_argument("--doctor", action="store_true",
                     help="Diagnosa koneksi/auth (health, me, CSRF, probe dataset) lalu keluar")
@@ -1534,8 +1769,7 @@ def main() -> None:
                     help="Hapus lock basi db/*.duckdb.lock (menolak bila pemegang masih hidup)")
     args = ap.parse_args()
 
-    with open(args.config) as f:
-        config = json.load(f)
+    config = load_runtime_config(args.config)
     engine = SyncEngine(config)
 
     if args.doctor:
@@ -1546,6 +1780,9 @@ def main() -> None:
         return
     if args.unlock:
         run_unlock(engine)
+        return
+    if args.daemon:
+        run_managed_daemon(args.config, args.job, args.retry)
         return
 
     def one_pass() -> None:

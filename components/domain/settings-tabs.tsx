@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useT } from "@/lib/i18n-client";
+import SupersetSyncSettings from "@/components/domain/superset-sync-settings";
 
 interface Thresholds {
   default: { monitor: number; warning: number; critical: number; breach: number; hysteresis_buffer: number };
@@ -42,7 +43,7 @@ const TKEYS = ["monitor", "warning", "critical", "breach", "hysteresis_buffer"] 
 
 export default function SettingsTabs() {
   const { t } = useT();
-  const [tab, setTab] = useState<"thresholds" | "capacity" | "rules" | "recipients">("thresholds");
+  const [tab, setTab] = useState<"sync" | "thresholds" | "capacity" | "rules" | "recipients">("sync");
   const [thresholds, setThresholds] = useState<Thresholds | null>(null);
   const [capacity, setCapacity] = useState<Capacity | null>(null);
   const [capMeta, setCapMeta] = useState<CapMeta | null>(null);
@@ -53,22 +54,35 @@ export default function SettingsTabs() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    let active = true;
     (async () => {
-      const [t, c, r, rc, w] = await Promise.all([
-        fetch("/api/config/thresholds").then((x) => x.json()),
-        fetch("/api/config/capacity").then((x) => x.json()),
-        fetch("/api/config/rules").then((x) => x.json()),
-        fetch("/api/config/recipients").then((x) => x.json()),
-        fetch("/api/config/warehouses").then((x) => x.json()),
-      ]);
-      setThresholds(t.data ?? null);
-      setCapacity(c.data ?? null);
-      setCapMeta(c.meta ?? null);
-      setRules(r.data?.rules ?? null);
-      setRecipients(rc.data ?? null);
-      setWarehouses((w.data?.warehouses ?? []).map((x: { code: string }) => x.code));
+      if (tab === "sync") return;
+      if (tab === "thresholds" && !thresholds) {
+        const [thresholdBody, warehouseBody] = await Promise.all([
+          fetch("/api/config/thresholds").then((response) => response.json()),
+          fetch("/api/config/warehouses").then((response) => response.json()),
+        ]);
+        if (!active) return;
+        setThresholds(thresholdBody.data ?? null);
+        setWarehouses((warehouseBody.data?.warehouses ?? []).map((item: { code: string }) => item.code));
+      } else if (tab === "capacity" && !capacity) {
+        const body = await fetch("/api/config/capacity").then((response) => response.json());
+        if (!active) return;
+        setCapacity(body.data ?? null);
+        setCapMeta(body.meta ?? null);
+      } else if (tab === "rules" && !rules) {
+        const body = await fetch("/api/config/rules").then((response) => response.json());
+        if (active) setRules(body.data?.rules ?? null);
+      } else if (tab === "recipients" && !recipients) {
+        const body = await fetch("/api/config/recipients").then((response) => response.json());
+        if (active) setRecipients(body.data ?? null);
+      }
     })().catch(() => setMsg("set.ui.loadError"));
-  }, []);
+    return () => { active = false; };
+    // Each tab is fetched only when first opened. Loaded state is checked from
+    // the render that changed `tab`, avoiding a heavy all-at-once settings query.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   async function save(section: string, data: unknown) {
     setBusy(true); setMsg("");
@@ -83,6 +97,7 @@ export default function SettingsTabs() {
   }
 
   const tabs = [
+    { id: "sync" as const, label: t("set.ui.tab.sync", "Superset Sync") },
     { id: "thresholds" as const, label: t("set.ui.tab.thresholds") },
     { id: "capacity" as const, label: t("set.ui.tab.capacity") },
     { id: "rules" as const, label: t("set.ui.tab.rules") },
@@ -147,7 +162,9 @@ export default function SettingsTabs() {
           </button>
         ))}
       </div>
-      {msg && <p className="settings-message" role="status">{t(msg, msg)}</p>}
+      {msg && tab !== "sync" && <p className="settings-message" role="status">{t(msg, msg)}</p>}
+
+      {tab === "sync" && <SupersetSyncSettings />}
 
       {/* ================= KAPASITAS QTY/CBM ================= */}
       {tab === "capacity" && capacity && (

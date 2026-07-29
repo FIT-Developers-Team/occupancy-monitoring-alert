@@ -1,4 +1,6 @@
 node_modules/
+__pycache__/
+*.pyc
 .next/
 out/
 *.duckdb
@@ -6,9 +8,13 @@ out/
 *.duckdb.lock
 db/*.duckdb
 db/.wiom-session-secret
+db/.superset-sync-request.json
+db/.superset-sync-status.json
+config/.superset-sync.secrets.json
 .env.local
 .env*.local
 .env
 scripts/sync.config.production.json
 npm-debug.log*
 .DS_Store
+audit/

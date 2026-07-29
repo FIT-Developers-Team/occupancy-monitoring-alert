@@ -50,20 +50,33 @@ Dua dataset sumber (kolom persis seperti yang kamu kirim):
 **Dataset STOK** → tabel `stock_history` (snapshot penuh tiap sync)
 `location_id, product_id, product_name, sku_number, l1_category_name, rack_storage_name, length, width, height, rack_name, product_detail_status_name (Available/Bad/Lost), SUM(stock), sku_cbm, occupied_cbm`
 
-Langkah (mode default `superset_dataset` — **tanpa SQL Lab, tanpa kredensial DB**):
+Langkah (mode default `superset_dataset` — **tanpa SQL Lab, tanpa Google Sheet, tanpa kredensial DB**):
 
-1. **Temukan `dataset.id`** kedua dataset: buka chart-nya → URL explore memuat `datasource_id=ANGKA` (atau menu *Datasets* → id di URL). Isi ke blok `dataset.id` tiap job di `scripts/sync.config.production.json`.
-2. **Cocokkan nama kolom RAW** di blok `dataset.columns` dengan kolom fisik dataset (lihat panel *Columns* di explore). Template pemetaan sudah terisi sesuai dua struktur di atas — ubah hanya bila nama di instance berbeda. Angka dijamin **mentah** karena Chart Data API mengembalikan JSON asli (bukan `6.91k`/`576µ` format tampilan); `SUM(stock)` di-groupby server-side lewat blok `metrics`.
-3. **Isi `auth.cookies.session`** — cookie sesi Superset dari browser (pola Auto Sync v5.5) + `base_url`. `force_refresh: true` sudah aktif untuk bypass cache. (`database_id` hanya perlu bila kelak memakai mode SQL Lab.)
-4. **Siapkan skema kosong**: `npm run db:init` (tanpa data demo).
-5. **Jalankan sync**:
-   ```bash
-   python3 scripts/superset_to_duckdb.py --config scripts/sync.config.production.json            # sekali
-   python3 scripts/superset_to_duckdb.py --config scripts/sync.config.production.json --loop 300 # tiap 5 mnt
-   # atau cron/systemd/Docker — lihat deploy/ & docker-compose.yml
-   ```
-6. **Verifikasi**: tabel `_sync_audit` berstatus OK dengan `rows_written` masuk akal, lalu `GET /api/health` → `snapshot_age_minutes ≤ 30`.
-7. **Jalankan web**: isi `.env` (§7) → `npm run build && npm run start`. Jadwalkan `POST /api/cron/tick` (Bearer `CRON_SECRET`) tiap 5 menit, offset 1 menit setelah sync.
+1. Jalankan web, masuk sebagai admin, lalu buka **Pengaturan → Superset Sync**.
+2. Isi URL dan metode autentikasi. Kredensial disimpan di
+   `config/.superset-sync.secrets.json` (diabaikan Git), tidak pernah dikirim
+   kembali ke browser. Environment `SUPERSET_*` tetap dapat dipakai oleh secret
+   manager dan selalu memiliki prioritas.
+3. Isi **Dataset ID** dan opsional **Chart ID** untuk Master lokasi dan Snapshot
+   stok. Mapping kolom dapat diedit langsung dari panel tiap dataset.
+4. Tekan **Uji koneksi**. WIOM memeriksa health, identitas akun, dan akses ke
+   setiap dataset wajib tanpa menulis data.
+5. Tekan **Sync sekarang** atau aktifkan interval. Service sync membaca ulang
+   konfigurasi pada setiap run; tidak perlu restart setelah perubahan.
+6. Untuk Docker, jalankan `docker compose up -d --build`. Image Python
+   menyiapkan dependency saat build, bukan mengunduh ulang setiap container
+   restart.
+7. Verifikasi `GET /api/health`: blok `checks.superset_sync` menampilkan state,
+   dan `snapshot_age_minutes` harus sesuai SLA operasional.
+
+Konfigurasi publik berada di `config/superset-sync.json`. Filter allowlist
+`location_id` dari delapan gudang selalu ditambahkan ke setiap job sehingga
+lokasi HUB tidak ikut ditarik. Mode CLI tetap tersedia:
+
+```bash
+python3 scripts/superset_to_duckdb.py --config config/superset-sync.json
+python3 scripts/superset_to_duckdb.py --config config/superset-sync.json --daemon
+```
 
 Zona diturunkan otomatis: `SRA1 → SRA` (view `vw_sloc`). Baris **Lost tanpa lokasi** ikut tersinkron (kunci paging memakai `coalesce(rack_name,'~LOST')`) dan memicu R14.
 
@@ -87,7 +100,7 @@ Switch **Kebijakan/Qty/CBM/Bin** di topbar mengubah metrik, bar, dan warna yang 
 
 ## 5. Fitur
 
-Ringkasan Eksekutif (KPI Qty & CBM, tren 7 hari, Top Risiko) · Okupansi per gudang/zona · Heatmap SLOC + drawer isi produk & movement · Forecast time-to-full (laju %, Qty & SKU/jam) + What-If Inbound/Outbound · Pelanggaran + Pareto + CSV · Alert Center (dedup, hysteresis, auto-resolve, eskalasi L1–L4, notifikasi real-time Google Chat) · Integritas (phantom/ghost) · Audit Trail · Pengaturan 4 tab · Panduan · sidebar ⇄ icon-rail smooth + drawer mobile · ⌘K.
+Ringkasan Eksekutif (KPI Qty & CBM, tren 7 hari, Top Risiko) · Okupansi per gudang/zona · Heatmap SLOC + drawer isi produk & movement · Forecast time-to-full (laju %, Qty & SKU/jam) + What-If Inbound/Outbound · Pelanggaran + Pareto + CSV · Alert Center (dedup, hysteresis, auto-resolve, eskalasi L1–L4, notifikasi real-time Google Chat) · Integritas (phantom/ghost) · Audit Trail · Pengaturan 5 tab termasuk Superset Sync · Panduan · sidebar ⇄ icon-rail smooth + drawer mobile · ⌘K.
 
 Rule aktif: **R03** Over-Capacity (basis kebijakan) · **R11** Stok Negatif · **R13** Bad di luar BADSTOCK · **R14** Lost (→ ILSIM). Tangga okupansi OCC-70/85/95/100 per gudang. Rule movement (wrong putaway/FEFO dsb.) menyusul saat dataset movement disinkron (job placeholder sudah ada, `enabled:false`).
 
@@ -99,7 +112,7 @@ Rule aktif: **R03** Over-Capacity (basis kebijakan) · **R11** Stok Negatif · *
 - **Google Chat (real-time)**: buat *incoming webhook* di Space (Space → Apps & integrations → Webhooks → Add), tempel URL-nya di **Pengaturan → Eskalasi** pada level yang diinginkan (boleh banyak, pisah koma). Alert terkirim sebagai kartu saat tercipta & tiap eskalasi; update alert yang sama tergabung satu thread (`threadKey = dedup_key`). Set `APP_BASE_URL` agar kartu punya tombol "Buka WIOM". Catatan jujur: webhook Chat tidak mendukung tombol callback interaktif — Ack/Resolve tetap dilakukan di Alert Center (butuh Chat App + service account bila mau tombol interaktif; bisa jadi fase berikutnya).
 - **Penerima lain**: kolom *Webhook Lain* per level menerima URL apa pun yang mau di-POST JSON alert (n8n, Apps Script, sistem tiket).
 - **Email**: `SMTP_*` di `.env` (kosong = dilewati).
-- **Docker**: `docker compose up -d` = web + sync loop + scheduler tick/summary.
+- **Docker**: `docker compose up -d --build` = web + managed sync daemon + scheduler tick/summary.
 - **Integrasi keluar**: `GET /api/alerts|forecast|integrity|sloc?code=`, monitoring `GET /api/health`.
 
 ---
@@ -113,7 +126,8 @@ Rule aktif: **R03** Over-Capacity (basis kebijakan) · **R11** Stok Negatif · *
    `NEXT_PUBLIC_` karena nilainya tidak boleh masuk ke browser.
 3. Buat `CRON_SECRET` acak panjang (`openssl rand -hex 32`).
 4. Di balik HTTPS set `COOKIE_SECURE=1`.
-5. Jangan commit `db/*.duckdb`, `.env`, cookie Superset (sudah di `.gitignore`).
+5. Jangan commit `db/*.duckdb`, `.env`, atau `config/.superset-sync.secrets.json`
+   (semuanya sudah di `.gitignore`).
 
 ### Deployment dan login produksi
 
@@ -196,9 +210,9 @@ Keputusan: **DuckDB tetap read model** (embedded, gratis, OLAP kolumnar) dan sum
 
 **Galat `Another sync holds the lock`** — sisa lock dari run yang mati tidak wajar (crash / terminal ditutup), atau memang ada `--loop` lain yang masih berjalan. Lock kini **self-healing**: menyimpan `pid|timestamp`, memeriksa apakah pemegangnya masih hidup (Windows via OpenProcess, POSIX via kill-0), dan **mengambil alih otomatis** bila pemegangnya mati atau lock tak terverifikasi berumur > 1 jam; pemegang yang masih hidup tetap dihormati. Untuk kontrol manual ada `--unlock` — menghapus lock hanya bila pemegangnya terbukti mati (menolak bila masih hidup, lengkap dengan pid-nya untuk di-`taskkill`).
 
-**Bila sync error** — jalankan dulu `python3 scripts/superset_to_duckdb.py --config scripts/sync.config.production.json --doctor`: ia mengetes `/health` (jaringan/gateway), `/api/v1/me/` (validitas cookie — penyebab #1 error 401; ambil ulang nilai cookie `session` dari DevTools → Application → Cookies), token CSRF, lalu probe 1 baris tiap dataset dan menunjukkan kolom yang tidak cocok. Galat `502/524` = gateway Cloudflare (origin lambat / bot-filter) — klien kini memakai User-Agent browser, auto-retry dengan backoff, dan timeout 90 dtk. Bila POST `chart/data` tetap ditolak (401/403/CSRF), isi `dataset.chart_id` → sync otomatis fallback ke **GET data chart tersimpan** (bebas CSRF): buat chart *Table · Raw Records* berisi semua kolom raw (untuk stok: + metric `SUM(stock)` berlabel persis `stock_qty`), **Row Limit ≥ 200000**, dan ambil id dari URL `/explore/?slice_id=ANGKA`.
+**Bila sync error** — mulai dari **Pengaturan → Superset Sync → Uji koneksi**. Untuk diagnosis CLI yang lebih rinci jalankan `python3 scripts/superset_to_duckdb.py --config config/superset-sync.json --doctor`: ia mengetes `/health` (jaringan/gateway), `/api/v1/me/` (validitas cookie — penyebab #1 error 401; ambil ulang nilai cookie `session` dari DevTools → Application → Cookies), token CSRF, lalu probe 1 baris tiap dataset dan menunjukkan kolom yang tidak cocok. Galat `502/524` = gateway Cloudflare (origin lambat / bot-filter) — klien kini memakai User-Agent browser, auto-retry dengan backoff, dan timeout 90 dtk. Bila POST `chart/data` tetap ditolak (401/403/CSRF), isi `dataset.chart_id` → sync otomatis fallback ke **GET data chart tersimpan** (bebas CSRF): buat chart *Table · Raw Records* berisi semua kolom raw (untuk stok: + metric `SUM(stock)` berlabel persis `stock_qty`), **Row Limit ≥ 200000**, dan ambil id dari URL `/explore/?slice_id=ANGKA`.
 
-Tiap job membawa blok `dataset`: `id` (angka `datasource_id` di URL explore), `columns` (pemetaan nama kolom dataset → nama tabel), `page` `keyset`/`offset`, opsional `metrics` (mis. `SUM(stock) → stock_qty`, di-groupby server-side — identik dengan struktur dataset stok) dan `filters` statis. Watermark incremental otomatis jadi filter `kolom > nilai`. Mode `superset` (SQL Lab) dan `clickhouse` tetap ada di kode — tinggal ganti `source.type` bila kelak aksesnya diberikan. `--loop 60` + auto-refresh web 60 dtk ≈ ujung-ke-ujung 1–2 menit, tetap 100% gratis.
+Tiap job membawa blok `dataset`: `id` (angka `datasource_id` di URL explore), `columns` (pemetaan nama kolom dataset → nama tabel), `page` `keyset`/`offset`, opsional `metrics` (mis. `SUM(stock) → stock_qty`, di-groupby server-side — identik dengan struktur dataset stok) dan `filters` statis. Watermark incremental otomatis jadi filter `kolom > nilai`. Managed daemon membaca ulang konfigurasi dan memeriksa permintaan manual tanpa restart; refresh halaman berjalan lebih jarang dan berhenti saat tab browser berada di latar belakang.
 
 
 ---

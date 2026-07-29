@@ -7,7 +7,9 @@ import BasisSwitch from "@/components/ui/basis-switch";
 import LangSwitch from "@/components/ui/lang-switch";
 import { useT } from "@/lib/i18n-client";
 
-const INTERVAL_S = 60;
+// A full server refresh re-runs dashboard DuckDB queries. Keep it operationally
+// fresh without doing that work every minute in every background tab.
+const INTERVAL_S = 120;
 
 export default function Topbar({
   userName, role, onOpenMobileNav,
@@ -27,6 +29,7 @@ export default function Topbar({
     if (paused) return;
     const t = setInterval(() => {
       setLeft((s) => {
+        if (document.hidden) return s;
         if (s <= 1) { router.refresh(); return INTERVAL_S; }
         return s - 1;
       });
