@@ -108,10 +108,19 @@ export default function SupersetSyncSettings() {
 
   useEffect(() => {
     const state = status?.status.state;
-    if (state !== "queued" && state !== "running") return;
-    const timer = window.setInterval(() => { loadStatus().catch(() => undefined); }, 2_500);
+    const workerReady = status?.status.worker.online && status.status.worker.ready;
+    if (state !== "queued" && state !== "running" && workerReady) return;
+    const timer = window.setInterval(
+      () => { loadStatus().catch(() => undefined); },
+      workerReady ? 2_500 : 5_000,
+    );
     return () => window.clearInterval(timer);
-  }, [loadStatus, status?.status.state]);
+  }, [
+    loadStatus,
+    status?.status.state,
+    status?.status.worker.online,
+    status?.status.worker.ready,
+  ]);
 
   const updateConfig = (patch: Partial<SupersetSyncConfig>) => {
     setSettings((current) => current ? { ...current, config: { ...current.config, ...patch } } : current);
@@ -195,7 +204,20 @@ export default function SupersetSyncSettings() {
       const response = await fetch("/api/superset-sync/run", { method: "POST" });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
-      setNotice({ tone: "ok", text: c("Sinkronisasi masuk antrean.", "Synchronisation has been queued.") });
+      setNotice({
+        tone: "ok",
+        text: body.worker_started
+          ? c(
+            "Worker berhasil dimulai dan sinkronisasi masuk antrean.",
+            "The worker started and synchronisation has been queued.",
+          )
+          : body.request?.reused
+            ? c(
+              "Permintaan yang sudah ada sedang diproses.",
+              "The existing request is being processed.",
+            )
+            : c("Sinkronisasi masuk antrean.", "Synchronisation has been queued."),
+      });
       await loadStatus();
     } catch (error) {
       setNotice({ tone: "error", text: (error as Error).message });
@@ -219,6 +241,8 @@ export default function SupersetSyncSettings() {
   }
 
   const runtime = status?.status;
+  const workerOnline = runtime?.worker.online === true;
+  const workerReady = workerOnline && runtime?.worker.ready === true;
   const stateCopy: Record<SupersetSyncStatus["state"], [string, string]> = {
     idle: ["Siap", "Ready"],
     queued: ["Dalam antrean", "Queued"],
@@ -228,8 +252,14 @@ export default function SupersetSyncSettings() {
     paused: ["Dijeda", "Paused"],
     not_started: ["Belum berjalan", "Not started"],
   };
-  const stateLabel = runtime ? c(...stateCopy[runtime.state]) : c("Memuat", "Loading");
-  const stateTone = runtime?.state === "failed" ? "error"
+  const stateLabel = !runtime
+    ? c("Memuat", "Loading")
+    : !workerOnline
+      ? c("Worker offline", "Worker offline")
+      : !workerReady
+        ? c("Worker belum siap", "Worker not ready")
+        : c(...stateCopy[runtime.state]);
+  const stateTone = !workerReady || runtime?.state === "failed" ? "error"
     : runtime?.state === "succeeded" || runtime?.state === "running" ? "ok"
     : "neutral";
 
@@ -268,14 +298,54 @@ export default function SupersetSyncSettings() {
           <button className="btn" disabled={busy !== null} onClick={testConnection}>
             {busy === "test" ? c("Menguji…", "Testing…") : c("Uji koneksi", "Test connection")}
           </button>
-          <button className="btn" disabled={busy !== null || !settings.config.schedule.enabled} onClick={runNow}>
-            {busy === "run" ? c("Mengantrekan…", "Queuing…") : c("Sync sekarang", "Sync now")}
+          <button
+            className="btn"
+            disabled={busy !== null || !settings.config.schedule.enabled}
+            title={!workerReady
+              ? c(
+                "WIOM akan mencoba memulai worker lalu menjalankan sync.",
+                "WIOM will try to start the worker before synchronising.",
+              )
+              : undefined}
+            onClick={runNow}
+          >
+            {busy === "run"
+              ? workerReady
+                ? c("Mengantrekan…", "Queuing…")
+                : c("Memulai worker…", "Starting worker…")
+              : workerReady
+                ? c("Sync sekarang", "Sync now")
+                : c("Mulai & sync", "Start & sync")}
           </button>
           <button className="btn btn-primary" disabled={busy !== null} onClick={() => save()}>
             {busy === "save" ? c("Menyimpan…", "Saving…") : c("Simpan", "Save")}
           </button>
         </div>
       </section>
+
+      {runtime && !workerReady && (
+        <div className="sync-worker-alert" role="alert">
+          <div>
+            <strong>
+              {workerOnline
+                ? c("Worker belum siap", "Worker not ready")
+                : c("Worker sinkronisasi tidak aktif", "Sync worker is offline")}
+            </strong>
+            <span>
+              {runtime.worker.error
+                || c(
+                  "Tekan Mulai & sync untuk pemulihan otomatis. Jika gagal, periksa detail runtime deployment.",
+                  "Select Start & sync for automatic recovery. If it fails, inspect the deployment runtime details.",
+                )}
+            </span>
+          </div>
+          <span className="chip num">
+            {runtime.worker.heartbeat_at
+              ? c("Heartbeat terputus", "Heartbeat lost")
+              : c("Tanpa heartbeat", "No heartbeat")}
+          </span>
+        </div>
+      )}
 
       {notice && (
         <div className={`sync-notice sync-notice-${notice.tone}`} role="status">

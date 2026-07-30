@@ -250,7 +250,7 @@ const ID: Dict = {
   "guide.live.settingsPath": "Pengaturan → Superset Sync",
   "guide.live.publicConfig": "Konfigurasi publik disimpan di",
   "guide.live.secretConfig": "sedangkan kredensial tersimpan terpisah di",
-  "guide.live.daemon": "Uji koneksi sebelum sync; managed daemon membaca perubahan tanpa restart.",
+  "guide.live.daemon": "Uji koneksi sebelum sync. Tombol Sync sekarang hanya aktif saat heartbeat worker sehat; image web tunggal menjalankan worker otomatis.",
   // integrity UI
   "int.ui.header.eyebrow": "Trust meter operasional",
   "int.ui.header.description": "Bandingkan catatan WMS dengan cycle count sebelum mengambil keputusan kapasitas.",
@@ -649,7 +649,7 @@ const EN: Dict = {
   "guide.live.settingsPath": "Settings → Superset Sync",
   "guide.live.publicConfig": "Public configuration is stored in",
   "guide.live.secretConfig": "while credentials are stored separately in",
-  "guide.live.daemon": "Test the connection before syncing; the managed daemon reloads changes without a restart.",
+  "guide.live.daemon": "Test the connection before syncing. Sync now is enabled only when the worker heartbeat is healthy; the single web image starts the worker automatically.",
   "int.ui.header.eyebrow": "Operational trust meter",
   "int.ui.header.description": "Compare WMS records with cycle counts before making capacity decisions.",
   "int.ui.filterWarehouse": "Warehouse filter",

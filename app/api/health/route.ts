@@ -28,6 +28,9 @@ export async function GET() {
       configured: true,
       enabled: syncConfig.schedule.enabled,
       state: syncStatus.state,
+      worker_online: syncStatus.worker.online,
+      worker_ready: syncStatus.worker.ready,
+      heartbeat_at: syncStatus.worker.heartbeat_at,
       finished_at: syncStatus.finished_at ?? null,
       next_run_at: syncStatus.next_run_at ?? null,
     };

@@ -846,6 +846,14 @@
 }
 .sync-notice-ok { border-color: color-mix(in oklab, var(--st-normal-fg) 35%, var(--border)); color: var(--st-normal-fg); }
 .sync-notice-error { border-color: color-mix(in oklab, var(--st-critical-fg) 40%, var(--border)); color: var(--st-critical-fg); }
+.sync-worker-alert {
+  display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 11px; border: 1px solid color-mix(in oklab, var(--st-critical-fg) 38%, var(--border));
+  border-radius: 8px; background: color-mix(in oklab, var(--surface-raised) 90%, var(--st-critical-bg));
+}
+.sync-worker-alert > div { display: grid; min-width: 0; gap: 2px; }
+.sync-worker-alert strong { color: var(--st-critical-fg); font-size: 11.5px; }
+.sync-worker-alert span:not(.chip) { color: var(--text-muted); font-size: 10.5px; line-height: 1.45; }
 .sync-config-grid { display: grid; grid-template-columns: 1fr; min-width: 0; gap: 10px; }
 .sync-config-card { display: grid; min-width: 0; align-content: start; gap: 12px; }
 .sync-card-head,
@@ -964,6 +972,7 @@
   .sync-job-fields { grid-template-columns: 1fr 1fr; }
   .sync-check { grid-column: 1 / -1; padding-top: 2px; }
   .sync-test-datasets { grid-template-columns: 1fr; }
+  .sync-worker-alert { align-items: flex-start; flex-direction: column; }
 }
 @media (max-width: 480px) {
   .sync-status-facts { grid-template-columns: 1fr; }

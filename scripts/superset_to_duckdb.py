@@ -29,6 +29,7 @@ Run one job:       python superset_to_duckdb.py --config config.json --job occup
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import re
 import zlib
@@ -37,6 +38,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -135,6 +137,44 @@ def read_lock_file(path: str):
         except OSError:
             pass
     return pid, age
+
+
+def acquire_daemon_lock(path: str) -> None:
+    """Prevent duplicate managed daemons and recover a dead owner's lock."""
+    lock_path = os.path.abspath(path)
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+
+    def create() -> None:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(f"{os.getpid()}|{int(time.time())}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    try:
+        create()
+    except FileExistsError:
+        owner_pid, _ = read_lock_file(lock_path)
+        if owner_pid and pid_alive(owner_pid):
+            raise RuntimeError(
+                f"Managed daemon lain masih aktif (pid {owner_pid})."
+            )
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
+        create()
+
+    def release() -> None:
+        owner_pid, _ = read_lock_file(lock_path)
+        if owner_pid != os.getpid():
+            return
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
+
+    atexit.register(release)
 
 
 def now_utc() -> datetime:
@@ -1631,9 +1671,41 @@ def run_doctor(engine: "SyncEngine") -> None:
 
 def run_managed_daemon(config_path: str, only_job: Optional[str], default_retries: int) -> None:
     """Reload settings every pass and bridge web Settings via small control files."""
+    initial_config = load_runtime_config(config_path)
+    initial_control = initial_config.get("control", {}) or {}
+    acquire_daemon_lock(
+        initial_control.get("daemon_lock_file", "db/.superset-sync-daemon.lock")
+    )
     service_started_at = now_utc().isoformat()
     next_due = 0.0
     last_request_id: Optional[str] = None
+    heartbeat_state: Dict[str, Any] = {
+        "path": "db/.superset-sync-heartbeat.json",
+        "ready": False,
+        "error": None,
+    }
+    heartbeat_wakeup = threading.Event()
+
+    def heartbeat_loop() -> None:
+        while True:
+            try:
+                _write_json_atomic(str(heartbeat_state["path"]), {
+                    "pid": os.getpid(),
+                    "service_started_at": service_started_at,
+                    "heartbeat_at": now_utc().isoformat(),
+                    "ready": bool(heartbeat_state["ready"]),
+                    "error": heartbeat_state.get("error"),
+                })
+            except Exception as heartbeat_error:  # noqa: BLE001
+                log.warning("heartbeat worker gagal: %s", heartbeat_error)
+            heartbeat_wakeup.wait(5)
+            heartbeat_wakeup.clear()
+
+    threading.Thread(
+        target=heartbeat_loop,
+        name="wiom-sync-heartbeat",
+        daemon=True,
+    ).start()
     log.info("managed sync daemon started — configuration reload is active")
 
     def run_with_retry(active_engine: SyncEngine, retries: int) -> List[Dict[str, Any]]:
@@ -1664,6 +1736,13 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
             control = config.get("control", {}) or {}
             status_file = control.get("status_file", "db/.superset-sync-status.json")
             request_file = control.get("request_file", "db/.superset-sync-request.json")
+            heartbeat_state["path"] = control.get(
+                "heartbeat_file",
+                "db/.superset-sync-heartbeat.json",
+            )
+            heartbeat_state["ready"] = True
+            heartbeat_state["error"] = None
+            heartbeat_wakeup.set()
             interval = max(30, int(schedule.get("interval_seconds", 300)))
             enabled = bool(schedule.get("enabled", True))
             request = _read_json(request_file)
@@ -1748,8 +1827,61 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
         except KeyboardInterrupt:
             raise
         except Exception as daemon_error:  # noqa: BLE001
+            heartbeat_state["ready"] = False
+            heartbeat_state["error"] = str(daemon_error)[:500]
+            heartbeat_wakeup.set()
             log.exception("daemon control error: %s", daemon_error)
             time.sleep(3)
+
+
+def run_runtime_check(config: Dict[str, Any], require_auth: bool = False) -> None:
+    """Validate local runtime requirements without contacting Superset."""
+    duckdb_path = os.path.abspath(str(config.get("duckdb_path") or ""))
+    if not duckdb_path:
+        raise ValueError("duckdb_path belum dikonfigurasi.")
+    parent = os.path.dirname(duckdb_path)
+    os.makedirs(parent, exist_ok=True)
+    probe = os.path.join(parent, f".superset-sync-write-check-{os.getpid()}")
+    try:
+        with open(probe, "x", encoding="utf-8") as handle:
+            handle.write("ok\n")
+    finally:
+        try:
+            os.remove(probe)
+        except FileNotFoundError:
+            pass
+
+    superset = config.get("superset", {}) or {}
+    base_url = str(superset.get("base_url") or "").strip()
+    if not base_url.startswith(("http://", "https://")):
+        raise ValueError("superset.base_url harus berupa URL HTTP/HTTPS.")
+    auth = superset.get("auth", {}) or {}
+    mode = str(auth.get("mode") or "auto")
+    has_login = bool(str(auth.get("username") or "").strip()
+                     and str(auth.get("password") or "").strip())
+    has_cookie = bool(str(auth.get("cookie_header") or "").strip())
+    has_bearer = bool(str(auth.get("access_token") or "").strip())
+    if require_auth and mode == "login" and not has_login:
+        raise ValueError("Mode login membutuhkan username dan password Superset.")
+    if require_auth and mode == "cookie" and not has_cookie:
+        raise ValueError("Mode cookie membutuhkan cookie Superset.")
+    if require_auth and mode == "bearer" and not has_bearer:
+        raise ValueError("Mode bearer membutuhkan access token Superset.")
+    if require_auth and mode == "auto" and not (has_login or has_cookie or has_bearer):
+        raise ValueError("Kredensial Superset belum dikonfigurasi.")
+
+    jobs = [job for job in (config.get("jobs") or []) if job.get("enabled", True)]
+    if not jobs:
+        raise ValueError("Tidak ada job Superset aktif.")
+    for job in jobs:
+        dataset_id = str((job.get("dataset") or {}).get("id") or "")
+        if not dataset_id.isdigit():
+            raise ValueError(f"Dataset ID job {job.get('name') or '?'} belum valid.")
+    log.info(
+        "runtime check OK — storage writable, auth %s, %d job aktif",
+        "configured" if has_login or has_cookie or has_bearer else "pending",
+        len(jobs),
+    )
 
 
 def main() -> None:
@@ -1767,9 +1899,16 @@ def main() -> None:
                     help="Cetak kolom ASLI tiap dataset di config (utk menyelaraskan mapping)")
     ap.add_argument("--unlock", action="store_true",
                     help="Hapus lock basi db/*.duckdb.lock (menolak bila pemegang masih hidup)")
+    ap.add_argument("--check-runtime", action="store_true",
+                    help="Validasi dependency/config/storage lokal tanpa menghubungi Superset")
+    ap.add_argument("--check-auth", action="store_true",
+                    help="Dengan --check-runtime, wajibkan kredensial Superset sudah tersedia")
     args = ap.parse_args()
 
     config = load_runtime_config(args.config)
+    if args.check_runtime:
+        run_runtime_check(config, require_auth=args.check_auth)
+        return
     engine = SyncEngine(config)
 
     if args.doctor:

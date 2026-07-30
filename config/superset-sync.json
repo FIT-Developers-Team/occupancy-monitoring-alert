@@ -7,11 +7,11 @@
   "secret_file": ".superset-sync.secrets.json",
   "superset": {
     "base_url": "https://dash.astronauts.id",
-    "timeout_sec": 60,
-    "server_row_cap": 120000,
+    "timeout_sec": 180,
+    "server_row_cap": 1000000,
     "force_refresh": false,
     "auth": {
-      "mode": "auto",
+      "mode": "cookie",
       "provider": "db",
       "username": "",
       "csrf": true
@@ -19,7 +19,7 @@
   },
   "schedule": {
     "enabled": true,
-    "interval_seconds": 300,
+    "interval_seconds": 1800,
     "retry_count": 3
   },
   "scope": {
@@ -36,7 +36,9 @@
   },
   "control": {
     "status_file": "db/.superset-sync-status.json",
-    "request_file": "db/.superset-sync-request.json"
+    "request_file": "db/.superset-sync-request.json",
+    "heartbeat_file": "db/.superset-sync-heartbeat.json",
+    "daemon_lock_file": "db/.superset-sync-daemon.lock"
   },
   "jobs": [
     {

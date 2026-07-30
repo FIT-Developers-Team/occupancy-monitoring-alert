@@ -10,6 +10,9 @@ db/*.duckdb
 db/.wiom-session-secret
 db/.superset-sync-request.json
 db/.superset-sync-status.json
+db/.superset-sync-heartbeat.json
+db/.superset-sync-daemon.lock
+db/.superset-sync-bootstrap.lock
 config/.superset-sync.secrets.json
 .env.local
 .env*.local

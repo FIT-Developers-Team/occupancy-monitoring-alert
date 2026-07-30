@@ -16,6 +16,17 @@ npm run build       # webpack (lihat §8)
 npm run start       # http://localhost:3000
 ```
 
+Untuk preview produksi di Windows tanpa membuat terminal/runner terus menunggu
+output child process:
+
+```powershell
+npm.cmd run build
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-preview.ps1 -Port 3105
+```
+
+Launcher akan selesai setelah HTTP merespons, sementara web tetap berjalan
+terpisah di `http://localhost:3105`.
+
 | Login | Password | Role |
 |---|---|---|
 | `admin` | `FITwiom#2026` | semua + Pengaturan |
@@ -61,13 +72,18 @@ Langkah (mode default `superset_dataset` — **tanpa SQL Lab, tanpa Google Sheet
    stok. Mapping kolom dapat diedit langsung dari panel tiap dataset.
 4. Tekan **Uji koneksi**. WIOM memeriksa health, identitas akun, dan akses ke
    setiap dataset wajib tanpa menulis data.
-5. Tekan **Sync sekarang** atau aktifkan interval. Service sync membaca ulang
-   konfigurasi pada setiap run; tidak perlu restart setelah perubahan.
-6. Untuk Docker, jalankan `docker compose up -d --build`. Image Python
-   menyiapkan dependency saat build, bukan mengunduh ulang setiap container
-   restart.
-7. Verifikasi `GET /api/health`: blok `checks.superset_sync` menampilkan state,
-   dan `snapshot_age_minutes` harus sesuai SLA operasional.
+5. Tekan **Sync sekarang**. Bila worker belum aktif, tombol berubah menjadi
+   **Mulai & sync**: endpoint admin menjalankan preflight, memulai daemon,
+   menunggu heartbeat, lalu mengantrekan sync. Request lama digunakan kembali
+   agar satu klik tidak membuat dua full sync.
+6. Untuk image web tunggal, worker Python sudah tertanam dan diawasi oleh
+   `npm start`. Untuk Docker Compose, jalankan `docker compose up -d --build`;
+   Compose memakai service `sync` terpisah dan menonaktifkan worker tertanam
+   agar tidak ada dua penulis. Dependency Python dipasang saat build, bukan
+   saat container restart.
+7. Verifikasi `GET /api/ready` untuk kesiapan runtime/worker dan
+   `GET /api/health` untuk kesehatan data. Pada `/api/health`,
+   `snapshot_age_minutes` harus sesuai SLA operasional.
 
 Konfigurasi publik berada di `config/superset-sync.json`. Filter allowlist
 `location_id` dari delapan gudang selalu ditambahkan ke setiap job sehingga
@@ -77,6 +93,26 @@ lokasi HUB tidak ikut ditarik. Mode CLI tetap tersedia:
 python3 scripts/superset_to_duckdb.py --config config/superset-sync.json
 python3 scripts/superset_to_duckdb.py --config config/superset-sync.json --daemon
 ```
+
+Status worker ditulis ke `db/.superset-sync-heartbeat.json` setiap 5 detik dan
+segera diperbarui saat state berubah. Daemon memakai
+`db/.superset-sync-daemon.lock`, sehingga supervisor startup dan fallback API
+tidak dapat menghasilkan dua worker aktif.
+
+Image produksi memakai `WIOM_SYNC_REQUIRED=1`: deployment gagal cepat bila
+Python, dependency, konfigurasi, atau storage `db` tidak siap. Kredensial boleh
+diisi sesudah startup melalui Pengaturan; fallback **Mulai & sync** memvalidasi
+kredensial sebelum menerima request.
+`WIOM_API_SYNC_BOOTSTRAP=1` mengaktifkan fallback **Mulai & sync** untuk platform
+yang keliru menjalankan `next start` langsung. Deployment Node non-Docker tetap
+perlu Python 3 dan `scripts/requirements.txt`; executable khusus dapat diatur
+lewat `WIOM_SYNC_PYTHON`. `WIOM_EMBEDDED_SYNC=0` hanya dipakai bila worker
+dijalankan sebagai service terpisah.
+
+Pada deployment single-image, pasang storage persisten ke `/app/db` dan
+`/app/config`. Dockerfile sudah mendeklarasikan kedua volume; pada panel hosting,
+pastikan volume yang sama dipakai kembali ketika redeploy agar database,
+SESSION_SECRET persisten, konfigurasi, dan kredensial Superset tidak hilang.
 
 Zona diturunkan otomatis: `SRA1 → SRA` (view `vw_sloc`). Baris **Lost tanpa lokasi** ikut tersinkron (kunci paging memakai `coalesce(rack_name,'~LOST')`) dan memicu R14.
 
@@ -145,10 +181,14 @@ platform hosting:
 SESSION_SECRET=<hasil-perintah-di-atas>
 COOKIE_SECURE=1
 APP_BASE_URL=https://alamat-aplikasi
+WIOM_EMBEDDED_SYNC=1
+WIOM_SYNC_REQUIRED=1
+WIOM_API_SYNC_BOOTSTRAP=1
 ```
 
 Aktifkan nilai tersebut untuk environment produksi dan lakukan redeploy penuh.
-Untuk Docker Compose, letakkan nilai yang sama di `.env`.
+Untuk Docker Compose, letakkan secret yang sama di `.env`; Compose otomatis
+memakai service `sync` terpisah, menunggu heartbeat sehat, lalu memulai web.
 
 Sebagai fallback aman untuk deployment **single-instance**, `npm start` akan
 membuat secret acak 64 karakter dan menyimpannya sebagai
@@ -159,8 +199,11 @@ ketika proses restart. Untuk multi-instance, `SESSION_SECRET` eksplisit tetap
 wajib agar semua instance memakai key yang sama.
 
 Verifikasi setelah deploy:
-`GET /api/health` harus menampilkan
-`checks.authentication.status = "ok"` tanpa membocorkan nilai secret.
+
+- `GET /api/ready` harus HTTP 200 dengan `status = "ready"`.
+- `GET /api/health` harus menampilkan
+  `checks.authentication.status = "ok"` tanpa membocorkan nilai secret.
+- Log startup harus memuat `Worker Superset siap; web server dapat menerima trafik.`
 
 ---
 

@@ -6,6 +6,7 @@ const PUBLIC_PREFIXES = [
   "/login",
   "/api/auth/login",
   "/api/health",
+  "/api/ready",
   "/api/cron",                        // dilindungi CRON_SECRET di handler
   "/api/notifications/telegram",      // dilindungi secret token Telegram
   "/_next",

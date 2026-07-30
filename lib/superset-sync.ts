@@ -11,6 +11,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, "superset-sync.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, ".superset-sync.secrets.json");
 const STATUS_FILE = path.join(DB_DIR, ".superset-sync-status.json");
 const REQUEST_FILE = path.join(DB_DIR, ".superset-sync-request.json");
+const HEARTBEAT_FILE = path.join(DB_DIR, ".superset-sync-heartbeat.json");
 
 function isInsideDirectory(directory: string, reference: string): boolean {
   const resolved = path.resolve(ROOT, reference);
@@ -107,6 +108,8 @@ export const SupersetSyncConfigSchema = z.object({
   control: z.object({
     status_file: z.string().trim().min(1).default("db/.superset-sync-status.json"),
     request_file: z.string().trim().min(1).default("db/.superset-sync-request.json"),
+    heartbeat_file: z.string().trim().min(1).default("db/.superset-sync-heartbeat.json"),
+    daemon_lock_file: z.string().trim().min(1).default("db/.superset-sync-daemon.lock"),
   }),
   jobs: z.array(JobSchema).min(2),
 }).superRefine((config, ctx) => {
@@ -188,7 +191,23 @@ export interface SupersetSyncStatus {
   }>;
   error?: string | null;
   updated_at?: string | null;
+  worker: {
+    online: boolean;
+    ready: boolean;
+    heartbeat_at: string | null;
+    service_started_at: string | null;
+    error: string | null;
+  };
 }
+
+interface SupersetSyncHeartbeat {
+  heartbeat_at?: string | null;
+  service_started_at?: string | null;
+  ready?: boolean;
+  error?: string | null;
+}
+
+export class SupersetSyncWorkerUnavailableError extends Error {}
 
 function readJson<T>(file: string): T | null {
   try {
@@ -311,10 +330,21 @@ export function getSupersetSyncStatus(): SupersetSyncStatus {
   const config = getSupersetSyncConfig();
   const statusFile = resolveRuntimePath(config.control.status_file, STATUS_FILE);
   const requestFile = resolveRuntimePath(config.control.request_file, REQUEST_FILE);
+  const heartbeatFile = resolveRuntimePath(config.control.heartbeat_file, HEARTBEAT_FILE);
   const status = readJson<SupersetSyncStatus>(statusFile);
   const request = readJson<{ request_id?: string; requested_at?: string; requested_by?: string }>(requestFile);
+  const heartbeat = readJson<SupersetSyncHeartbeat>(heartbeatFile);
+  const heartbeatTime = heartbeat?.heartbeat_at ? Date.parse(heartbeat.heartbeat_at) : Number.NaN;
+  const online = Number.isFinite(heartbeatTime) && Date.now() - heartbeatTime < 20_000;
+  const worker = {
+    online,
+    ready: online && heartbeat?.ready === true,
+    heartbeat_at: heartbeat?.heartbeat_at ?? null,
+    service_started_at: heartbeat?.service_started_at ?? null,
+    error: heartbeat?.error ?? null,
+  };
   if (!config.schedule.enabled) {
-    return { ...(status ?? {}), state: "paused", next_run_at: null };
+    return { ...(status ?? {}), state: "paused", next_run_at: null, worker };
   }
   if (request && status?.request_id !== request.request_id && status?.state !== "running") {
     return {
@@ -323,21 +353,69 @@ export function getSupersetSyncStatus(): SupersetSyncStatus {
       request_id: request.request_id ?? null,
       requested_by: request.requested_by ?? null,
       updated_at: request.requested_at ?? null,
+      worker,
     };
   }
-  return status ?? { state: "not_started", next_run_at: null, updated_at: null };
+  return status
+    ? { ...status, worker }
+    : { state: "not_started", next_run_at: null, updated_at: null, worker };
 }
 
 export function requestSupersetSync(actor: string) {
   const config = getSupersetSyncConfig();
   if (!config.schedule.enabled) throw new Error("Jadwal sinkronisasi sedang dijeda.");
+  const status = getSupersetSyncStatus();
+  const worker = status.worker;
+  if (!worker.online || !worker.ready) {
+    throw new SupersetSyncWorkerUnavailableError(
+      worker.error
+        ? `Worker sinkronisasi belum siap: ${worker.error}`
+        : "Worker sinkronisasi tidak aktif. Jalankan ulang service web/sync setelah deployment.",
+    );
+  }
+  const requestFile = resolveRuntimePath(config.control.request_file, REQUEST_FILE);
+  const existing = readJson<{
+    request_id?: string;
+    requested_at?: string;
+    requested_by?: string;
+  }>(requestFile);
+  if (existing?.request_id) {
+    return {
+      request_id: existing.request_id,
+      requested_at: existing.requested_at ?? null,
+      requested_by: existing.requested_by ?? null,
+      reused: true,
+    };
+  }
   const request = {
     request_id: crypto.randomUUID(),
     requested_at: new Date().toISOString(),
     requested_by: actor,
+    reused: false,
   };
-  writeJsonAtomic(resolveRuntimePath(config.control.request_file, REQUEST_FILE), request, 0o600);
+  writeJsonAtomic(requestFile, request, 0o600);
   return request;
+}
+
+export function assertSupersetSyncCredentials(): void {
+  const config = getSupersetSyncConfig();
+  const auth = config.superset.auth;
+  const password = secretValue("password");
+  const cookie = secretValue("cookie_header");
+  const bearer = secretValue("access_token");
+  const hasLogin = Boolean(auth.username && password);
+  if (auth.mode === "login" && !hasLogin) {
+    throw new Error("Mode login membutuhkan nama pengguna dan kata sandi Superset.");
+  }
+  if (auth.mode === "cookie" && !cookie) {
+    throw new Error("Cookie Superset belum dikonfigurasi.");
+  }
+  if (auth.mode === "bearer" && !bearer) {
+    throw new Error("Access token Superset belum dikonfigurasi.");
+  }
+  if (auth.mode === "auto" && !hasLogin && !cookie && !bearer) {
+    throw new Error("Kredensial Superset belum dikonfigurasi.");
+  }
 }
 
 function resolvedAuth(config: SupersetSyncConfig) {

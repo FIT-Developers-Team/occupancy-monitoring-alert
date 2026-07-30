@@ -5,9 +5,15 @@ services:
     build: .
     ports: ["3000:3000"]
     env_file: .env
+    environment:
+      WIOM_EMBEDDED_SYNC: "0"
+      WIOM_SYNC_REQUIRED: "0"
     volumes:
       - ./db:/app/db            # history + state DuckDB hidup di host
       - ./config:/app/config    # kebijakan bisa diedit tanpa rebuild
+    depends_on:
+      sync:
+        condition: service_healthy
     restart: unless-stopped
 
   sync:
@@ -26,6 +32,16 @@ services:
       - ./db:/app/db
       - ./config:/app/config
     command: ["python3", "scripts/superset_to_duckdb.py", "--config", "config/superset-sync.json", "--daemon"]
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import json,time; from datetime import datetime; h=json.load(open('db/.superset-sync-heartbeat.json')); assert h.get('ready') and time.time()-datetime.fromisoformat(h['heartbeat_at']).timestamp()<20"
+      start_period: 20s
+      interval: 10s
+      timeout: 5s
+      retries: 6
     restart: unless-stopped
 
   scheduler:
@@ -38,5 +54,6 @@ services:
       - ./scripts/scheduler.mjs:/app/scheduler.mjs:ro
     command: ["node", "/app/scheduler.mjs"]
     depends_on:
-      - web
+      web:
+        condition: service_healthy
     restart: unless-stopped
