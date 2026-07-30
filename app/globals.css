@@ -901,6 +901,13 @@
 .sync-job-result b { color: var(--st-normal-fg); font-family: var(--font-mono); font-size: 10px; }
 .sync-job-result b.is-error { color: var(--st-critical-fg); }
 .sync-job-result span { color: var(--text-muted); font-size: 9.5px; }
+/* A sync error is up to 500 chars — clamp it so it cannot stretch the job row.
+   The full text stays available through the title tooltip. */
+.sync-job-result span.is-error-message {
+  display: -webkit-box; overflow: hidden; max-width: 240px;
+  -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  text-align: right; line-height: 1.35;
+}
 .sync-job-fields {
   display: grid; grid-template-columns: minmax(110px, .45fr) minmax(110px, .45fr) minmax(220px, 1.1fr);
   min-width: 0; gap: 9px; padding: 0 12px 11px;
@@ -969,6 +976,7 @@
   .sync-field-wide { grid-column: auto; }
   .sync-job-head { grid-template-columns: 74px minmax(0, 1fr); gap: 8px; }
   .sync-job-result { grid-column: 2; justify-items: start; }
+  .sync-job-result span.is-error-message { max-width: 100%; text-align: left; }
   .sync-job-fields { grid-template-columns: 1fr 1fr; }
   .sync-check { grid-column: 1 / -1; padding-top: 2px; }
   .sync-test-datasets { grid-template-columns: 1fr; }

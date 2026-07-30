@@ -19,6 +19,10 @@ RUN set -eux \
 COPY scripts/requirements.txt ./scripts/requirements.txt
 RUN pip install --no-cache-dir -r scripts/requirements.txt
 COPY scripts/superset_to_duckdb.py ./scripts/superset_to_duckdb.py
+# The canonical schema must also live OUTSIDE /app/db: that path is a volume, so
+# an empty mount hides the copy shipped there and the sync would then invent its
+# own tables — losing the vw_sloc / vw_stock_latest views the dashboard reads.
+COPY db/schema.sql ./scripts/schema.sql
 # Verify SSL is importable — slim images can miss libssl3 at runtime, breaking
 # all HTTPS requests from the sync worker with "SSL module is not available".
 RUN python3 -c "import ssl; import duckdb, pandas, requests; print('ssl OK', ssl.OPENSSL_VERSION)"

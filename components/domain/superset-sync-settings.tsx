@@ -262,6 +262,7 @@ export default function SupersetSyncSettings() {
   const stateTone = !workerReady || runtime?.state === "failed" ? "error"
     : runtime?.state === "succeeded" || runtime?.state === "running" ? "ok"
     : "neutral";
+  const failedJob = runtime?.jobs?.find((job) => job.status === "ERROR")?.name;
 
   return (
     <div className="sync-settings">
@@ -356,6 +357,16 @@ export default function SupersetSyncSettings() {
               ? c("Heartbeat terputus", "Heartbeat lost")
               : c("Tanpa heartbeat", "No heartbeat")}
           </span>
+        </div>
+      )}
+
+      {runtime?.state === "failed" && runtime.error && (
+        <div className="sync-worker-alert" role="alert">
+          <div>
+            <strong>{c("Sinkronisasi terakhir gagal", "Last synchronisation failed")}</strong>
+            <span>{failedJob ? `[${failedJob}] ${runtime.error}` : runtime.error}</span>
+          </div>
+          {runtime.error_category && <span className="chip num">{runtime.error_category}</span>}
         </div>
       )}
 
@@ -675,7 +686,16 @@ export default function SupersetSyncSettings() {
                   </div>
                   <div className="sync-job-result">
                     <b className={latest?.status === "ERROR" ? "is-error" : ""}>{latest?.status ?? "—"}</b>
-                    <span>{latest ? `${latest.rows_written.toLocaleString()} ${c("baris", "rows")}` : c("Belum ada hasil", "No result yet")}</span>
+                    <span
+                      className={latest?.status === "ERROR" && latest.message ? "is-error-message" : ""}
+                      title={latest?.status === "ERROR" ? latest.message : undefined}
+                    >
+                      {latest?.status === "ERROR" && latest.message
+                        ? latest.message
+                        : latest
+                          ? `${latest.rows_written.toLocaleString()} ${c("baris", "rows")}`
+                          : c("Belum ada hasil", "No result yet")}
+                    </span>
                   </div>
                 </div>
                 <div className="sync-job-fields">

@@ -1086,9 +1086,70 @@ class ClickHouseClient:
 # ----------------------------------------------------------------------------- #
 # 2) DuckDB sink  --  schema evolution, snapshot / incremental / upsert, retention
 # ----------------------------------------------------------------------------- #
-_TYPE_MAP = {  # python -> duckdb, best-effort
-    int: "BIGINT", float: "DOUBLE", bool: "BOOLEAN", str: "VARCHAR",
-}
+def _duckdb_type(series: Any) -> str:
+    """Map a pandas column to a DuckDB type.
+
+    Inspects the dtype rather than `type(first_value)`: a frame built from JSON
+    rows holds numpy scalars (np.int64/np.float64/np.bool_), which never match
+    the Python builtins and would silently fall back to VARCHAR.
+    """
+    if pd is None:
+        return "VARCHAR"
+    if pd.api.types.is_bool_dtype(series):
+        return "BOOLEAN"
+    if pd.api.types.is_integer_dtype(series):
+        return "BIGINT"
+    if pd.api.types.is_float_dtype(series):
+        return "DOUBLE"
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "TIMESTAMP"
+    return "VARCHAR"
+
+
+def _schema_file(config: Dict[str, Any]) -> Optional[str]:
+    """Locate db/schema.sql across dev checkouts and container layouts.
+
+    `/app/db` is a Docker volume, so the copy the image ships there can be
+    shadowed by an empty mount; the script-relative copy survives that.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    db_dir = os.path.dirname(os.path.abspath(str(config.get("duckdb_path") or "db/x")))
+    explicit = str(config.get("schema_file") or "").strip()
+    candidates = ([explicit] if explicit else []) + [
+        os.path.join(db_dir, "schema.sql"),
+        os.path.join(here, "schema.sql"),
+        os.path.join(here, os.pardir, "db", "schema.sql"),
+        os.path.join(os.getcwd(), "db", "schema.sql"),
+    ]
+    for candidate in candidates:
+        path = os.path.abspath(candidate)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def bootstrap_schema(con: "duckdb.DuckDBPyConnection", config: Dict[str, Any]) -> None:
+    """Apply the canonical schema before any job writes.
+
+    Without it the first sync into an empty database invents its own tables and
+    the dashboard's vw_sloc / vw_stock_latest views never exist. Every statement
+    in schema.sql is IF NOT EXISTS / OR REPLACE, so this is idempotent and also
+    repairs a database whose views were dropped.
+    """
+    path = _schema_file(config)
+    if not path:
+        log.warning("db/schema.sql tidak ditemukan — tabel dibuat dari data "
+                    "(view dashboard vw_sloc/vw_stock_latest TIDAK akan dibuat)")
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            con.execute(handle.read())
+        log.info("skema kanonik diterapkan dari %s", path)
+    except Exception as schema_error:  # noqa: BLE001
+        # Never block a sync on schema repair; the sink still creates what it
+        # needs and the failure is visible in the log.
+        log.warning("gagal menerapkan %s (%s) — lanjut tanpa bootstrap skema",
+                    path, str(schema_error)[:200])
 
 
 class DuckDBSink:
@@ -1164,13 +1225,23 @@ class DuckDBSink:
         ).fetchall()]
 
     def _ensure_table_from_df(self, table: str, df: "pd.DataFrame", stamp: bool) -> None:
-        cols = list(df.columns)
-        if stamp and self.SYNCED_AT not in cols:
-            cols = cols + [self.SYNCED_AT]
         if not self._table_exists(table):
-            # let DuckDB infer types from the frame, then add stamp column
-            self.con.register("_df_ddl", df.head(0))
-            self.con.execute(f'CREATE TABLE "{table}" AS SELECT * FROM _df_ddl')
+            # DuckDB types an object column by SAMPLING the registered frame, so
+            # a frame with no rows leaves it nothing to look at and every object
+            # column lands as INTEGER. The first real insert then dies with
+            # "Could not convert string ... to INT32". Register the populated
+            # frame and cut it with LIMIT 0 so types come from actual values.
+            ddl = df
+            blank = [c for c in df.columns
+                     if df[c].dtype == object and df[c].isna().all()]
+            if blank:
+                # All-NULL in this batch is unsampleable too; VARCHAR accepts
+                # whatever a later batch turns out to carry.
+                ddl = df.copy()
+                for c in blank:
+                    ddl[c] = ddl[c].astype("string")
+            self.con.register("_df_ddl", ddl)
+            self.con.execute(f'CREATE TABLE "{table}" AS SELECT * FROM _df_ddl LIMIT 0')
             self.con.unregister("_df_ddl")
             if stamp and self.SYNCED_AT not in self._columns(table):
                 self.con.execute(f'ALTER TABLE "{table}" ADD COLUMN "{self.SYNCED_AT}" TIMESTAMP')
@@ -1179,7 +1250,7 @@ class DuckDBSink:
         existing = set(self._columns(table))
         for c in df.columns:
             if c not in existing:
-                dtype = _TYPE_MAP.get(type(df[c].dropna().iloc[0]) if df[c].dropna().size else str, "VARCHAR")
+                dtype = _duckdb_type(df[c])
                 log.info("  + new column %s (%s) on %s", c, dtype, table)
                 self.con.execute(f'ALTER TABLE "{table}" ADD COLUMN "{c}" {dtype}')
         if stamp and self.SYNCED_AT not in existing:
@@ -1368,6 +1439,7 @@ class SyncEngine:
         """
         with self._lock():
             con = duckdb.connect(self.duckdb_path)
+            bootstrap_schema(con, self.config)
             sink = DuckDBSink(con)
             try:
                 completed = {
@@ -1747,10 +1819,14 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
     next_due = 0.0
     last_request_id: Optional[str] = None
     heartbeat_state: Dict[str, Any] = {
-        "path": "db/.superset-sync-heartbeat.json",
+        # Seed from the configured paths, not the defaults: the heartbeat thread
+        # starts before the control loop's first config read, so a deployment
+        # with custom control files would otherwise emit its first heartbeats
+        # into a stray db/.superset-sync-heartbeat.json nobody watches.
+        "path": initial_control.get("heartbeat_file", "db/.superset-sync-heartbeat.json"),
         "ready": False,
         "error": None,
-        "status_path": "db/.superset-sync-status.json",
+        "status_path": initial_control.get("status_file", "db/.superset-sync-status.json"),
         "common": {},
         "active": False,
     }
@@ -1898,6 +1974,7 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
             except Exception as exc:  # noqa: BLE001
                 finished_at = now_utc()
                 next_due = time.time() + interval
+                error_category = SupersetClient.classify_error(exc)
                 _write_json_atomic(status_file, {
                     **common,
                     "state": "failed",
@@ -1908,9 +1985,9 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
                     "rows_written": sum(int(row.get("rows_written", 0)) for row in active_engine.results),
                     "jobs": active_engine.results,
                     "error": str(exc)[:500],
+                    "error_category": error_category,
                     "updated_at": finished_at.isoformat(),
                 })
-                error_category = SupersetClient.classify_error(exc)
                 log.error("managed pass failed: %s (category=%s)", exc, error_category)
             finally:
                 heartbeat_state["active"] = False
