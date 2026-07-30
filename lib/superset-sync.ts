@@ -205,6 +205,8 @@ export interface SupersetSyncStatus {
   }>;
   error?: string | null;
   error_category?: string | null;
+  error_phase?: string | null;
+  error_http_status?: number | null;
   updated_at?: string | null;
   worker: {
     online: boolean;

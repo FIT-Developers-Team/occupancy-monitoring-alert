@@ -349,6 +349,32 @@ class SupersetClient:
 
     TRANSIENT = {429, 502, 503, 504, 524}  # gateway/Cloudflare — layak retry
 
+    @staticmethod
+    def classify_error(error: Exception) -> str:
+        """Classify an exception into a structured error category."""
+        msg = str(error)
+        if "HTTP 401" in msg or "login" in msg.lower():
+            return "SUPERSET_AUTH_ERROR"
+        if "HTTP 403" in msg or "CSRF" in msg.upper():
+            return "SUPERSET_FORBIDDEN"
+        if "HTTP 404" in msg:
+            return "SUPERSET_NOT_FOUND"
+        if "HTTP 429" in msg:
+            return "SUPERSET_RATE_LIMIT"
+        if "HTTP 50" in msg or "HTTP 52" in msg:
+            return "SUPERSET_SERVER_ERROR"
+        if "timeout" in msg.lower() or "timed out" in msg.lower():
+            return "SUPERSET_TIMEOUT"
+        if "chart/data error" in msg.lower() or "explore_json" in msg.lower():
+            return "SUPERSET_QUERY_ERROR"
+        if "Columns missing" in msg or "tidak ada" in msg.lower():
+            return "CONFIGURATION_ERROR"
+        if "lock" in msg.lower() and ("masih" in msg.lower() or "basi" in msg.lower()):
+            return "SYNC_LOCKED"
+        if "database" in msg.lower() or "duckdb" in msg.lower() or "write" in msg.lower():
+            return "DATABASE_WRITE_ERROR"
+        return "UNKNOWN_ERROR"
+
     def _http(self, method: str, url: str, *, tries: int = 3, **kw):
         """Request dgn retry utk error transien; error final memuat cuplikan body
         (JSON pesan Superset / halaman Cloudflare) agar mudah didiagnosis."""
@@ -761,12 +787,12 @@ class SupersetDatasetClient(SupersetClient):
                     return list(inx["val"])
                 d_disc = {**d, "columns": {col: col}, "_raw_cols_effective": [col],
                           "metrics": [{"agg": "COUNT", "column": col, "label": "_n"}]}
-                found = self.legacy_rows(d_disc, flt, capv)
+                found = self.legacy_rows(d_disc, flt, chunk)
                 return [r[col] for r in found if r.get(col) is not None]
 
             def pull(flt: List[Dict[str, Any]], depth: int) -> Iterable[List[Dict[str, Any]]]:
-                rows = self.legacy_rows(d, flt, capv)
-                if len(rows) >= capv and depth < len(seg_cols):
+                rows = self.legacy_rows(d, flt, chunk)
+                if len(rows) >= chunk and depth < len(seg_cols):
                     col = seg_cols[depth]
                     vals = discover(col, flt)
                     log.info("  [legacy] segmen %s ≥ cap %d → pecah per %s (%d nilai)",
@@ -1884,7 +1910,8 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
                     "error": str(exc)[:500],
                     "updated_at": finished_at.isoformat(),
                 })
-                log.error("managed pass failed: %s", exc)
+                error_category = SupersetClient.classify_error(exc)
+                log.error("managed pass failed: %s (category=%s)", exc, error_category)
             finally:
                 heartbeat_state["active"] = False
                 active_engine_ref[0] = None
