@@ -12,6 +12,10 @@ RUN npm ci
 
 FROM ${PYTHON_IMAGE} AS sync
 WORKDIR /app
+RUN set -eux \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends libssl3 openssl ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
 COPY scripts/requirements.txt ./scripts/requirements.txt
 RUN pip install --no-cache-dir -r scripts/requirements.txt
 COPY scripts/superset_to_duckdb.py ./scripts/superset_to_duckdb.py
@@ -46,5 +50,5 @@ RUN node --version \
 VOLUME ["/app/db", "/app/config"]
 EXPOSE 3000
 HEALTHCHECK --start-period=30s --interval=15s --timeout=5s --retries=4 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+  CMD curl -fS http://127.0.0.1:3000/api/ready || exit 1
 CMD ["node", "scripts/start-production.mjs"]
