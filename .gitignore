@@ -1,40 +1,109 @@
-```
-# Environment variables
-.env
-.env.local
-*.env.*
+# =========================================================
+# ENVIRONMENT VARIABLES
+# =========================================================
 
-# Logs
-*.log
+.env
+.env.*
+
+# Keep environment templates in Git
+!.env.example
+!.env.*.example
+
+
+# =========================================================
+# NEXT.JS / NODE.JS
+# =========================================================
 
 # Dependencies
 node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Other frontend build/cache output
+dist/
+build/
+coverage/
+.turbo/
+.cache/
+
+# Vercel
+.vercel/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Package manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# General logs
+*.log
+
+
+# =========================================================
+# PYTHON
+# =========================================================
+
+# Virtual environments
 .venv/
 venv/
+env/
+
+# Python cache
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Test/type-check caches
 .mypy_cache/
 .pytest_cache/
-pip-log.txt
-pipenv.lock
+.ruff_cache/
+.pyre/
+.tox/
+.nox/
 
-# Coverage reports
-coverage/
+# Python coverage
+.coverage
+.coverage.*
 htmlcov/
 
-# Editor files
+# Python build output
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Python logs
+pip-log.txt
+
+
+# =========================================================
+# EDITORS / OPERATING SYSTEM
+# =========================================================
+
 .vscode/
 .idea/
+
 *.swp
 *.swo
 *~
+
 .DS_Store
 Thumbs.db
 
-# Build artifacts
-dist/
-build/
+
+# =========================================================
+# COMPILED / BINARY ARTIFACTS
+# =========================================================
+
 target/
-*.pyc
+
 *.class
 *.o
 *.obj
@@ -42,7 +111,11 @@ target/
 *.dll
 *.exe
 
-# Compressed files
+
+# =========================================================
+# ARCHIVE / COMPRESSED FILES
+# =========================================================
+
 *.zip
 *.gz
 *.tar
@@ -65,4 +138,3 @@ target/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
-```

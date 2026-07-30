@@ -35,7 +35,7 @@ function findSyncPython(): string | null {
       windowsHide: true,
     });
     if (version.error || version.status !== 0) continue;
-    const imports = spawnSync(candidate, ["-c", "import duckdb, pandas, requests"], {
+    const imports = spawnSync(candidate, ["-c", "import ssl, duckdb, pandas, requests"], {
       cwd: ROOT,
       env: process.env,
       stdio: "ignore",

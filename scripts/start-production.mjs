@@ -120,7 +120,7 @@ function findPython() {
     if (result.error || result.status !== 0) continue;
     const dependencies = spawnSync(
       candidate,
-      ["-c", "import duckdb, pandas, requests"],
+      ["-c", "import ssl, duckdb, pandas, requests"],
       {
         cwd: process.cwd(),
         env: process.env,
@@ -338,7 +338,11 @@ const child = spawn(
     env: {
       ...process.env,
       PORT: port,
-      HOSTNAME: process.env.HOSTNAME?.trim() || "0.0.0.0",
+      // Docker sets HOSTNAME to the container id (e.g. e44a32a0215a). Passing
+      // that to Next.js makes it bind only to the container's specific IP, so
+      // healthchecks via 127.0.0.1 fail. Always bind to all interfaces unless
+      // an explicit bind address is provided.
+      HOSTNAME: clean(process.env.WIOM_BIND_ADDRESS) || "0.0.0.0",
     },
     stdio: "inherit",
   }
