@@ -11,9 +11,8 @@
     "server_row_cap": 1000000,
     "force_refresh": false,
     "auth": {
-      "mode": "cookie",
+      "mode": "auto",
       "provider": "db",
-      "username": "",
       "csrf": true
     }
   },

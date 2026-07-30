@@ -1836,6 +1836,16 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
 
 def run_runtime_check(config: Dict[str, Any], require_auth: bool = False) -> None:
     """Validate local runtime requirements without contacting Superset."""
+    # SSL must be importable — slim images can miss libssl3 at runtime, which
+    # breaks every HTTPS request with "Can't connect to HTTPS URL because the
+    # SSL module is not available". Catch it here so the failure is explicit.
+    try:
+        import ssl  # noqa: F401
+    except ImportError as ssl_err:  # noqa: BLE001
+        raise RuntimeError(
+            "Modul SSL Python tidak tersedia — HTTPS ke Superset tidak akan jalan. "
+            "Pasang libssl3/openssl pada image (lihat Dockerfile)."
+        ) from ssl_err
     duckdb_path = os.path.abspath(str(config.get("duckdb_path") or ""))
     if not duckdb_path:
         raise ValueError("duckdb_path belum dikonfigurasi.")

@@ -19,6 +19,9 @@ RUN set -eux \
 COPY scripts/requirements.txt ./scripts/requirements.txt
 RUN pip install --no-cache-dir -r scripts/requirements.txt
 COPY scripts/superset_to_duckdb.py ./scripts/superset_to_duckdb.py
+# Verify SSL is importable — slim images can miss libssl3 at runtime, breaking
+# all HTTPS requests from the sync worker with "SSL module is not available".
+RUN python3 -c "import ssl; import duckdb, pandas, requests; print('ssl OK', ssl.OPENSSL_VERSION)"
 CMD ["python3", "scripts/superset_to_duckdb.py", "--config", "config/superset-sync.json", "--daemon"]
 
 FROM ${NODE_IMAGE} AS build
@@ -45,7 +48,7 @@ COPY --from=build /app/db/schema.sql ./db/schema.sql
 COPY --from=build /app/scripts/start-production.mjs ./scripts/start-production.mjs
 COPY --from=build /app/scripts/superset_to_duckdb.py ./scripts/superset_to_duckdb.py
 RUN node --version \
-  && python3 -c "import duckdb, pandas, requests"
+  && python3 -c "import ssl, duckdb, pandas, requests; print('ssl', ssl.OPENSSL_VERSION)"
 # db/*.duckdb TIDAK di-copy — mount sebagai volume (lihat docker-compose.yml)
 VOLUME ["/app/db", "/app/config"]
 EXPOSE 3000
