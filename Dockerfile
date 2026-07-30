@@ -1,23 +1,29 @@
 # WIOM Control Tower — image produksi
-FROM node:22-bookworm-slim AS deps
+# Semua stage runtime dipin ke Debian Bookworm. Menyalin Python dari tag
+# `python:3.12-slim` (yang dapat berpindah ke Debian lebih baru) ke image Node
+# Bookworm menyebabkan binary Python meminta GLIBC_2.38 yang tidak tersedia.
+ARG NODE_IMAGE=node:22-bookworm-slim
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm
+
+FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-FROM python:3.12-slim AS sync
+FROM ${PYTHON_IMAGE} AS sync
 WORKDIR /app
 COPY scripts/requirements.txt ./scripts/requirements.txt
 RUN pip install --no-cache-dir -r scripts/requirements.txt
 COPY scripts/superset_to_duckdb.py ./scripts/superset_to_duckdb.py
 CMD ["python3", "scripts/superset_to_duckdb.py", "--config", "config/superset-sync.json", "--daemon"]
 
-FROM node:22-bookworm-slim AS build
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM node:22-bookworm-slim AS web
+FROM ${NODE_IMAGE} AS web
 WORKDIR /app
 ENV NODE_ENV=production
 ENV WIOM_EMBEDDED_SYNC=1
