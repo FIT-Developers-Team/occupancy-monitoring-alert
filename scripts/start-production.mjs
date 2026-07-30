@@ -321,12 +321,28 @@ if (!/^\d{2,5}$/.test(port) || Number(port) > 65_535) {
   syncSupervisor?.stop();
   throw new Error(`Port tidak valid: ${port}`);
 }
+
+const standaloneServer = path.join(process.cwd(), "server.js");
 const nextBin = path.join(process.cwd(), "node_modules", "next", "dist", "bin", "next");
-const child = spawn(process.execPath, [nextBin, "start", "-p", port], {
-  cwd: process.cwd(),
-  env: process.env,
-  stdio: "inherit",
-});
+const useStandalone = fs.existsSync(standaloneServer);
+if (!useStandalone && !fs.existsSync(nextBin)) {
+  syncSupervisor?.stop();
+  throw new Error("Runtime Next.js tidak ditemukan.");
+}
+
+const child = spawn(
+  process.execPath,
+  useStandalone ? [standaloneServer] : [nextBin, "start", "-p", port],
+  {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORT: port,
+      HOSTNAME: process.env.HOSTNAME?.trim() || "0.0.0.0",
+    },
+    stdio: "inherit",
+  }
+);
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {

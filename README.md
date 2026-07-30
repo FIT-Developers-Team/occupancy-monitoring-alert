@@ -114,6 +114,13 @@ Pada deployment single-image, pasang storage persisten ke `/app/db` dan
 pastikan volume yang sama dipakai kembali ketika redeploy agar database,
 SESSION_SECRET persisten, konfigurasi, dan kredensial Superset tidak hilang.
 
+Untuk Coolify self-hosted, buka **Servers → localhost → Advanced → Builds** dan
+atur **Deployment timeout (sec)** minimal `1800` (`3600` dianjurkan). Nilai ini
+membatasi keseluruhan job deployment, termasuk kompilasi dan ekspor layer Docker;
+nilai `360` dapat memutus build sehat dengan `exit code 255` saat `exporting
+layers`. Biarkan build cache aktif dan matikan **Include Source Commit in Build**
+agar layer dependency dapat digunakan kembali pada redeploy berikutnya.
+
 Zona diturunkan otomatis: `SRA1 → SRA` (view `vw_sloc`). Baris **Lost tanpa lokasi** ikut tersinkron (kunci paging memakai `coalesce(rack_name,'~LOST')`) dan memicu R14.
 
 ---

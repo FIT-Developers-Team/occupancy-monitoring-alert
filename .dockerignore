@@ -13,3 +13,8 @@ config/.superset-sync.secrets.json
 *.duckdb.lock
 .git
 npm-debug.log*
+README.md
+design-qa.md
+deploy
+docker-compose.yml
+tsconfig.tsbuildinfo
