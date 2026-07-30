@@ -42,7 +42,7 @@
       ],
       "key_col": "sloc_id",
       "key_type": "int",
-      "chunk_size": 20000,
+      "chunk_size": 50000,
       "base_sql": "SELECT location_id, location_name, location_latitude AS latitude, location_longitude AS longitude, id AS sloc_id, rack_name AS sloc_code, area, zone AS rack_zone, aisle, bay, level, bin, active, max_quantity, max_volume, rack_storage_name AS storage_handling FROM <DATASET_MASTER_LOKASI>",
       "dataset": {
         "id": "344",
@@ -81,7 +81,7 @@
       "target_table": "stock_history",
       "key_col": "_k",
       "key_type": "string",
-      "chunk_size": 20000,
+      "chunk_size": 50000,
       "retention_days": 90,
       "base_sql": "SELECT location_id, fpd.product_id AS product_id, product_name, sku_number, l1_category_name AS l1_category, rack_storage_name AS storage_handling, length, width, height, rack_name AS sloc_code, product_detail_status_name AS status, SUM(stock) AS stock_qty, sku_cbm, occupied_cbm, coalesce(rack_name,'~LOST') || '|' || CAST(fpd.product_id AS VARCHAR) AS _k FROM <DATASET_STOK> GROUP BY <SEMUA_KOLOM_NON_AGREGAT>",
       "dataset": {
@@ -135,7 +135,7 @@
       "target_table": "movement_history",
       "key_col": "movement_id",
       "watermark_column": "movement_datetime",
-      "chunk_size": 20000,
+      "chunk_size": 50000,
       "retention_days": 120,
       "base_sql": "SELECT movement_id, movement_type, movement_datetime, operator, source_sloc, destination_sloc, product_id, product_name, qty FROM <DATASET_MOVEMENT>",
       "dataset": {
@@ -165,7 +165,7 @@
       "key_col": "count_id",
       "key_type": "string",
       "watermark_column": "count_date",
-      "chunk_size": 20000,
+      "chunk_size": 50000,
       "base_sql": "SELECT count_id, count_date, sloc_code, system_qty, physical_qty FROM <DATASET_CYCLE_COUNT>",
       "dataset": {
         "id": "ISI_DATASET_ID_CYCLE_COUNT",

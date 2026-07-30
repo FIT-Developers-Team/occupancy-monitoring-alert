@@ -285,6 +285,18 @@ export default function SupersetSyncSettings() {
             <dt>{c("Baris ditulis", "Rows written")}</dt>
             <dd className="num">{runtime?.rows_written?.toLocaleString(lang === "en" ? "en-GB" : "id-ID") ?? "—"}</dd>
           </div>
+          {runtime?.state === "running" && (
+            <>
+              <div>
+                <dt>{c("Batch", "Batch")}</dt>
+                <dd className="num">{runtime.current_batch ?? "—"}{runtime.total_batches ? `/${runtime.total_batches}` : ""}</dd>
+              </div>
+              <div>
+                <dt>{c("Throughput", "Throughput")}</dt>
+                <dd className="num">{runtime.throughput_rows_per_sec ? `${Math.round(runtime.throughput_rows_per_sec).toLocaleString(lang === "en" ? "en-GB" : "id-ID")} ${c("baris/dtk", "rows/s")}` : "—"}</dd>
+              </div>
+            </>
+          )}
           <div>
             <dt>{c("Durasi", "Duration")}</dt>
             <dd className="num">{formatDuration(runtime?.duration_ms)}</dd>
@@ -509,6 +521,8 @@ export default function SupersetSyncSettings() {
                   schedule: { ...settings.config.schedule, interval_seconds: Number(event.target.value) },
                 })}
               >
+                <option value={15}>{c("Setiap 15 detik", "Every 15 seconds")}</option>
+                <option value={30}>{c("Setiap 30 detik", "Every 30 seconds")}</option>
                 <option value={60}>{c("Setiap 1 menit", "Every minute")}</option>
                 <option value={300}>{c("Setiap 5 menit", "Every 5 minutes")}</option>
                 <option value={900}>{c("Setiap 15 menit", "Every 15 minutes")}</option>
@@ -536,7 +550,7 @@ export default function SupersetSyncSettings() {
                   className="input num"
                   type="number"
                   min={5}
-                  max={300}
+                  max={600}
                   value={settings.config.superset.timeout_sec}
                   onChange={(event) => updateConfig({
                     superset: { ...settings.config.superset, timeout_sec: Number(event.target.value) },
@@ -551,13 +565,69 @@ export default function SupersetSyncSettings() {
                 className="input num"
                 type="number"
                 min={1_000}
-                max={1_000_000}
+                max={10_000_000}
                 step={1_000}
                 value={settings.config.superset.server_row_cap}
                 onChange={(event) => updateConfig({
                   superset: { ...settings.config.superset, server_row_cap: Number(event.target.value) },
                 })}
               />
+              <small>{c("Maks 10.000.000, sesuaikan dgn kapasitas server Superset.", "Max 10,000,000, adjust to Superset server capacity.")}</small>
+            </label>
+            <label className="sync-field">
+              <span>{c("Lookback (menit)", "Lookback (minutes)")}</span>
+              <input
+                className="input num"
+                type="number"
+                min={0}
+                max={1440}
+                value={settings.config.performance?.lookback_minutes ?? 10}
+                onChange={(event) => updateConfig({
+                  performance: { ...settings.config.performance, lookback_minutes: Number(event.target.value) },
+                })}
+              />
+            </label>
+            <label className="sync-field">
+              <span>{c("Batch maksimum", "Max batch size")}</span>
+              <input
+                className="input num"
+                type="number"
+                min={1_000}
+                max={2_000_000}
+                step={1_000}
+                value={settings.config.performance?.max_batch_size ?? 500_000}
+                onChange={(event) => updateConfig({
+                  performance: { ...settings.config.performance, max_batch_size: Number(event.target.value) },
+                })}
+              />
+              <small>{c("Maks 2.000.000 baris per batch untuk data besar.", "Max 2,000,000 rows per batch for large data.")}</small>
+            </label>
+            <label className="sync-field">
+              <span>{c("Konkurensi", "Concurrency")}</span>
+              <input
+                className="input num"
+                type="number"
+                min={1}
+                max={16}
+                value={settings.config.performance?.concurrency ?? 4}
+                onChange={(event) => updateConfig({
+                  performance: { ...settings.config.performance, concurrency: Number(event.target.value) },
+                })}
+              />
+              <small>{c("Thread paralel utk segmentasi data besar (1-16).", "Parallel threads for large data segmentation (1-16).")}</small>
+            </label>
+            <label className="sync-check">
+              <input
+                type="checkbox"
+                checked={settings.config.performance?.adaptive_batch ?? true}
+                onChange={(event) => updateConfig({
+                  performance: { ...settings.config.performance, adaptive_batch: event.target.checked },
+                })}
+              />
+              <span>
+                {c("Batch adaptif", "Adaptive batch")}
+                <small>{c("Kecilkan batch saat error, perbesar saat sukses.", "Shrink batch on error, grow on success.")}</small>
+              </span>
             </label>
           </div>
           <div className="sync-scope">

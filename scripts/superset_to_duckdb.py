@@ -40,9 +40,10 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 import duckdb  # type: ignore
@@ -423,7 +424,7 @@ class SupersetClient:
         base_sql: str,
         key_col: str,
         key_type: str = "int",
-        chunk_size: int = 20000,
+        chunk_size: int = 50000,
         start_after: Optional[Any] = None,
         extra_where: Optional[str] = None,
     ) -> Iterable[List[Dict[str, Any]]]:
@@ -520,7 +521,7 @@ class SupersetDatasetClient(SupersetClient):
         self.force_refresh = cfg.get("force_refresh", False)  # bypass cache (pelajaran v5.5)
         # Cap server (SQL_MAX_ROW) — SATU request tak bisa melewatinya; TOTAL tak terbatas
         # lewat paginasi (POST) & segmentasi (legacy agregasi).
-        self.server_row_cap = int(cfg.get("server_row_cap", 120000))
+        self.server_row_cap = int(cfg.get("server_row_cap", 5000000))
 
     @staticmethod
     def _metric_expr(m: Dict[str, Any]) -> Dict[str, Any]:
@@ -1225,7 +1226,7 @@ class Job:
     base_sql: str                   # SELECT ... (no ORDER BY / LIMIT; engine adds them)
     key_col: str                    # monotonically increasing key for keyset paging
     key_type: str = "int"
-    chunk_size: int = 20000
+    chunk_size: int = 50000
     watermark_column: Optional[str] = None      # incremental/upsert
     primary_key: List[str] = field(default_factory=list)  # upsert
     history_table: Optional[str] = None          # upsert
@@ -1241,6 +1242,13 @@ class SyncEngine:
         self.jobs = [self._parse_job(j) for j in config["jobs"]]
         self._client: Optional[Any] = None
         self.results: List[Dict[str, Any]] = []
+        perf = config.get("performance", {}) or {}
+        self.lookback_minutes = int(perf.get("lookback_minutes", 10))
+        self.max_batch_size = int(perf.get("max_batch_size", 500_000))
+        self.concurrency = max(1, int(perf.get("concurrency", 4)))
+        self.adaptive_batch = bool(perf.get("adaptive_batch", True))
+        self.max_retries = int(perf.get("max_retries", 5))
+        self.progress: Dict[str, Any] = {}
 
     @staticmethod
     def _parse_job(j: Dict[str, Any]) -> Job:
@@ -1251,7 +1259,7 @@ class SyncEngine:
             base_sql=j["base_sql"],
             key_col=j["key_col"],
             key_type=j.get("key_type", "int"),
-            chunk_size=j.get("chunk_size", 20000),
+            chunk_size=j.get("chunk_size", 50000),
             watermark_column=j.get("watermark_column"),
             primary_key=j.get("primary_key", []),
             history_table=j.get("history_table"),
@@ -1367,9 +1375,24 @@ class SyncEngine:
         start_after = None
 
         if job.mode in ("incremental", "upsert") and job.watermark_column and state["watermark"]:
-            q = SupersetClient._quote(state["watermark"], "timestamp")
-            extra_where = f"_t.{job.watermark_column} > {q}"
-            log.info("[%s] incremental from watermark %s", job.name, state["watermark"])
+            wm = state["watermark"]
+            # Apply lookback window to catch late-arriving updates
+            if self.lookback_minutes > 0:
+                try:
+                    wm_dt = datetime.fromisoformat(wm.replace("Z", "+00:00"))
+                    adjusted = (wm_dt - timedelta(minutes=self.lookback_minutes)).isoformat()
+                    q = SupersetClient._quote(adjusted, "timestamp")
+                    extra_where = f"_t.{job.watermark_column} > {q}"
+                    log.info("[%s] incremental from watermark %s (lookback %d min -> %s)",
+                             job.name, wm, self.lookback_minutes, adjusted)
+                except (ValueError, TypeError):
+                    q = SupersetClient._quote(wm, "timestamp")
+                    extra_where = f"_t.{job.watermark_column} > {q}"
+                    log.info("[%s] incremental from watermark %s", job.name, wm)
+            else:
+                q = SupersetClient._quote(wm, "timestamp")
+                extra_where = f"_t.{job.watermark_column} > {q}"
+                log.info("[%s] incremental from watermark %s", job.name, wm)
         if job.mode == "snapshot":
             log.info("[%s] full snapshot pull", job.name)
 
@@ -1386,8 +1409,10 @@ class SyncEngine:
             )
 
         pulled = written = 0
+        batch_idx = 0
         max_watermark = state["watermark"]
         max_key = state["key_max"]
+        run_started = time.time()
         transaction_open = False
         try:
             # A failed page must not leave a partial snapshot/upsert behind.
@@ -1400,6 +1425,7 @@ class SyncEngine:
                     raise RuntimeError("pandas is required for real sync (pip install pandas)")
                 df = pd.DataFrame(rows)
                 pulled += len(df)
+                batch_idx += 1
                 if job.mode == "snapshot":
                     written += sink.append_snapshot(job.target_table, df, started)
                 elif job.mode == "incremental":
@@ -1415,6 +1441,21 @@ class SyncEngine:
                     max_watermark = wm if not max_watermark else max(max_watermark, wm)
                 if job.key_col in df.columns:
                     max_key = str(df[job.key_col].max())
+
+                # Update progress for real-time monitoring
+                elapsed = time.time() - run_started
+                throughput = round(pulled / elapsed, 1) if elapsed > 0 else 0
+                self.progress = {
+                    "job": job.name,
+                    "current_batch": batch_idx,
+                    "rows_pulled": pulled,
+                    "rows_written": written,
+                    "cursor": max_key or max_watermark,
+                    "throughput_rows_per_sec": throughput,
+                }
+                log.info("[%s] batch %d: %d rows (total %d, %.0f rows/s, cursor %s)",
+                         job.name, batch_idx, len(df), pulled, throughput,
+                         max_key or max_watermark)
 
             # snapshot mode advances no watermark (it re-reads current state each run)
             if job.mode != "snapshot":
@@ -1683,7 +1724,11 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
         "path": "db/.superset-sync-heartbeat.json",
         "ready": False,
         "error": None,
+        "status_path": "db/.superset-sync-status.json",
+        "common": {},
+        "active": False,
     }
+    active_engine_ref: List[Optional[SyncEngine]] = [None]
     heartbeat_wakeup = threading.Event()
 
     def heartbeat_loop() -> None:
@@ -1696,6 +1741,26 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
                     "ready": bool(heartbeat_state["ready"]),
                     "error": heartbeat_state.get("error"),
                 })
+                # Also update status file with real-time progress if sync is running
+                if (heartbeat_state.get("active")
+                        and active_engine_ref[0]
+                        and active_engine_ref[0].progress):
+                    prog = active_engine_ref[0].progress
+                    try:
+                        _write_json_atomic(str(heartbeat_state["status_path"]), {
+                            **heartbeat_state.get("common", {}),
+                            "state": "running",
+                            "finished_at": None,
+                            "next_run_at": None,
+                            "current_batch": prog.get("current_batch"),
+                            "cursor": prog.get("cursor"),
+                            "throughput_rows_per_sec": prog.get("throughput_rows_per_sec"),
+                            "rows_pulled": prog.get("rows_pulled", 0),
+                            "rows_written": prog.get("rows_written", 0),
+                            "updated_at": now_utc().isoformat(),
+                        })
+                    except Exception:  # noqa: BLE001
+                        pass  # Don't let progress writing crash the heartbeat
             except Exception as heartbeat_error:  # noqa: BLE001
                 log.warning("heartbeat worker gagal: %s", heartbeat_error)
             heartbeat_wakeup.wait(5)
@@ -1743,7 +1808,7 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
             heartbeat_state["ready"] = True
             heartbeat_state["error"] = None
             heartbeat_wakeup.set()
-            interval = max(30, int(schedule.get("interval_seconds", 300)))
+            interval = max(15, int(schedule.get("interval_seconds", 300)))
             enabled = bool(schedule.get("enabled", True))
             request = _read_json(request_file)
             request_id = str(request.get("request_id")) if request and request.get("request_id") else None
@@ -1773,6 +1838,11 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
                 "request_id": request_id,
                 "requested_by": request.get("requested_by") if request else None,
             }
+            heartbeat_state["status_path"] = status_file
+            heartbeat_state["common"] = common
+            heartbeat_state["active"] = True
+            active_engine_ref[0] = active_engine
+            heartbeat_wakeup.set()
             _write_json_atomic(status_file, {
                 **common,
                 "state": "running",
@@ -1816,6 +1886,8 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
                 })
                 log.error("managed pass failed: %s", exc)
             finally:
+                heartbeat_state["active"] = False
+                active_engine_ref[0] = None
                 if manual and request_id:
                     last_request_id = request_id
                     latest = _read_json(request_file)

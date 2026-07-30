@@ -59,6 +59,33 @@ CREATE TABLE IF NOT EXISTS _sync_state (
   job VARCHAR PRIMARY KEY, watermark VARCHAR, key_max VARCHAR, updated_at TIMESTAMP
 );
 
+-- Indexes for sync performance and dashboard queries on large datasets (up to 10M rows)
+CREATE INDEX IF NOT EXISTS idx_stock_synced_at ON stock_history (_synced_at);
+CREATE INDEX IF NOT EXISTS idx_stock_location ON stock_history (location_id);
+CREATE INDEX IF NOT EXISTS idx_stock_sloc ON stock_history (sloc_code);
+CREATE INDEX IF NOT EXISTS idx_stock_product ON stock_history (product_id);
+CREATE INDEX IF NOT EXISTS idx_stock_synced_loc ON stock_history (_synced_at, location_id);
+CREATE INDEX IF NOT EXISTS idx_stock_status ON stock_history (status);
+CREATE INDEX IF NOT EXISTS idx_stock_category ON stock_history (l1_category);
+CREATE INDEX IF NOT EXISTS idx_stock_handling ON stock_history (storage_handling);
+CREATE INDEX IF NOT EXISTS idx_stock_synced_status ON stock_history (_synced_at, status);
+CREATE INDEX IF NOT EXISTS idx_stock_loc_sloc ON stock_history (location_id, sloc_code);
+CREATE INDEX IF NOT EXISTS idx_sloc_id ON master_sloc (sloc_id);
+CREATE INDEX IF NOT EXISTS idx_sloc_location ON master_sloc (location_id);
+CREATE INDEX IF NOT EXISTS idx_sloc_code ON master_sloc (sloc_code);
+CREATE INDEX IF NOT EXISTS idx_sloc_active ON master_sloc (active);
+CREATE INDEX IF NOT EXISTS idx_sloc_area ON master_sloc (area);
+CREATE INDEX IF NOT EXISTS idx_sloc_zone ON master_sloc (rack_zone);
+CREATE INDEX IF NOT EXISTS idx_sloc_storage ON master_sloc (storage_handling);
+CREATE INDEX IF NOT EXISTS idx_audit_job_started ON _sync_audit (job, started_at);
+CREATE INDEX IF NOT EXISTS idx_audit_status ON _sync_audit (status);
+CREATE INDEX IF NOT EXISTS idx_audit_finished ON _sync_audit (finished_at);
+CREATE INDEX IF NOT EXISTS idx_movement_datetime ON movement_history (movement_datetime);
+CREATE INDEX IF NOT EXISTS idx_movement_location ON movement_history (movement_datetime, movement_type);
+CREATE INDEX IF NOT EXISTS idx_movement_product ON movement_history (product_id);
+CREATE INDEX IF NOT EXISTS idx_count_date ON cycle_count (count_date);
+CREATE INDEX IF NOT EXISTS idx_count_sloc ON cycle_count (sloc_code);
+
 -- Turunan
 -- Dataset master di produksi ber-grain rack×product (planogram) — dedupe ke 1 baris per rak.
 -- Prioritas baris: active=true dulu, lalu sloc_id terkecil (deterministik).

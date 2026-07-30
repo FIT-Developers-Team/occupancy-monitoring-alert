@@ -44,7 +44,7 @@ const DatasetSchema = z.object({
   derive_from_sloc_code: z.boolean().optional(),
   dims_to_cbm_divisor: z.number().positive().optional(),
   segment_by: z.array(z.string().trim().min(1)).optional(),
-  server_row_cap: z.number().int().min(1_000).max(1_000_000).optional(),
+  server_row_cap: z.number().int().min(1_000).max(10_000_000).optional(),
 }).passthrough();
 
 const JobSchema = z.object({
@@ -57,7 +57,7 @@ const JobSchema = z.object({
   base_sql: z.string(),
   key_col: z.string().trim().min(1),
   key_type: z.enum(["int", "float", "number", "string", "timestamp"]).default("string"),
-  chunk_size: z.number().int().min(500).max(120_000).default(20_000),
+  chunk_size: z.number().int().min(500).max(2_000_000).default(50_000),
   watermark_column: z.string().trim().nullable().optional(),
   primary_key: z.array(z.string().trim().min(1)).default([]),
   history_table: z.string().trim().nullable().optional(),
@@ -87,8 +87,8 @@ export const SupersetSyncConfigSchema = z.object({
   secret_file: z.string().trim().min(1).default(".superset-sync.secrets.json"),
   superset: z.object({
     base_url: z.string().url().refine((value) => /^https?:\/\//i.test(value), "Gunakan URL HTTP atau HTTPS."),
-    timeout_sec: z.number().int().min(5).max(300).default(60),
-    server_row_cap: z.number().int().min(1_000).max(1_000_000).default(120_000),
+    timeout_sec: z.number().int().min(5).max(1200).default(120),
+    server_row_cap: z.number().int().min(1_000).max(10_000_000).default(5_000_000),
     force_refresh: z.boolean().default(false),
     auth: z.object({
       mode: z.enum(["auto", "login", "cookie", "bearer"]).default("auto"),
@@ -99,9 +99,16 @@ export const SupersetSyncConfigSchema = z.object({
   }),
   schedule: z.object({
     enabled: z.boolean().default(true),
-    interval_seconds: z.number().int().min(30).max(86_400).default(300),
+    interval_seconds: z.number().int().min(15).max(86_400).default(300),
     retry_count: z.number().int().min(1).max(8).default(3),
   }),
+  performance: z.object({
+    lookback_minutes: z.number().int().min(0).max(1440).default(10),
+    max_batch_size: z.number().int().min(1_000).max(2_000_000).default(500_000),
+    concurrency: z.number().int().min(1).max(16).default(4),
+    adaptive_batch: z.boolean().default(true),
+    max_retries: z.number().int().min(1).max(10).default(5),
+  }).default({}),
   scope: z.object({
     location_ids: z.array(z.number().int().positive()).min(1),
   }),
@@ -181,6 +188,10 @@ export interface SupersetSyncStatus {
   requested_by?: string | null;
   rows_pulled?: number;
   rows_written?: number;
+  current_batch?: number;
+  total_batches?: number | null;
+  cursor?: string | null;
+  throughput_rows_per_sec?: number | null;
   jobs?: Array<{
     name: string;
     status: "OK" | "ERROR" | "SKIPPED";
@@ -188,8 +199,12 @@ export interface SupersetSyncStatus {
     rows_written: number;
     duration_ms: number;
     message?: string;
+    current_batch?: number;
+    cursor?: string | null;
+    throughput_rows_per_sec?: number | null;
   }>;
   error?: string | null;
+  error_category?: string | null;
   updated_at?: string | null;
   worker: {
     online: boolean;
