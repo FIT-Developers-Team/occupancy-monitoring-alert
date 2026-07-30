@@ -1,0 +1,880 @@
+{
+  "basis_default": "qty",
+  "utilization_pct": 85,
+  "count_statuses": [
+    "Available"
+  ],
+  "exclude_categories": [],
+  "rules": [
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "PLB",
+        "rack_zone": "PLB1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 100,
+        "max_cbm": 0.36
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "PLA"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 100,
+        "max_cbm": 0.36
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "MZA",
+        "rack_zone": "MZA1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 20,
+        "max_cbm": 0.0234
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "HRA"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 62,
+        "max_cbm": 0.0099
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "HRB"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 100,
+        "max_cbm": 0.0099
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "MZA",
+        "rack_zone": "MZA2"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 20,
+        "max_cbm": 0.03192
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "SRA",
+        "rack_zone": "SRA1",
+        "level": "1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 100,
+        "max_cbm": 0.36
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "SRA",
+        "rack_zone": "SRA1",
+        "level": "2"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 400,
+        "max_cbm": 1.44
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "SRA",
+        "rack_zone": "SRA1",
+        "level": "3"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 400,
+        "max_cbm": 1.44
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "SRA",
+        "rack_zone": "SRA1",
+        "level": "4"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 400,
+        "max_cbm": 1.44
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "SRA",
+        "rack_zone": "SRA1",
+        "level": "5"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 400,
+        "max_cbm": 1.44
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "STL",
+        "zone": "SRA",
+        "rack_zone": "SRA1",
+        "level": "6"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 400,
+        "max_cbm": 1.44
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "SRA"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 120,
+        "max_cbm": 1.2
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "SRB"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 120,
+        "max_cbm": 1.2
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "SRC"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 120,
+        "max_cbm": 1.2
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "PLA"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_cbm": 1.2
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "HRA",
+        "level": "1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 28,
+        "max_cbm": 0.0273
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "HRA",
+        "level": "2"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 72,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "HRA",
+        "level": "3"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 72,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "HRA",
+        "level": "4"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 72,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "HRA",
+        "level": "5"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 72,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "HRB",
+        "level": "1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 28,
+        "max_cbm": 0.0273
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "HRB",
+        "level": "2"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 72,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "HRB",
+        "level": "3"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 72,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "HRB",
+        "level": "4"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 72,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "HRB",
+        "level": "5"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 72,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZA",
+        "level": "1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 12,
+        "max_cbm": 0.0273
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZA",
+        "level": "2"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZA",
+        "level": "3"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZA",
+        "level": "4"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZA",
+        "level": "5"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZB",
+        "level": "1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 12,
+        "max_cbm": 0.0273
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZB",
+        "level": "2"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZB",
+        "level": "3"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZB",
+        "level": "4"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZB",
+        "level": "5"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZC",
+        "level": "1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 12,
+        "max_cbm": 0.0273
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZC",
+        "level": "2"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZC",
+        "level": "3"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZC",
+        "level": "4"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZC",
+        "level": "5"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZD",
+        "level": "1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 12,
+        "max_cbm": 0.0273
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZD",
+        "level": "2"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZD",
+        "level": "3"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZD",
+        "level": "4"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZD",
+        "level": "5"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZE",
+        "level": "1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 12,
+        "max_cbm": 0.0273
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZE",
+        "level": "2"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZE",
+        "level": "3"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZE",
+        "level": "4"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZE",
+        "level": "5"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZF",
+        "level": "1"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 12,
+        "max_cbm": 0.0273
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZF",
+        "level": "2"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZF",
+        "level": "3"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZF",
+        "level": "4"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZF",
+        "level": "5"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "MZG"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 24,
+        "max_cbm": 0.0546
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "PLA"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 4000
+      },
+      "note": ""
+    },
+    {
+      "scope": {
+        "wh": "CBT",
+        "zone": "QRT"
+      },
+      "set": {
+        "basis": "cbm",
+        "max_qty": 5000
+      },
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    },
+    {
+      "scope": {},
+      "set": {},
+      "note": ""
+    }
+  ]
+}

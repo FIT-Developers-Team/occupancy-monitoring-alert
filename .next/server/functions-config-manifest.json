@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "functions": {
+    "/_middleware": {
+      "runtime": "nodejs",
+      "matchers": [
+        {
+          "regexp": "^(?:\\/(_next\\/data\\/[^/]{1,}))?(?:\\/((?!_next\\/static|_next\\/image|favicon.ico).*))(\\.json)?[\\/#\\?]?$",
+          "originalSource": "/((?!_next/static|_next/image|favicon.ico).*)"
+        }
+      ]
+    },
+    "/api/ready": {},
+    "/api/superset-sync/config": {},
+    "/api/superset-sync/run": {},
+    "/api/superset-sync/status": {},
+    "/api/superset-sync/test": {},
+    "/api/superset/[...path]": {}
+  }
+}

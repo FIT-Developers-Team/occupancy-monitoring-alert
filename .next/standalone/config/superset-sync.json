@@ -1,0 +1,272 @@
+{
+  "version": 1,
+  "duckdb_path": "db/warehouse_history.duckdb",
+  "source": {
+    "type": "superset_dataset"
+  },
+  "secret_file": ".superset-sync.secrets.json",
+  "superset": {
+    "base_url": "https://dash.astronauts.id",
+    "timeout_sec": 180,
+    "server_row_cap": 1000000,
+    "force_refresh": false,
+    "auth": {
+      "mode": "cookie",
+      "provider": "db",
+      "username": "",
+      "csrf": true
+    }
+  },
+  "schedule": {
+    "enabled": true,
+    "interval_seconds": 1800,
+    "retry_count": 3
+  },
+  "scope": {
+    "location_ids": [
+      160,
+      661,
+      772,
+      796,
+      819,
+      860,
+      912,
+      983
+    ]
+  },
+  "control": {
+    "status_file": "db/.superset-sync-status.json",
+    "request_file": "db/.superset-sync-request.json",
+    "heartbeat_file": "db/.superset-sync-heartbeat.json",
+    "daemon_lock_file": "db/.superset-sync-daemon.lock"
+  },
+  "jobs": [
+    {
+      "name": "sloc_master",
+      "label": "Master lokasi (SLOC)",
+      "enabled": true,
+      "required": true,
+      "mode": "upsert",
+      "target_table": "master_sloc",
+      "base_sql": "SELECT location_id, location_name, location_latitude AS latitude, location_longitude AS longitude, id AS sloc_id, rack_name AS sloc_code, area, zone AS rack_zone, aisle, bay, level, bin, active, max_quantity, max_volume, rack_storage_name AS storage_handling FROM <DATASET_MASTER_LOKASI>",
+      "key_col": "sloc_id",
+      "key_type": "int",
+      "chunk_size": 20000,
+      "watermark_column": null,
+      "primary_key": [
+        "sloc_id"
+      ],
+      "history_table": null,
+      "retention_days": null,
+      "dataset": {
+        "id": 344,
+        "chart_id": 19731,
+        "page": "keyset",
+        "key": "id",
+        "columns": {
+          "location_id": "location_id",
+          "location_name": "location_name",
+          "location_latitude": "latitude",
+          "location_longitude": "longitude",
+          "id": "sloc_id",
+          "rack_name": "sloc_code",
+          "area": "area",
+          "zone": "rack_zone",
+          "aisle": "aisle",
+          "bay": "bay",
+          "level": "level",
+          "bin": "bin",
+          "active": "active",
+          "max_quantity": "max_quantity",
+          "max_volume": "max_volume",
+          "rack_storage_name": "storage_handling"
+        },
+        "filters": [
+          {
+            "col": "location_id",
+            "op": "IN",
+            "val": [
+              160,
+              661,
+              772,
+              796,
+              819,
+              860,
+              912,
+              983
+            ]
+          }
+        ],
+        "inherit_chart_filters": true,
+        "derive_from_sloc_code": true
+      }
+    },
+    {
+      "name": "stock_snapshot",
+      "label": "Snapshot stok",
+      "enabled": true,
+      "required": true,
+      "mode": "snapshot",
+      "target_table": "stock_history",
+      "base_sql": "SELECT location_id, fpd.product_id AS product_id, product_name, sku_number, l1_category_name AS l1_category, rack_storage_name AS storage_handling, length, width, height, rack_name AS sloc_code, product_detail_status_name AS status, SUM(stock) AS stock_qty, sku_cbm, occupied_cbm, coalesce(rack_name,'~LOST') || '|' || CAST(fpd.product_id AS VARCHAR) AS _k FROM <DATASET_STOK> GROUP BY <SEMUA_KOLOM_NON_AGREGAT>",
+      "key_col": "_k",
+      "key_type": "string",
+      "chunk_size": 20000,
+      "watermark_column": null,
+      "primary_key": [],
+      "history_table": null,
+      "retention_days": 90,
+      "dataset": {
+        "id": 273,
+        "chart_id": 14856,
+        "page": "offset",
+        "orderby": [
+          "rack_name",
+          "product_id"
+        ],
+        "columns": {
+          "location_id": "location_id",
+          "product_id": "product_id",
+          "product_name": "product_name",
+          "sku_number": "sku_number",
+          "l1_category_name": "l1_category",
+          "rack_storage_name": "storage_handling",
+          "length": "length",
+          "width": "width",
+          "height": "height",
+          "rack_name": "sloc_code",
+          "product_detail_status_name": "status",
+          "sku_cbm": "sku_cbm",
+          "occupied_cbm": "occupied_cbm"
+        },
+        "metrics": [
+          {
+            "agg": "SUM",
+            "column": "stock",
+            "label": "stock_qty"
+          }
+        ],
+        "filters": [
+          {
+            "col": "location_id",
+            "op": "IN",
+            "val": [
+              160,
+              661,
+              772,
+              796,
+              819,
+              860,
+              912,
+              983
+            ]
+          }
+        ],
+        "inherit_chart_filters": true,
+        "dims_to_cbm_divisor": 1000000,
+        "segment_by": [
+          "location_id",
+          "product_detail_status_name"
+        ]
+      }
+    },
+    {
+      "name": "movement_incremental",
+      "label": "Pergerakan stok",
+      "enabled": false,
+      "required": false,
+      "mode": "incremental",
+      "target_table": "movement_history",
+      "base_sql": "SELECT movement_id, movement_type, movement_datetime, operator, source_sloc, destination_sloc, product_id, product_name, qty FROM <DATASET_MOVEMENT>",
+      "key_col": "movement_id",
+      "key_type": "string",
+      "chunk_size": 20000,
+      "watermark_column": "movement_datetime",
+      "primary_key": [],
+      "history_table": null,
+      "retention_days": 120,
+      "dataset": {
+        "id": "",
+        "chart_id": null,
+        "page": "keyset",
+        "key": "movement_id",
+        "columns": {
+          "location_id": "location_id",
+          "movement_id": "movement_id",
+          "movement_type": "movement_type",
+          "movement_datetime": "movement_datetime",
+          "operator": "operator",
+          "source_sloc": "source_sloc",
+          "destination_sloc": "destination_sloc",
+          "product_id": "product_id",
+          "product_name": "product_name",
+          "qty": "qty"
+        },
+        "filters": [
+          {
+            "col": "location_id",
+            "op": "IN",
+            "val": [
+              160,
+              661,
+              772,
+              796,
+              819,
+              860,
+              912,
+              983
+            ]
+          }
+        ],
+        "inherit_chart_filters": true
+      }
+    },
+    {
+      "name": "cycle_count_incremental",
+      "label": "Cycle count",
+      "enabled": false,
+      "required": false,
+      "mode": "incremental",
+      "target_table": "cycle_count",
+      "base_sql": "SELECT count_id, count_date, sloc_code, system_qty, physical_qty FROM <DATASET_CYCLE_COUNT>",
+      "key_col": "count_id",
+      "key_type": "string",
+      "chunk_size": 20000,
+      "watermark_column": "count_date",
+      "primary_key": [],
+      "history_table": null,
+      "retention_days": null,
+      "dataset": {
+        "id": "",
+        "chart_id": null,
+        "page": "keyset",
+        "key": "count_id",
+        "columns": {
+          "location_id": "location_id",
+          "count_id": "count_id",
+          "count_date": "count_date",
+          "sloc_code": "sloc_code",
+          "system_qty": "system_qty",
+          "physical_qty": "physical_qty"
+        },
+        "filters": [
+          {
+            "col": "location_id",
+            "op": "IN",
+            "val": [
+              160,
+              661,
+              772,
+              796,
+              819,
+              860,
+              912,
+              983
+            ]
+          }
+        ],
+        "inherit_chart_filters": true
+      }
+    }
+  ]
+}

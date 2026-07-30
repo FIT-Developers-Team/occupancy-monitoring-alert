@@ -1,0 +1,186 @@
+{
+  "_baca_dulu": "Error 'memegang lock'? Lock kini SELF-HEALING: lock dari proses mati diambil alih otomatis; bila pemegang masih hidup, tunggu atau jalankan --unlock (aman: menolak bila proses masih hidup). Doctor kini mem-probe dgn kolom TERPANGKAS (mirror sync) dan MEMPERINGATKAN bila baris GET chart mencapai Row Limit chart (kemungkinan terpotong -> naikkan Row Limit lalu Save). Ingin data SESUAI FILTER chart (bukan seluruh dataset)? Isi dataset.chart_id - filter tersimpan chart otomatis diwarisi di semua jalur (cek --doctor utk melihat filter yang terbaca). Kolom tidak cocok ('Columns missing in dataset')? Sync kini INTROSPEKSI skema asli & memangkas otomatis; utk melihat/merapikan mapping jalankan: python3 scripts/superset_to_duckdb.py --config scripts/sync.config.production.json --columns. Error {'msg':'Missing Authorization Header'}? API menuntut Bearer - auth.mode='login' (username+password) SUDAH jadi default template; alternatif tanpa password: auth.cookie_header (lihat _catatan di superset.auth). TANPA SQL Lab & TANPA ClickHouse? Pakai source.type='superset_dataset' (default) - Chart Data API, cukup cookie session viewer yang bisa membuka dashboard (pola sama dengan Auto Sync v5.5). Isi 'dataset.id' tiap job: buka chart dataset di Superset -> lihat URL /explore/?datasource_id=ANGKA, atau menu Datasets -> hover nama -> id di URL. Nama kolom RAW di 'dataset.columns' = kolom fisik dataset; sesuaikan bila nama di instance berbeda. Mode 'superset' (SQL Lab) & 'clickhouse' tetap tersedia bila kelak dapat akses. Jalankan: python3 scripts/superset_to_duckdb.py --config scripts/sync.config.production.json --loop 60 | Error? Jalankan: python3 scripts/superset_to_duckdb.py --config scripts/sync.config.production.json --doctor (tes /health, cookie via /api/v1/me/, CSRF, probe dataset). 401 = cookie kedaluwarsa -> ambil ulang dari DevTools. 502/524 = gateway Cloudflare -> klien sudah ber-UA browser + auto-retry.",
+  "source": {
+    "type": "superset_dataset",
+    "clickhouse": {
+      "url": "http://clickhouse.astro.internal:8123",
+      "user": "wiom_ro",
+      "password": "ISI_PASSWORD_READONLY",
+      "database": "default",
+      "timeout_sec": 120
+    }
+  },
+  "superset": {
+    "base_url": "https://dash.astronauts.id",
+    "timeout_sec": 90,
+    "auth": {
+      "mode": "auto",
+      "username": "ISI_BILA_PUNYA_LOGIN_DB (kosongkan bila SSO Google)",
+      "password": "",
+      "provider": "db",
+      "csrf": true,
+      "cookie_header": "_tt_enable_cookie=1; _ttp=01K71JNG3GJF8Q365CRB3NW3X2_.tt.1; _ga=GA1.1.1095193666.1759915982; ttcsid=1759915982965::mWY20oIN6v0cNxudTNWD.1.1759916183037.0; ttcsid_CCJIB3JC77UDI0MACQOG=1759915982964::vqY6JItJoDLzwyutq7xl.1.1759916183037.0; _ga_V823TETRCX=GS2.1.s1759915982$o1$g1$t1759916994$j59$l0$h0; _ga_34BJD6EGHS=GS2.1.s1759915982$o1$g1$t1759916994$j59$l0$h0; session=.eJw1UVlvm0AY_CsVz0m17MWSNyDGcWx8kmC7qtCeBF9gA76i_Pds1fZ1RjPffDOfTm5OuvlwngzfNfrByUvlPDkKCwOoFgT6wGiABBNUIUmEMFJ4zAWUKcGUJzAUSrvGZYQjAbTvIcIwBUBxF2GEXGOgwBJQbgD2gCbcB1RgV3nWCyJKDeXKM9JVjGhLuz5D1sp3bJCu0ae_aVwKLCCbk8nbaqsPFoI-YwB6DNpkykMCCQ2EJkAJSTC1V5QykrvS6naV5DttNVb44FS8a-23n86P1nn65dw49H9yEMz7hw6sp3F-itwjulVsBdxgC96PlzyyX1M5exUjsPWkicWFHyvQ48Ny6aX0HmajSPD39dsyRsv1JhqHGQquc9qVKcVsSuok931qhrobZWOasBOF6257Fb7x3dh7DBvauXW87NLDpBkPuVqs4Q5vZ9OtFBySTa_fptHzJL2TpMPh5ZDEeX9VZ0WTl0vQXNerZ00O6a1IDm84H6ZY78fF7rzb55qGZdaNg7fZ5FqH93b3GgfP0Sqiy6OsD-WkKFd7tZoMpv2wg4O62Lz3q0cvOG7GAz649lrCekRBnN7m4MKjYjUMdLUI5rNFPHvpL2FSdprVwQa-LorJ5aMuzsWA0FEBoI9tzc7vr39d5_WpOpdKn-wCRVUVdor_TNPy9s8wJKX7e1YuJB91iZeF2YxOgwt6mUl4viTO1zdu19RH.aldbVg.raxEHUYtRbAqbdl7JfbFFmbBuJw",
+      "cookies": {
+        "session": ".eJw1UVlvm0AY_CsVz0m17MWSNyDGcWx8kmC7qtCeBF9gA76i_Pds1fZ1RjPffDOfTm5OuvlwngzfNfrByUvlPDkKCwOoFgT6wGiABBNUIUmEMFJ4zAWUKcGUJzAUSrvGZYQjAbTvIcIwBUBxF2GEXGOgwBJQbgD2gCbcB1RgV3nWCyJKDeXKM9JVjGhLuz5D1sp3bJCu0ae_aVwKLCCbk8nbaqsPFoI-YwB6DNpkykMCCQ2EJkAJSTC1V5QykrvS6naV5DttNVb44FS8a-23n86P1nn65dw49H9yEMz7hw6sp3F-itwjulVsBdxgC96PlzyyX1M5exUjsPWkicWFHyvQ48Ny6aX0HmajSPD39dsyRsv1JhqHGQquc9qVKcVsSuok931qhrobZWOasBOF6257Fb7x3dh7DBvauXW87NLDpBkPuVqs4Q5vZ9OtFBySTa_fptHzJL2TpMPh5ZDEeX9VZ0WTl0vQXNerZ00O6a1IDm84H6ZY78fF7rzb55qGZdaNg7fZ5FqH93b3GgfP0Sqiy6OsD-WkKFd7tZoMpv2wg4O62Lz3q0cvOG7GAz649lrCekRBnN7m4MKjYjUMdLUI5rNFPHvpL2FSdprVwQa-LorJ5aMuzsWA0FEBoI9tzc7vr39d5_WpOpdKn-wCRVUVdor_TNPy9s8wJKX7e1YuJB91iZeF2YxOgwt6mUl4viTO1zdu19RH.aldbVg.raxEHUYtRbAqbdl7JfbFFmbBuJw"
+      },
+      "headers": {},
+      "_catatan": "mode 'auto': pakai cookie bila ada; login hanya bila username+password terisi; login gagal TIDAK menghentikan run selama cookie tersedia (provider db gagal -> auto-coba ldap). Login web via Google/SSO? kosongkan password, cukup cookie_header. Jalur data otomatis bertingkat: API v1 Bearer/sesi -> GET chart_id -> LEGACY explore_json (session). KEAMANAN: jangan commit/bagikan file ini - berisi kredensial; kalau terlanjur, ganti password & logout utk mencabut cookie."
+    },
+    "force_refresh": true,
+    "_catatan": "database_id/schema hanya utk mode SQL Lab. force_refresh=true = bypass cache. auth.headers utk header tambahan bila instance pakai SSO (mis. {'Authorization':'Bearer ...'}). timeout 90 dtk: gateway Cloudflare memutus ~100 dtk.",
+    "server_row_cap": 8000000,
+    "_catatan_cap": "server_row_cap = SQL_MAX_ROW instance (terkonfirmasi 120000). SATU request tak bisa melewatinya, tapi TOTAL TAK TERBATAS: POST paging keyset/offset per <=cap; legacy agregasi dipecah per segmen. chunk_size job boleh dinaikkan sampai cap utk mengurangi jumlah halaman."
+  },
+  "duckdb_path": "db/warehouse_history.duckdb",
+  "jobs": [
+    {
+      "name": "sloc_master",
+      "mode": "upsert",
+      "target_table": "master_sloc",
+      "primary_key": [
+        "sloc_id"
+      ],
+      "key_col": "sloc_id",
+      "key_type": "int",
+      "chunk_size": 20000,
+      "base_sql": "SELECT location_id, location_name, location_latitude AS latitude, location_longitude AS longitude, id AS sloc_id, rack_name AS sloc_code, area, zone AS rack_zone, aisle, bay, level, bin, active, max_quantity, max_volume, rack_storage_name AS storage_handling FROM <DATASET_MASTER_LOKASI>",
+      "dataset": {
+        "id": "344",
+        "page": "keyset",
+        "key": "id",
+        "columns": {
+          "location_id": "location_id",
+          "location_name": "location_name",
+          "location_latitude": "latitude",
+          "location_longitude": "longitude",
+          "id": "sloc_id",
+          "rack_name": "sloc_code",
+          "area": "area",
+          "zone": "rack_zone",
+          "aisle": "aisle",
+          "bay": "bay",
+          "level": "level",
+          "bin": "bin",
+          "active": "active",
+          "max_quantity": "max_quantity",
+          "max_volume": "max_volume",
+          "rack_storage_name": "storage_handling"
+        },
+        "filters": [],
+        "chart_id": "19731",
+        "_catatan_fallback": "chart_id kini DUA fungsi: (1) filter TERSIMPAN chart otomatis DIWARISI (inherit_chart_filters=true) sehingga data yang ditarik sama dgn irisan chart - kolom/metrik tetap milik WIOM; (2) fallback GET penuh bila POST ditolak. Catatan: filter dari FILTER BAR dashboard (native filter) TIDAK tersimpan di chart - pindahkan filter penting ke chart (panel Data) lalu Save, atau tulis manual di dataset.filters. chart_id = fallback GET (tanpa CSRF) bila POST chart/data ditolak 401/403: buat chart Table mode Raw Records berisi SEMUA kolom raw di atas, Row Limit >= total baris (mis. 200000), simpan, isi id chart dari URL /explore/?slice_id=ANGKA.",
+        "derive_from_sloc_code": true,
+        "_catatan_derivasi": "Kolom yang tidak dimiliki dataset otomatis dilewati (introspeksi skema) dan rack_zone/aisle/bay/level/bin DITURUNKAN dari sloc_code (PGS-ABB1-01-02-L1-01); area boleh NULL.",
+        "inherit_chart_filters": true,
+        "_catatan_grain": "Skema asli 344 memuat product_id (grain rack×product / planogram, itulah sebabnya chart ±120rb baris). Aman: vw_sloc di DuckDB otomatis dedupe ke 1 baris per rak (prioritas active=true). Kolom area/zone/aisle/bay/bin memang tidak ada -> diturunkan dari sloc_code."
+      }
+    },
+    {
+      "name": "stock_snapshot",
+      "mode": "snapshot",
+      "target_table": "stock_history",
+      "key_col": "_k",
+      "key_type": "string",
+      "chunk_size": 20000,
+      "retention_days": 90,
+      "base_sql": "SELECT location_id, fpd.product_id AS product_id, product_name, sku_number, l1_category_name AS l1_category, rack_storage_name AS storage_handling, length, width, height, rack_name AS sloc_code, product_detail_status_name AS status, SUM(stock) AS stock_qty, sku_cbm, occupied_cbm, coalesce(rack_name,'~LOST') || '|' || CAST(fpd.product_id AS VARCHAR) AS _k FROM <DATASET_STOK> GROUP BY <SEMUA_KOLOM_NON_AGREGAT>",
+      "dataset": {
+        "id": "273",
+        "page": "offset",
+        "orderby": [
+          "rack_name",
+          "product_id"
+        ],
+        "columns": {
+          "location_id": "location_id",
+          "product_id": "product_id",
+          "product_name": "product_name",
+          "sku_number": "sku_number",
+          "l1_category_name": "l1_category",
+          "rack_storage_name": "storage_handling",
+          "length": "length",
+          "width": "width",
+          "height": "height",
+          "rack_name": "sloc_code",
+          "product_detail_status_name": "status",
+          "sku_cbm": "sku_cbm",
+          "occupied_cbm": "occupied_cbm"
+        },
+        "metrics": [
+          {
+            "agg": "SUM",
+            "column": "stock",
+            "label": "stock_qty"
+          }
+        ],
+        "filters": [],
+        "_catatan": "SUM(stock) di-groupby server-side oleh Superset atas semua kolom dimensi - identik dengan struktur dataset stok.",
+        "chart_id": "14856",
+        "_catatan_fallback": "chart_id kini DUA fungsi: (1) filter TERSIMPAN chart otomatis DIWARISI (inherit_chart_filters=true) sehingga data yang ditarik sama dgn irisan chart - kolom/metrik tetap milik WIOM; (2) fallback GET penuh bila POST ditolak. Catatan: filter dari FILTER BAR dashboard (native filter) TIDAK tersimpan di chart - pindahkan filter penting ke chart (panel Data) lalu Save, atau tulis manual di dataset.filters. Utk stok: chart Table dgn Dimensions = semua kolom dimensi di atas + Metric SUM(stock) BERLABEL persis 'stock_qty', Row Limit >= 200000. GET tanpa paginasi - pastikan limit cukup.",
+        "_catatan_derivasi": "Bila occupied_cbm tidak ada di dataset, otomatis dihitung = stock_qty x sku_cbm. Kolom lain yang tak ada dilewati (di-NULL-kan).",
+        "inherit_chart_filters": true,
+        "dims_to_cbm_divisor": 1000000,
+        "_catatan_cbm": "Dataset 273 TIDAK punya sku_cbm/occupied_cbm. Otomatis diturunkan: sku_cbm = length*width*height / dims_to_cbm_divisor (default 1.000.000 = cm3->m3; ubah bila dimensi bukan cm), occupied_cbm = stock_qty * sku_cbm.",
+        "segment_by": [
+          "location_id",
+          "product_detail_status_name"
+        ],
+        "_catatan_segmen": "Jalur legacy (agregasi tanpa offset) otomatis dipecah per nilai segment_by; nilai location_id diambil gratis dari filter IN warisan chart. Bila satu segmen masih >= cap, dipecah lagi ke kolom berikutnya."
+      }
+    },
+    {
+      "name": "movement_incremental",
+      "enabled": false,
+      "mode": "incremental",
+      "target_table": "movement_history",
+      "key_col": "movement_id",
+      "watermark_column": "movement_datetime",
+      "chunk_size": 20000,
+      "retention_days": 120,
+      "base_sql": "SELECT movement_id, movement_type, movement_datetime, operator, source_sloc, destination_sloc, product_id, product_name, qty FROM <DATASET_MOVEMENT>",
+      "dataset": {
+        "id": "ISI_DATASET_ID_MOVEMENT",
+        "page": "keyset",
+        "key": "movement_id",
+        "columns": {
+          "movement_id": "movement_id",
+          "movement_type": "movement_type",
+          "movement_datetime": "movement_datetime",
+          "operator": "operator",
+          "source_sloc": "source_sloc",
+          "destination_sloc": "destination_sloc",
+          "product_id": "product_id",
+          "product_name": "product_name",
+          "qty": "qty"
+        },
+        "filters": [],
+        "chart_id": null
+      }
+    },
+    {
+      "name": "cycle_count_incremental",
+      "enabled": false,
+      "mode": "incremental",
+      "target_table": "cycle_count",
+      "key_col": "count_id",
+      "key_type": "string",
+      "watermark_column": "count_date",
+      "chunk_size": 20000,
+      "base_sql": "SELECT count_id, count_date, sloc_code, system_qty, physical_qty FROM <DATASET_CYCLE_COUNT>",
+      "dataset": {
+        "id": "ISI_DATASET_ID_CYCLE_COUNT",
+        "page": "keyset",
+        "key": "count_id",
+        "columns": {
+          "count_id": "count_id",
+          "count_date": "count_date",
+          "sloc_code": "sloc_code",
+          "system_qty": "system_qty",
+          "physical_qty": "physical_qty"
+        },
+        "filters": [],
+        "chart_id": null
+      }
+    }
+  ]
+}
