@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import type { BasisMode, RackZoneSummary, SlocOccupancy, StockLine, ZoneSummary } from "@/types";
@@ -212,6 +213,26 @@ interface ZoneBayGroup {
   levels: Array<{ level: string; cells: SlocOccupancy[] }>;
   total: number;
   filled: number;
+  /** Bin count of the densest level — drives how wide this bay has to be. */
+  maxBins: number;
+}
+
+// Warehouses differ a lot: a level holds anywhere from 2 to ~30 bins. One fixed
+// bay width would either waste space or squeeze bins into unreadable slivers, so
+// each bay is sized from its own densest level and then clamped so the grid
+// still tiles predictably.
+const BIN_MIN_PX = 22;
+const BAY_CHROME_PX = 38;
+const BAY_MIN_PX = 268;
+const BAY_MAX_PX = 900;
+
+function bayWidthPx(maxBins: number): number {
+  return Math.min(BAY_MAX_PX, Math.max(BAY_MIN_PX, maxBins * BIN_MIN_PX + BAY_CHROME_PX));
+}
+
+/** Physical racks label tiers L1..Ln; the data stores them bare to match capacity scopes. */
+function levelLabel(level: string): string {
+  return /^\d+$/.test(level) ? `L${level}` : level;
 }
 interface ZoneAisleGroup {
   aisle: string;
@@ -253,13 +274,15 @@ function groupZoneByPosition(cells: SlocOccupancy[]): ZoneAisleGroup[] {
         .map(([level, list]) => ({ level, cells: list }));
       let total = 0;
       let filled = 0;
+      let maxBins = 0;
       for (const row of levelRows) {
         total += row.cells.length;
         filled += row.cells.filter((cell) => !isEmpty(cell)).length;
+        maxBins = Math.max(maxBins, row.cells.length);
       }
       aisleTotal += total;
       aisleFilled += filled;
-      bayGroups.push({ bay, levels: levelRows, total, filled });
+      bayGroups.push({ bay, levels: levelRows, total, filled, maxBins });
     }
     aisles.push({ aisle, bays: bayGroups, total: aisleTotal, filled: aisleFilled });
   }
@@ -305,7 +328,11 @@ const ZoneLayout = memo(function ZoneLayout({
           </header>
           <div className="zone-bay-list">
             {aisleGroup.bays.map((bayGroup) => (
-              <article key={bayGroup.bay} className="zone-bay">
+              <article
+                key={bayGroup.bay}
+                className="zone-bay"
+                style={{ "--bay-min": `${bayWidthPx(bayGroup.maxBins)}px` } as CSSProperties}
+              >
                 <header className="zone-bay-head">
                   <span>
                     <b>{t("heat.bay", "Bay")}</b>
@@ -317,7 +344,7 @@ const ZoneLayout = memo(function ZoneLayout({
                   {bayGroup.levels.map((row) => (
                     <div key={row.level} className="zone-level-row">
                       <span className="zone-level-label num" title={`${t("heat.level", "Level")} ${row.level}`}>
-                        {row.level}
+                        {levelLabel(row.level)}
                       </span>
                       <div className="zone-bin-row">
                         {row.cells.map((cell) => (

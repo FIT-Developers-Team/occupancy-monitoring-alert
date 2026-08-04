@@ -735,7 +735,20 @@ class SupersetDatasetClient(SupersetClient):
                     if len(parts) >= 6:
                         for k, v in zip(("rack_zone", "aisle", "bay", "level", "bin"),
                                         parts[1:6]):
-                            if k in o and (o[k] is None or o[k] == ""):
+                            if k not in o:
+                                continue
+                            if k == "level":
+                                # The dataset reports level=1 for most racks
+                                # regardless of the real tier, so 53% of rows
+                                # collapsed onto one level and the heatmap could
+                                # not lay out a bay. The code segment (…-L3-…)
+                                # is authoritative and therefore overrides.
+                                # Stored WITHOUT the L prefix to match how
+                                # capacity rule scopes address a level.
+                                text = str(v)
+                                o[k] = text[1:] if (text[:1].upper() == "L"
+                                                    and text[1:].isdigit()) else text
+                            elif o[k] is None or o[k] == "":
                                 o[k] = v
                 if ("sku_cbm" in o and o.get("sku_cbm") in (None, "")
                         and all(o.get(k) not in (None, "") for k in ("length", "width", "height"))):

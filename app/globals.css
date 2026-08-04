@@ -666,13 +666,14 @@
   .zone-aisle-stat small { font-size: 8.5px; }
   .zone-aisle-stat i { padding-inline: 2px; font-style: normal; opacity: .5; }
 
-  /* Bays sit side by side; each one is a self-contained rack elevation. */
-  .zone-bay-list {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
-    gap: 8px; align-items: start;
-  }
+  /* Bays sit side by side; each one is a self-contained rack elevation.
+     Flex (not a fixed grid) so a bay whose densest level holds 30 bins can
+     claim the width it needs while a 4-bin bay stays compact. --bay-min is set
+     per bay from its own bin count. */
+  .zone-bay-list { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
   .zone-bay {
-    display: grid; gap: 5px; padding: 7px;
+    display: grid; gap: 5px; padding: 7px; min-width: 0;
+    flex: 1 1 var(--bay-min, 268px); max-width: 100%;
     border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised);
   }
   .zone-bay-head {
@@ -687,17 +688,21 @@
   .zone-bay-head small { color: var(--text-muted); font-size: 9px; }
 
   /* Highest level renders first, so the stack reads like the physical rack. */
-  .zone-bay-levels { display: grid; gap: 2px; }
-  .zone-level-row { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: stretch; gap: 5px; }
+  /* Last-resort scroll: a level denser than BAY_MAX_PX allows still stays
+     readable instead of shrinking bins into slivers. All rows scroll together,
+     so levels stay aligned. */
+  .zone-bay-levels { display: grid; gap: 2px; overflow-x: auto; }
+  .zone-level-row { display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: stretch; gap: 5px; }
   .zone-level-label {
+    position: sticky; left: 0; z-index: 1;
     display: grid; place-content: center; border-radius: 4px; background: var(--surface-sunken);
-    color: var(--text-muted); font-size: 8.5px; text-align: center;
+    color: var(--text-muted); font-size: 8.5px; font-weight: 600; text-align: center;
   }
   /* Every level divides the SAME row width by its own bin count, so a level
      holding 10 bins and one holding 5 still line up as one rectangle — that is
      how the rack is actually labelled on the floor. */
   .zone-bin-row {
-    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr);
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(20px, 1fr);
     gap: 2px; min-width: 0;
   }
   .heat-cell-bin { width: 100%; height: 24px; min-width: 0; }
