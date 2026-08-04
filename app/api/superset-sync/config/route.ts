@@ -28,9 +28,15 @@ export async function PUT(request: NextRequest) {
   }
   const body = await request.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Body JSON tidak valid." }, { status: 400 });
+  let before: ReturnType<typeof getSupersetSyncSettings>;
+  let after: ReturnType<typeof getSupersetSyncSettings>;
   try {
-    const before = getSupersetSyncSettings();
-    const after = writeSupersetSyncSettings(body);
+    before = getSupersetSyncSettings();
+    after = writeSupersetSyncSettings(body);
+  } catch (error) {
+    return NextResponse.json({ error: `Validasi gagal: ${(error as Error).message}` }, { status: 400 });
+  }
+  try {
     await audit(
       user.username,
       "SUPERSET_SYNC_CONFIG_UPDATE",
@@ -44,8 +50,12 @@ export async function PUT(request: NextRequest) {
         secret_state: after.secret_state,
       },
     );
-    return NextResponse.json(after);
   } catch (error) {
-    return NextResponse.json({ error: `Validasi gagal: ${(error as Error).message}` }, { status: 400 });
+    console.error("Audit konfigurasi Superset gagal:", error);
+    return NextResponse.json({
+      ...after,
+      warning: "Konfigurasi tersimpan, tetapi Audit Trail belum tercatat. Pastikan hanya satu instance FIT Occupancy Alert and Monitoring memakai database state.",
+    });
   }
+  return NextResponse.json(after);
 }

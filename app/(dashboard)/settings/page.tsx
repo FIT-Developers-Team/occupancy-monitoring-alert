@@ -11,12 +11,11 @@ export default async function SettingsPage() {
   const admin = user ? isAdmin(user.role) : false;
   return (
     <div className="dashboard-page">
-      <PageHeader
-        eyebrow={t("set.ui.page.eyebrow")}
-        title={t("set.ui.page.title")}
-        description={t("set.ui.page.description")}
-      />
-      <Section eyebrow={t("set.ui.page.sectionEyebrow")} title={t("set.ui.page.sectionTitle")}>
+      {/* One heading, then the controls. The tab strip already names each
+          configuration area, so the eyebrow/description/section labels that
+          used to stack above it only pushed the form further down. */}
+      <PageHeader title={t("set.ui.page.title")} />
+      <Section title={t("set.ui.page.sectionTitle")}>
       {admin ? (
         <SettingsTabs />
       ) : (

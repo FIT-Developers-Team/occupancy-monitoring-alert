@@ -5,7 +5,14 @@ import type { ForecastRow } from "@/types";
 import { hoursToTarget } from "@/lib/forecast";
 import { fmtHours, fmtNum } from "@/lib/utils";
 import { useT } from "@/lib/i18n-client";
-import ForecastChart from "@/components/charts/forecast-chart";
+import dynamic from "next/dynamic";
+
+// Keeps Chart.js out of the forecast page's initial bundle; it only loads once
+// this panel actually renders a chart.
+const ForecastChart = dynamic(() => import("@/components/charts/forecast-chart"), {
+  ssr: false,
+  loading: () => <div className="chart-placeholder" aria-hidden />,
+});
 
 export default function WhatIfPanel({ rows }: { rows: ForecastRow[] }) {
   const { t } = useT();

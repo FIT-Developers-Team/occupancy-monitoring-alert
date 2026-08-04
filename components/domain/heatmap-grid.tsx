@@ -9,7 +9,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import type { BasisMode, SlocOccupancy, StockLine, ZoneSummary } from "@/types";
+import type { BasisMode, RackZoneSummary, SlocOccupancy, StockLine, ZoneSummary } from "@/types";
 import { fmtCbm, fmtNum } from "@/lib/utils";
 import { pickViewPct, pickViewStatus } from "@/lib/occupancy-view";
 import { useT } from "@/lib/i18n-client";
@@ -36,15 +36,16 @@ const QUANTITY_STATUS: HeatStatus[] = [
 ];
 const BIN_STATUS: HeatStatus[] = ["EMPTY", "OCCUPIED"];
 const CELL_COLOUR: Record<HeatStatus, string> = {
-  EMPTY: "var(--surface-sunken)",
+  EMPTY: "transparent",
   OCCUPIED: "var(--accent)",
-  NORMAL: "var(--st-normal-fg)",
-  MONITOR: "var(--st-monitor-fg)",
-  WARNING: "var(--st-warning-fg)",
-  CRITICAL: "var(--st-critical-fg)",
-  BREACH: "var(--st-breach-bg)",
+  NORMAL: "var(--heat-normal)",
+  MONITOR: "var(--heat-monitor)",
+  WARNING: "var(--heat-warning)",
+  CRITICAL: "var(--heat-critical)",
+  BREACH: "var(--heat-breach)",
   UNAVAILABLE: "var(--border-strong)",
 };
+const naturalOrder = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 interface Movement {
   movement_id: number;
@@ -63,6 +64,24 @@ interface HeatLabels {
   occupied: string;
   empty: string;
   sample: string;
+  order: string;
+}
+
+function rackPosition(rackZone: string, t: (key: string, fallback?: string) => string) {
+  const suffix = rackZone.match(/(\d+)$/)?.[1];
+  if (suffix === "1") return t("heat.position.bottom");
+  if (suffix === "2") return t("heat.position.middle");
+  if (suffix === "3") return t("heat.position.top");
+  return t("heat.position.section");
+}
+
+function sortCells(cells: SlocOccupancy[]) {
+  return [...cells].sort((a, b) =>
+    naturalOrder.compare(a.aisle, b.aisle)
+    || naturalOrder.compare(a.bay, b.bay)
+    || naturalOrder.compare(a.level, b.level)
+    || naturalOrder.compare(a.bin, b.bin)
+    || naturalOrder.compare(a.sloc_code, b.sloc_code));
 }
 
 function readBasis(): BasisMode {
@@ -124,8 +143,8 @@ function navigatePreviewGrid(event: ReactKeyboardEvent<HTMLElement>) {
   const delta =
     event.key === "ArrowLeft" ? -1
     : event.key === "ArrowRight" ? 1
-    : event.key === "ArrowUp" ? -6
-    : event.key === "ArrowDown" ? 6
+    : event.key === "ArrowUp" ? -4
+    : event.key === "ArrowDown" ? 4
     : 0;
   const nextIndex =
     event.key === "Home" ? 0
@@ -144,12 +163,14 @@ function CellButton({
   filter,
   onSelect,
   index,
+  showCoordinates = false,
 }: {
   cell: SlocOccupancy;
   basis: BasisMode;
   filter: StatusFilter;
   onSelect: (cell: SlocOccupancy) => void;
   index?: number;
+  showCoordinates?: boolean;
 }) {
   const status = heatStatus(cell, basis);
   const pct = cellPct(cell, basis);
@@ -158,9 +179,9 @@ function CellButton({
     <button
       type="button"
       role={index === undefined ? undefined : "gridcell"}
-      className={`heat-cell-button${dimmed ? " is-muted" : ""}`}
-      title={`${cell.sloc_code} · ${status} · ${pctText(pct)}`}
-      aria-label={`${cell.sloc_code}, ${status}, ${pctText(pct)}`}
+      className={`heat-cell-button${showCoordinates ? " heat-cell-coordinate" : ""}${dimmed ? " is-muted" : ""}`}
+      title={`${cell.sloc_code} · Aisle ${cell.aisle || "—"} · Bay ${cell.bay || "—"} · Level ${cell.level || "—"} · Bin ${cell.bin || "—"} · ${status} · ${pctText(pct)}`}
+      aria-label={`${cell.sloc_code}, Aisle ${cell.aisle || "—"}, Bay ${cell.bay || "—"}, Level ${cell.level || "—"}, Bin ${cell.bin || "—"}, ${status}, ${pctText(pct)}`}
       data-heat-index={index}
       tabIndex={index === undefined || index === 0 ? 0 : -1}
       onClick={() => onSelect(cell)}
@@ -169,78 +190,116 @@ function CellButton({
         className={`heat-cell-swatch heat-cell-${status.toLowerCase()}`}
         style={{ backgroundColor: CELL_COLOUR[status] }}
         aria-hidden="true"
-      />
+      >
+        {showCoordinates && (
+          <>
+            <b>B{cell.bay || "—"}</b>
+            <small>L{cell.level || "—"} · {cell.bin || "—"}</small>
+          </>
+        )}
+      </span>
     </button>
   );
 }
 
-const HeatZoneCard = memo(function HeatZoneCard({
+const HeatZoneGroup = memo(function HeatZoneGroup({
   zone,
-  cells,
+  previews,
   basis,
   filter,
   locale,
   labels,
+  t,
   onSelect,
   onOpen,
 }: {
   zone: ZoneSummary;
-  cells: SlocOccupancy[];
+  previews: Record<string, SlocOccupancy[]>;
   basis: BasisMode;
   filter: StatusFilter;
   locale: string;
   labels: HeatLabels;
+  t: (key: string, fallback?: string) => string;
   onSelect: (cell: SlocOccupancy) => void;
-  onOpen: (zone: ZoneSummary) => void;
+  onOpen: (zone: RackZoneSummary) => void;
 }) {
+  const rackZones: RackZoneSummary[] = zone.rack_zones?.length
+    ? zone.rack_zones
+    : [{ ...zone, rack_zone: zone.zone }];
   return (
-    <article className="heat-zone-card">
+    <article className="heat-zone-card heat-zone-group">
       <header className="heat-zone-heading">
         <div className="min-w-0">
+          <span className="eyebrow">{t("heat.zoneGroup")}</span>
           <h2>{zone.zone}</h2>
           <span className="heat-zone-storage" title={zone.storage}>
             {zone.storage || "—"}
           </span>
         </div>
-        <strong className="heat-zone-pct num">{pctText(shownPct(zone, basis))}</strong>
+        <div className="heat-zone-total">
+          <strong className="heat-zone-pct num">{pctText(shownPct(zone, basis))}</strong>
+          <small className="num">{zone.sloc_total.toLocaleString(locale)} SLOC</small>
+        </div>
       </header>
 
-      <div className="heat-zone-body">
-        <div
-          className="heat-cell-matrix"
-          role="grid"
-          aria-label={`${zone.zone} ${labels.preview}`}
-          onKeyDown={navigatePreviewGrid}
-        >
-          {cells.map((cell, index) => (
-            <CellButton
-              key={`${cell.sloc_id}-${cell.sloc_code}`}
-              cell={cell}
-              basis={basis}
-              filter={filter}
-              index={index}
-              onSelect={onSelect}
-            />
-          ))}
-        </div>
-        <div className="heat-zone-facts">
-          <span>
-            <b className="num">{zone.sloc_occupied.toLocaleString(locale)}</b>
-            {labels.occupied}
-          </span>
-          <span>
-            <b className="num">{zone.sloc_empty.toLocaleString(locale)}</b>
-            {labels.empty}
-          </span>
-          <small className="num">{cells.length}/{zone.sloc_total.toLocaleString(locale)} {labels.sample}</small>
-        </div>
+      <div className="heat-rack-list">
+        {rackZones.map((rack) => {
+          const cells = sortCells(previews[`${zone.zone}|${rack.rack_zone}`] ?? []);
+          const byAisle = new Map<string, SlocOccupancy[]>();
+          for (const cell of cells) {
+            const aisle = cell.aisle || "—";
+            const aisleCells = byAisle.get(aisle) ?? [];
+            aisleCells.push(cell);
+            byAisle.set(aisle, aisleCells);
+          }
+          return (
+            <section key={rack.rack_zone} className="heat-rack-section">
+              <header className="heat-rack-head">
+                <div>
+                  <h3 className="num">{rack.rack_zone}</h3>
+                  <span>{rackPosition(rack.rack_zone, t)}</span>
+                </div>
+                <div className="heat-rack-head-meta">
+                  <strong className="num">{pctText(shownPct(rack, basis))}</strong>
+                  <small>{rack.sloc_total.toLocaleString(locale)} SLOC</small>
+                </div>
+              </header>
+              <div className="heat-rack-order">{labels.order}</div>
+              <div className="heat-aisle-list">
+                {[...byAisle.entries()].map(([aisle, aisleCells]) => (
+                  <div key={aisle} className="heat-aisle-row">
+                    <span className="heat-aisle-label"><b>Aisle</b><strong className="num">{aisle}</strong></span>
+                    <div
+                      className="heat-cell-matrix heat-cell-coordinate-matrix"
+                      role="grid"
+                      aria-label={`${rack.rack_zone}, Aisle ${aisle}, ${labels.preview}`}
+                      onKeyDown={navigatePreviewGrid}
+                    >
+                      {aisleCells.map((cell, index) => (
+                        <CellButton
+                          key={`${cell.sloc_id}-${cell.sloc_code}`}
+                          cell={cell}
+                          basis={basis}
+                          filter={filter}
+                          index={index}
+                          showCoordinates
+                          onSelect={onSelect}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <footer className="heat-rack-foot">
+                <span className="num">{rack.sloc_occupied.toLocaleString(locale)} {labels.occupied} · {rack.sloc_empty.toLocaleString(locale)} {labels.empty}</span>
+                <button type="button" className="heat-zone-open" onClick={() => onOpen(rack)}>
+                  {labels.openZone} {rack.rack_zone}<span aria-hidden="true"> →</span>
+                </button>
+              </footer>
+            </section>
+          );
+        })}
       </div>
-
-      <footer className="heat-zone-foot">
-        <button type="button" className="heat-zone-open" onClick={() => onOpen(zone)}>
-          {labels.openZone}<span aria-hidden="true"> →</span>
-        </button>
-      </footer>
     </article>
   );
 });
@@ -273,7 +332,7 @@ export default function HeatmapGrid({
   const [moves, setMoves] = useState<Movement[]>([]);
   const [stockLoading, setStockLoading] = useState(false);
 
-  const [selectedZone, setSelectedZone] = useState<ZoneSummary | null>(null);
+  const [selectedZone, setSelectedZone] = useState<RackZoneSummary | null>(null);
   const [zoneCells, setZoneCells] = useState<SlocOccupancy[]>([]);
   const [zoneTotal, setZoneTotal] = useState(0);
   const [zoneOffset, setZoneOffset] = useState(0);
@@ -355,7 +414,7 @@ export default function HeatmapGrid({
   }, [selectedCell]);
 
   const loadZonePage = useCallback(async (
-    target: ZoneSummary,
+    target: RackZoneSummary,
     offset: number,
   ) => {
     zoneAbortRef.current?.abort();
@@ -365,7 +424,7 @@ export default function HeatmapGrid({
     setZoneError(false);
     try {
       const response = await fetch(
-        `/api/occupancy/heatmap?wh=${encodeURIComponent(wh)}&zone=${encodeURIComponent(target.zone)}&offset=${offset}&limit=600`,
+        `/api/occupancy/heatmap?wh=${encodeURIComponent(wh)}&zone=${encodeURIComponent(target.zone)}&rackZone=${encodeURIComponent(target.rack_zone)}&offset=${offset}&limit=600`,
         { signal: controller.signal },
       );
       if (!response.ok) throw new Error("Zone request failed");
@@ -410,7 +469,7 @@ export default function HeatmapGrid({
     setSelectedCell(null);
     requestAnimationFrame(() => cellTriggerRef.current?.focus());
   }, []);
-  const openZone = useCallback((zone: ZoneSummary) => {
+  const openZone = useCallback((zone: RackZoneSummary) => {
     zoneTriggerRef.current = document.activeElement as HTMLElement | null;
     setSelectedZone(zone);
   }, []);
@@ -488,10 +547,7 @@ export default function HeatmapGrid({
   const visibleZones = zones;
 
   const statusLabel = useCallback((status: HeatStatus) => {
-    if (status === "EMPTY") return t("heat.emptyLegend");
-    if (status === "OCCUPIED") return t("common.filled");
-    if (status === "UNAVAILABLE") return t("heat.unavailable");
-    return t(`status.${status}`);
+    return t(`heat.legendStatus.${status}`);
   }, [t]);
 
   const labels = useMemo<HeatLabels>(() => ({
@@ -500,6 +556,7 @@ export default function HeatmapGrid({
     occupied: t("common.filled"),
     empty: t("common.empty"),
     sample: t("heat.sample"),
+    order: t("heat.coordinateOrder"),
   }), [t]);
   const selectedPct = selectedCell ? cellPct(selectedCell, basis) : null;
   const selectedStatus = selectedCell ? heatStatus(selectedCell, basis) : null;
@@ -551,16 +608,16 @@ export default function HeatmapGrid({
             <>
               <span><b className="num">{visibleZones.length}</b> {t("heat.zonesShown")}</span>
               <span aria-hidden="true">·</span>
-              <span><b className="num">{loading ? "—" : totals.total.toLocaleString(locale)}</b> SLOC</span>
+              <span><b className="num">{loading && zones.length === 0 ? "—" : totals.total.toLocaleString(locale)}</b> SLOC</span>
             </>
           )}
         </div>
       </div>
 
       <div className="heatmap-content">
-        {loading ? (
+        {loading && zones.length === 0 ? (
           <div className="heat-zone-cards" aria-busy="true" aria-label={t("heat.loading")}>
-            {Array.from({ length: 6 }).map((_, index) => (
+            {Array.from({ length: 4 }).map((_, index) => (
               <div key={index} className="heat-zone-card heat-zone-skeleton" />
             ))}
           </div>
@@ -574,16 +631,18 @@ export default function HeatmapGrid({
         ) : zones.length === 0 ? (
           <div className="heatmap-feedback"><strong>{t("heat.noZones")}</strong></div>
         ) : (
-          <div className="heat-zone-cards">
+          <div className={`heat-zone-cards${loading ? " is-updating" : ""}`} aria-busy={loading}>
+            {loading && <div className="heat-update-status" role="status">{t("heat.updating")}</div>}
             {visibleZones.map((zone) => (
-              <HeatZoneCard
+              <HeatZoneGroup
                 key={zone.zone}
                 zone={zone}
-                cells={previews[zone.zone] ?? []}
+                previews={previews}
                 basis={basis}
                 filter={statusFilter}
                 locale={locale}
                 labels={labels}
+                t={t}
                 onSelect={openCell}
                 onOpen={openZone}
               />
@@ -611,9 +670,9 @@ export default function HeatmapGrid({
           >
             <header className="heat-zone-dialog-head">
               <div className="min-w-0">
-                <span className="eyebrow">{wh} · {t("heat.fullZone")}</span>
+                <span className="eyebrow">{wh} · {selectedZone.zone} · {t("heat.fullZone")}</span>
                 <h2 id="heat-zone-dialog-title">
-                  {selectedZone.zone}
+                  {selectedZone.rack_zone}
                   <span>{selectedZone.storage || "—"}</span>
                 </h2>
               </div>
@@ -637,7 +696,7 @@ export default function HeatmapGrid({
               </div>
             ) : (
               <div className="heat-zone-dialog-grid-wrap" aria-busy={zoneLoading}>
-                <div className="heat-zone-dialog-grid" role="group" aria-label={`${selectedZone.zone} SLOC`}>
+                <div className="heat-zone-dialog-grid" role="group" aria-label={`${selectedZone.rack_zone} SLOC`}>
                   {zoneCells.map((cell) => (
                     <CellButton
                       key={`${cell.sloc_id}-${cell.sloc_code}`}

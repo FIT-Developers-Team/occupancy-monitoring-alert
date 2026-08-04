@@ -29,7 +29,7 @@ async function post(url: string, body: unknown): Promise<{ ok: boolean; error?: 
   }
 }
 
-/** Kartu alert (cardsV2) + tombol link "Buka WIOM". */
+/** Kartu alert (cardsV2) + tombol link ke aplikasi. */
 export async function sendGChatAlert(
   webhookUrl: string, a: Alert, escalationPrefix?: string
 ): Promise<{ ok: boolean; error?: string }> {
@@ -52,7 +52,7 @@ export async function sendGChatAlert(
             { textParagraph: { text: `<i>Alert ${a.alert_id} · kejadian ke-${a.occurrences}</i>` } },
             ...(base ? [{
               buttonList: { buttons: [{
-                text: "Buka WIOM — Ack / Resolve",
+                text: "Buka FIT Occupancy Alert and Monitoring — Ack / Resolve",
                 onClick: { openLink: { url: `${base}/alerts` } },
               }] },
             }] : []),

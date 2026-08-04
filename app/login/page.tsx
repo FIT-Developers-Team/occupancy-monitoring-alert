@@ -44,7 +44,7 @@ function LoginForm() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="eyebrow mb-1">Fulfillment Intelligence Team</div>
-          <h1 className="text-lg font-semibold">WIOM Control Tower</h1>
+          <h1 className="text-lg font-semibold">FIT Occupancy Alert and Monitoring</h1>
           <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
             {t("login.subtitle")}
           </p>

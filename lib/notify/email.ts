@@ -20,7 +20,7 @@ export async function sendEmail(
         : undefined,
     });
     await transporter.sendMail({
-      from: process.env.SMTP_FROM || "WIOM Control Tower <wiom@localhost>",
+      from: process.env.SMTP_FROM || "FIT Occupancy Alert and Monitoring <wiom@localhost>",
       to, subject, text,
     });
     return { ok: true };

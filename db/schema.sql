@@ -59,32 +59,40 @@ CREATE TABLE IF NOT EXISTS _sync_state (
   job VARCHAR PRIMARY KEY, watermark VARCHAR, key_max VARCHAR, updated_at TIMESTAMP
 );
 
--- Indexes for sync performance and dashboard queries on large datasets (up to 10M rows)
-CREATE INDEX IF NOT EXISTS idx_stock_synced_at ON stock_history (_synced_at);
-CREATE INDEX IF NOT EXISTS idx_stock_location ON stock_history (location_id);
-CREATE INDEX IF NOT EXISTS idx_stock_sloc ON stock_history (sloc_code);
-CREATE INDEX IF NOT EXISTS idx_stock_product ON stock_history (product_id);
-CREATE INDEX IF NOT EXISTS idx_stock_synced_loc ON stock_history (_synced_at, location_id);
-CREATE INDEX IF NOT EXISTS idx_stock_status ON stock_history (status);
-CREATE INDEX IF NOT EXISTS idx_stock_category ON stock_history (l1_category);
-CREATE INDEX IF NOT EXISTS idx_stock_handling ON stock_history (storage_handling);
-CREATE INDEX IF NOT EXISTS idx_stock_synced_status ON stock_history (_synced_at, status);
-CREATE INDEX IF NOT EXISTS idx_stock_loc_sloc ON stock_history (location_id, sloc_code);
+-- DuckDB already creates zonemaps for every column. The dashboard workload is
+-- dominated by scans, joins, and aggregates; ART indexes only help extremely
+-- selective point lookups and keep a second persisted copy of their columns.
+-- Drop the legacy stock indexes so every snapshot is cheaper to append and the
+-- database stays small enough for a low-memory VPS.
+DROP INDEX IF EXISTS idx_stock_synced_at;
+DROP INDEX IF EXISTS idx_stock_location;
+DROP INDEX IF EXISTS idx_stock_sloc;
+DROP INDEX IF EXISTS idx_stock_product;
+DROP INDEX IF EXISTS idx_stock_synced_loc;
+DROP INDEX IF EXISTS idx_stock_status;
+DROP INDEX IF EXISTS idx_stock_category;
+DROP INDEX IF EXISTS idx_stock_handling;
+DROP INDEX IF EXISTS idx_stock_synced_status;
+DROP INDEX IF EXISTS idx_stock_loc_sloc;
+
+-- Retain only the two selective indexes used for master upserts and direct
+-- SLOC lookup. Hash joins and aggregate filters do not benefit from the other
+-- legacy ART indexes.
 CREATE INDEX IF NOT EXISTS idx_sloc_id ON master_sloc (sloc_id);
-CREATE INDEX IF NOT EXISTS idx_sloc_location ON master_sloc (location_id);
 CREATE INDEX IF NOT EXISTS idx_sloc_code ON master_sloc (sloc_code);
-CREATE INDEX IF NOT EXISTS idx_sloc_active ON master_sloc (active);
-CREATE INDEX IF NOT EXISTS idx_sloc_area ON master_sloc (area);
-CREATE INDEX IF NOT EXISTS idx_sloc_zone ON master_sloc (rack_zone);
-CREATE INDEX IF NOT EXISTS idx_sloc_storage ON master_sloc (storage_handling);
-CREATE INDEX IF NOT EXISTS idx_audit_job_started ON _sync_audit (job, started_at);
-CREATE INDEX IF NOT EXISTS idx_audit_status ON _sync_audit (status);
-CREATE INDEX IF NOT EXISTS idx_audit_finished ON _sync_audit (finished_at);
-CREATE INDEX IF NOT EXISTS idx_movement_datetime ON movement_history (movement_datetime);
-CREATE INDEX IF NOT EXISTS idx_movement_location ON movement_history (movement_datetime, movement_type);
-CREATE INDEX IF NOT EXISTS idx_movement_product ON movement_history (product_id);
-CREATE INDEX IF NOT EXISTS idx_count_date ON cycle_count (count_date);
-CREATE INDEX IF NOT EXISTS idx_count_sloc ON cycle_count (sloc_code);
+DROP INDEX IF EXISTS idx_sloc_location;
+DROP INDEX IF EXISTS idx_sloc_active;
+DROP INDEX IF EXISTS idx_sloc_area;
+DROP INDEX IF EXISTS idx_sloc_zone;
+DROP INDEX IF EXISTS idx_sloc_storage;
+DROP INDEX IF EXISTS idx_audit_job_started;
+DROP INDEX IF EXISTS idx_audit_status;
+DROP INDEX IF EXISTS idx_audit_finished;
+DROP INDEX IF EXISTS idx_movement_datetime;
+DROP INDEX IF EXISTS idx_movement_location;
+DROP INDEX IF EXISTS idx_movement_product;
+DROP INDEX IF EXISTS idx_count_date;
+DROP INDEX IF EXISTS idx_count_sloc;
 
 -- Turunan
 -- Dataset master di produksi ber-grain rack×product (planogram) — dedupe ke 1 baris per rak.

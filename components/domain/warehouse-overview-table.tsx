@@ -44,7 +44,7 @@ export default function WarehouseOverviewTable({ rows, mode }: { rows: Warehouse
           const raw = pickViewPct(w, mode);
           const status = raw === null ? null : pickViewStatus(w, mode);
           return <tr key={w.code}>
-            <td><Link href={`/occupancy/${w.code}`} className="font-semibold hover:underline" style={{ color: "var(--text)" }}>{w.code}</Link>
+            <td><Link href={`/occupancy/${w.code}`} prefetch={false} className="font-semibold hover:underline" style={{ color: "var(--text)" }}>{w.code}</Link>
               <span className="ml-2 text-[10.5px]" style={{ color: "var(--text-muted)" }}>{w.name}</span></td>
             <td><div className="flex items-center gap-2">
               {raw === null || status === null

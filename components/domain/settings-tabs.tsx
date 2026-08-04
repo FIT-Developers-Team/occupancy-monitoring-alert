@@ -1,7 +1,22 @@
 "use client";
 import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n-client";
-import SupersetSyncSettings from "@/components/domain/superset-sync-settings";
+
+function SettingsPanelLoading() {
+  return (
+    <div className="settings-panel-loading" role="status" aria-live="polite" aria-label="Memuat pengaturan">
+      <div className="settings-panel-loading-head"><span /><strong /></div>
+      <div className="settings-panel-loading-grid"><span /><span /></div>
+      <span className="sr-only">Memuat pengaturan…</span>
+    </div>
+  );
+}
+
+const SupersetSyncSettings = dynamic(
+  () => import("@/components/domain/superset-sync-settings"),
+  { loading: () => <SettingsPanelLoading /> },
+);
 
 interface Thresholds {
   default: { monitor: number; warning: number; critical: number; breach: number; hysteresis_buffer: number };
@@ -166,6 +181,13 @@ export default function SettingsTabs() {
 
       {tab === "sync" && <SupersetSyncSettings />}
 
+      {tab !== "sync" && (
+        (tab === "thresholds" && !thresholds)
+        || (tab === "capacity" && !capacity)
+        || (tab === "rules" && !rules)
+        || (tab === "recipients" && !recipients)
+      ) && <SettingsPanelLoading />}
+
       {/* ================= KAPASITAS QTY/CBM ================= */}
       {tab === "capacity" && capacity && (
         <div className="space-y-4">
@@ -184,6 +206,14 @@ export default function SettingsTabs() {
                 {t("set.ui.capacity.defaultPrefix")} <span className="num">max_quantity</span> &amp;{" "}
                 <span className="num">max_volume</span> {t("set.ui.capacity.defaultSuffix")}
               </p>
+              <div className="capacity-warehouse-scope">
+                <span className="eyebrow">{t("set.ui.capacity.availableWarehouses")}</span>
+                <div>
+                  {(capMeta?.warehouses ?? warehouses).map((warehouse) => (
+                    <span key={warehouse} className="chip num">{warehouse}</span>
+                  ))}
+                </div>
+              </div>
               <label className="block space-y-1">
                 <span className="eyebrow">{t("set.ui.capacity.basis")}</span>
                 <select className="input" value={capacity.basis_default}
@@ -266,8 +296,8 @@ export default function SettingsTabs() {
                   + {t("set.ui.capacity.addRule")}
                 </button>
               </div>
-              <div className="overflow-x-auto">
-                <table className="tbl">
+              <div className="capacity-rules-wrap overflow-x-auto">
+                <table className="tbl capacity-rules-table">
                   <thead>
                     <tr>
                       <th>{t("set.ui.column.warehouse")}</th><th>{t("set.ui.column.zone")}</th>

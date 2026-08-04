@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef } from "react";
-import Chart from "chart.js/auto";
+import Chart from "./chart-core";
 import { WH_PALETTE, chartTheme } from "./palette";
 import type { TrendPoint } from "@/types";
 

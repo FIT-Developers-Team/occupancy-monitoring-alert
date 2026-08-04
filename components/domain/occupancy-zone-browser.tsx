@@ -145,7 +145,7 @@ export default function OccupancyZoneBrowser({
                 <tr key={`${row.wh}-${row.zone}`}>
                   {!fixedWarehouse && <td className="num font-semibold">{row.wh}</td>}
                   <td>
-                    <Link href={`/occupancy/${row.wh}/${encodeURIComponent(row.zone)}`} className="occ-zone-link">
+                    <Link href={`/occupancy/${row.wh}/${encodeURIComponent(row.zone)}`} prefetch={false} className="occ-zone-link">
                       {row.zone}
                     </Link>
                   </td>
@@ -176,7 +176,7 @@ export default function OccupancyZoneBrowser({
           const raw = pickViewPct(row, mode);
           const shownStatus = raw === null ? null : pickViewStatus(row, mode);
           return (
-            <Link key={`${row.wh}-${row.zone}`} href={`/occupancy/${row.wh}/${encodeURIComponent(row.zone)}`}
+            <Link key={`${row.wh}-${row.zone}`} href={`/occupancy/${row.wh}/${encodeURIComponent(row.zone)}`} prefetch={false}
               className="occ-zone-mobile-card">
               <div className="occ-zone-mobile-head">
                 <div><span className="eyebrow">{row.wh} · {t("common.zone")}</span><strong>{row.zone}</strong></div>

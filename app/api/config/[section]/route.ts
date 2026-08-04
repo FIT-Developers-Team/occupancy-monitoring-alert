@@ -12,24 +12,28 @@ const readers: Record<ConfigSection, () => unknown> = {
 
 /** Meta utk editor kapasitas: nilai distinct dari DB (WH, zona, storage, kategori, status). */
 async function capacityMeta() {
+  const configuredWarehouses = getWarehouses().warehouses.map((warehouse) => warehouse.code);
   try {
     const whMap = `WITH ${whMapSQL()}`;
-    const operational = "v.active AND nullif(trim(v.sloc_code), '') IS NOT NULL AND nullif(trim(v.zone), '') IS NOT NULL";
-    const [whs, zones, rackZones, levels, storages, cats, statuses] = await Promise.all([
-      queryHistory<{ wh: string }>(`${whMap} SELECT DISTINCT m.wh FROM vw_sloc v JOIN wh_map m ON m.location_id=v.location_id WHERE ${operational} ORDER BY 1`),
+    const active = "v.active AND nullif(trim(v.sloc_code), '') IS NOT NULL";
+    const operational = `${active} AND nullif(trim(v.zone), '') IS NOT NULL`;
+    const [zones, rackZones, levels, storages, cats, statuses] = await Promise.all([
       queryHistory<{ wh: string; zone: string }>(`${whMap} SELECT DISTINCT m.wh, v.zone FROM vw_sloc v JOIN wh_map m ON m.location_id=v.location_id WHERE ${operational} ORDER BY 1,2`),
       queryHistory<{ wh: string; zone: string; rack_zone: string }>(`${whMap} SELECT DISTINCT m.wh, v.zone, coalesce(v.rack_zone,'') AS rack_zone FROM vw_sloc v JOIN wh_map m ON m.location_id=v.location_id WHERE ${operational} AND coalesce(v.rack_zone,'')<>'' ORDER BY 1,2,3`),
-      queryHistory<{ level: string }>(`${whMap} SELECT DISTINCT coalesce(v.level,'') AS level FROM vw_sloc v JOIN wh_map m ON m.location_id=v.location_id WHERE ${operational} AND coalesce(v.level,'')<>'' ORDER BY 1`),
-      queryHistory<{ s: string }>(`${whMap} SELECT DISTINCT v.storage_handling AS s FROM vw_sloc v JOIN wh_map m ON m.location_id=v.location_id WHERE ${operational} ORDER BY 1`),
-      queryHistory<{ c: string }>(`${whMap} SELECT DISTINCT coalesce(s.l1_category,'') AS c FROM vw_stock_latest s JOIN vw_sloc v ON v.sloc_code=s.sloc_code JOIN wh_map m ON m.location_id=v.location_id WHERE ${operational} AND coalesce(s.l1_category,'')<>'' ORDER BY 1`),
-      queryHistory<{ s: string }>(`${whMap} SELECT DISTINCT s.status AS s FROM vw_stock_latest s JOIN vw_sloc v ON v.sloc_code=s.sloc_code JOIN wh_map m ON m.location_id=v.location_id WHERE ${operational} ORDER BY 1`),
+      queryHistory<{ level: string }>(`${whMap} SELECT DISTINCT coalesce(v.level,'') AS level FROM vw_sloc v JOIN wh_map m ON m.location_id=v.location_id WHERE ${active} AND coalesce(v.level,'')<>'' ORDER BY 1`),
+      queryHistory<{ s: string }>(`${whMap} SELECT DISTINCT coalesce(v.storage_handling,'') AS s FROM vw_sloc v JOIN wh_map m ON m.location_id=v.location_id WHERE ${active} AND coalesce(v.storage_handling,'')<>'' ORDER BY 1`),
+      queryHistory<{ c: string }>(`${whMap} SELECT DISTINCT coalesce(s.l1_category,'') AS c FROM vw_stock_latest s JOIN vw_sloc v ON v.sloc_code=s.sloc_code AND v.location_id=s.location_id JOIN wh_map m ON m.location_id=v.location_id WHERE ${active} AND coalesce(s.l1_category,'')<>'' ORDER BY 1`),
+      queryHistory<{ s: string }>(`${whMap} SELECT DISTINCT coalesce(s.status,'') AS s FROM vw_stock_latest s JOIN vw_sloc v ON v.sloc_code=s.sloc_code AND v.location_id=s.location_id JOIN wh_map m ON m.location_id=v.location_id WHERE ${active} AND coalesce(s.status,'')<>'' ORDER BY 1`),
     ]);
     const zonesByWh: Record<string, string[]> = {};
     for (const z of zones) (zonesByWh[z.wh] ??= []).push(z.zone);
     const racksByWhZone: Record<string, string[]> = {};
     for (const r of rackZones) (racksByWhZone[`${r.wh}|${r.zone}`] ??= []).push(r.rack_zone);
     return {
-      warehouses: whs.map((w) => w.wh),
+      // Warehouse choices are configuration, not an accidental consequence of
+      // data completeness. Keep the editor usable even while a fresh SLOC
+      // sync has not populated zones yet.
+      warehouses: configuredWarehouses,
       zones: zonesByWh,
       rack_zones: racksByWhZone,
       levels: levels.map((x) => x.level),
@@ -37,7 +41,12 @@ async function capacityMeta() {
       categories: cats.map((x) => x.c),
       statuses: statuses.map((x) => x.s),
     };
-  } catch { return null; }
+  } catch {
+    return {
+      warehouses: configuredWarehouses,
+      zones: {}, rack_zones: {}, levels: [], storages: [], categories: [], statuses: [],
+    };
+  }
 }
 
 function valid(section: string): section is ConfigSection {

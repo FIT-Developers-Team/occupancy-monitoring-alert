@@ -3,14 +3,14 @@
 // config/warehouses.json). Join itu sekaligus ALLOWLIST: lokasi di luar 8 gudang
 // (mis. HUB) otomatis tersaring, dan kode WH tidak lagi ditebak dari sloc_code.
 // Ditambah filter `active` dan basis ketiga: BIN (SLOC terisi vs kosong).
-import { queryHistory } from "@/lib/db";
+import { historyDbVersion, queryHistory } from "@/lib/db";
 import { statusFor } from "@/lib/occupancy";
 import { wmaRatePctPerHour, hoursToTarget } from "@/lib/forecast";
 import { resolveSloc, categoryCounted, countedStatuses } from "@/lib/capacity";
 import type { SlocScope } from "@/lib/capacity";
 import { getCapacity, getWarehouses, whMapSQL, whNameByCode } from "@/lib/config";
 import type {
-  SlocOccupancy, WarehouseSummary, ZoneSummary, TrendPoint, ForecastRow, StockLine, Basis, BasisMode,
+  SlocOccupancy, WarehouseSummary, ZoneSummary, RackZoneSummary, TrendPoint, ForecastRow, StockLine, Basis, BasisMode,
 } from "@/types";
 
 const r1 = (n: number) => Math.round(n * 10) / 10;
@@ -176,8 +176,11 @@ const statusPredicateSQL = (col: string) =>
 const occCache = new Map<string, { at: number; rows: SlocOccupancy[] }>();
 const heatPreviewCache = new Map<string, { at: number; data: Record<string, SlocOccupancy[]> }>();
 const TTL = 20_000;
-const DASHBOARD_TTL = 60_000;
+// Source snapshots refresh every ten minutes. A five-minute server cache cuts
+// repeated DuckDB scans while keeping the UI inside one half-refresh window.
+const DASHBOARD_TTL = 300_000;
 const trendCache = new Map<number, { at: number; rows: TrendPoint[] }>();
+let cacheHistoryVersion = historyDbVersion();
 
 function setBoundedCache<K, V>(cache: Map<K, V>, key: K, value: V, maxEntries: number) {
   cache.delete(key);
@@ -196,6 +199,11 @@ export function invalidateOccupancyReadCaches(): void {
   trendCache.clear();
   zoneCache.clear();
   warehouseBaseCache = null;
+  cacheHistoryVersion = historyDbVersion();
+}
+
+function refreshCachesForHistoryChange(): void {
+  if (historyDbVersion() !== cacheHistoryVersion) invalidateOccupancyReadCaches();
 }
 
 async function getSlocMeta(scope: OccupancyScope): Promise<SlocMeta[]> {
@@ -211,6 +219,7 @@ async function getSlocMeta(scope: OccupancyScope): Promise<SlocMeta[]> {
 }
 
 export async function getSlocOccupancy(input: OccupancyScope = {}): Promise<SlocOccupancy[]> {
+  refreshCachesForHistoryChange();
   const scope = cleanScope(input);
   // Invalid code must never silently expand the scope to all warehouses.
   if (input.wh && !scope.wh) return [];
@@ -294,6 +303,7 @@ let warehouseBaseInFlight: Promise<WarehouseBase[]> | null = null;
 
 /** Small read model for warehouse cards/trends; never materialises 143k SLOCs. */
 async function getWarehouseBase(): Promise<WarehouseBase[]> {
+  refreshCachesForHistoryChange();
   if (warehouseBaseCache && Date.now() - warehouseBaseCache.at < DASHBOARD_TTL) return warehouseBaseCache.rows;
   if (warehouseBaseInFlight) return warehouseBaseInFlight;
   warehouseBaseInFlight = (async () => {
@@ -455,11 +465,30 @@ export async function getOccupancyScopeQuality(): Promise<OccupancyScopeQuality[
 }
 
 interface ZoneAggregateRow {
-  wh: string; zone: string; storage: string;
+  wh: string; zone: string; rack_zone: string; storage: string;
   cap_qty: number; cap_cbm: number; n_cbm: number; total: number;
   qty: number; cbm: number; filled: number;
 }
 const zoneCache = new Map<string, { at: number; rows: ZoneSummary[] }>();
+const naturalOrder = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+
+function summarizeRackZone(row: ZoneAggregateRow): RackZoneSummary {
+  const basis: Basis = row.n_cbm > row.total / 2 ? "cbm" : "qty";
+  const pq = row.cap_qty > 0 ? (row.qty / row.cap_qty) * 100 : null;
+  const pv = row.cap_cbm > 0 ? (row.cbm / row.cap_cbm) * 100 : null;
+  const pb = row.total > 0 ? (row.filled / row.total) * 100 : 0;
+  const pct = (basis === "qty" ? pq : pv) ?? (basis === "qty" ? pv : pq) ?? 0;
+  return {
+    wh: row.wh, zone: row.zone, rack_zone: row.rack_zone, storage: row.storage, basis,
+    occ_qty: Math.round(row.qty), cap_qty: Math.round(row.cap_qty),
+    occ_cbm: r1(row.cbm), cap_cbm: r1(row.cap_cbm),
+    pct: r1(pct), pct_qty: pq === null ? null : r1(pq), pct_cbm: pv === null ? null : r1(pv),
+    pct_bin: r1(pb), sloc_total: row.total, sloc_occupied: row.filled,
+    sloc_empty: row.total - row.filled,
+    status: statusFor(pct, row.wh), status_qty: pq === null ? null : statusFor(pq, row.wh),
+    status_cbm: pv === null ? null : statusFor(pv, row.wh), status_bin: statusFor(pb, row.wh),
+  };
+}
 
 /**
  * Zone cards deliberately do not call getSlocOccupancy(). CBT alone has about
@@ -468,6 +497,7 @@ const zoneCache = new Map<string, { at: number; rows: ZoneSummary[] }>();
  * DuckDB aggregates counted stock and occupied bins at source.
  */
 export async function getZoneSummary(wh?: string): Promise<ZoneSummary[]> {
+  refreshCachesForHistoryChange();
   const scope = cleanScope({ wh, operational: true });
   if (wh && !scope.wh) return [];
   const cacheKey = scope.wh ?? "*";
@@ -487,14 +517,14 @@ export async function getZoneSummary(wh?: string): Promise<ZoneSummary[]> {
        FROM vw_sloc v ${JOIN_WH}
        WHERE ${scopeSlocPredicate(scope)}${scopeWhere(scope, params)}
      ), capacities AS (
-       SELECT wh, zone, coalesce(max(nullif(storage_handling, '')), '') AS storage,
+       SELECT wh, zone, rack_zone, coalesce(max(nullif(storage_handling, '')), '') AS storage,
               sum(CASE WHEN qty_valid THEN cap_qty ELSE 0 END)::DOUBLE AS cap_qty,
               sum(CASE WHEN cbm_valid THEN cap_cbm ELSE 0 END)::DOUBLE AS cap_cbm,
               sum(CASE WHEN basis = 'cbm' THEN 1 ELSE 0 END)::INT AS n_cbm,
               count(*)::INT AS total
-       FROM effective GROUP BY wh, zone
+       FROM effective GROUP BY wh, zone, rack_zone
      ), stock AS (
-       SELECT e.wh, e.zone,
+       SELECT e.wh, e.zone, e.rack_zone,
               coalesce(sum(CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END), 0)::DOUBLE AS qty,
               coalesce(sum(CASE WHEN e.cbm_valid THEN s.occupied_cbm ELSE 0 END), 0)::DOUBLE AS cbm
        FROM effective e
@@ -502,9 +532,9 @@ export async function getZoneSummary(wh?: string): Promise<ZoneSummary[]> {
          ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
        WHERE ${statusPredicateSQL("s.status")}
          AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
-       GROUP BY e.wh, e.zone
+       GROUP BY e.wh, e.zone, e.rack_zone
      ), filled AS (
-       SELECT e.wh, e.zone,
+       SELECT e.wh, e.zone, e.rack_zone,
               count(DISTINCT CASE
                 WHEN s.stock_qty > 0 OR s.occupied_cbm > 0 THEN e.sloc_id
               END)::INT AS filled
@@ -513,36 +543,45 @@ export async function getZoneSummary(wh?: string): Promise<ZoneSummary[]> {
          ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
        WHERE ${statusPredicateSQL("s.status")}
          AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
-       GROUP BY e.wh, e.zone
+       GROUP BY e.wh, e.zone, e.rack_zone
      )
-     SELECT c.wh, c.zone, c.storage, c.cap_qty, c.cap_cbm, c.n_cbm, c.total,
+     SELECT c.wh, c.zone, c.rack_zone, c.storage, c.cap_qty, c.cap_cbm, c.n_cbm, c.total,
             coalesce(s.qty, 0)::DOUBLE AS qty, coalesce(s.cbm, 0)::DOUBLE AS cbm,
             coalesce(f.filled, 0)::INT AS filled
      FROM capacities c
-     LEFT JOIN stock s USING (wh, zone)
-     LEFT JOIN filled f USING (wh, zone)
-     ORDER BY c.wh, c.zone`,
+     LEFT JOIN stock s USING (wh, zone, rack_zone)
+     LEFT JOIN filled f USING (wh, zone, rack_zone)
+     ORDER BY c.wh, c.zone, c.rack_zone`,
     params,
   );
 
-  const out = rows.map((a) => {
-    const basis: Basis = a.n_cbm > a.total / 2 ? "cbm" : "qty";
-    const pq = a.cap_qty > 0 ? (a.qty / a.cap_qty) * 100 : null;
-    const pv = a.cap_cbm > 0 ? (a.cbm / a.cap_cbm) * 100 : null;
-    const pb = a.total > 0 ? (a.filled / a.total) * 100 : 0;
-    const pct = (basis === "qty" ? pq : pv) ?? (basis === "qty" ? pv : pq) ?? 0;
+  const grouped = new Map<string, ZoneAggregateRow & { rack_zones: RackZoneSummary[]; storages: Set<string> }>();
+  for (const row of rows) {
+    const key = `${row.wh}|${row.zone}`;
+    const group = grouped.get(key) ?? {
+      wh: row.wh, zone: row.zone, rack_zone: "", storage: "",
+      cap_qty: 0, cap_cbm: 0, n_cbm: 0, total: 0, qty: 0, cbm: 0, filled: 0,
+      rack_zones: [], storages: new Set<string>(),
+    };
+    group.cap_qty += row.cap_qty;
+    group.cap_cbm += row.cap_cbm;
+    group.n_cbm += row.n_cbm;
+    group.total += row.total;
+    group.qty += row.qty;
+    group.cbm += row.cbm;
+    group.filled += row.filled;
+    if (row.storage) group.storages.add(row.storage);
+    group.rack_zones.push(summarizeRackZone(row));
+    grouped.set(key, group);
+  }
+  const out = [...grouped.values()].map((group) => {
+    group.storage = [...group.storages].sort(naturalOrder.compare).join(" · ");
+    const { rack_zone: _rackZone, ...summary } = summarizeRackZone(group);
     return {
-      wh: a.wh, zone: a.zone, storage: a.storage, basis,
-      occ_qty: Math.round(a.qty), cap_qty: Math.round(a.cap_qty),
-      occ_cbm: r1(a.cbm), cap_cbm: r1(a.cap_cbm),
-      pct: r1(pct), pct_qty: pq === null ? null : r1(pq), pct_cbm: pv === null ? null : r1(pv),
-      pct_bin: r1(pb), sloc_total: a.total, sloc_occupied: a.filled, sloc_empty: a.total - a.filled,
-      status: statusFor(pct, a.wh),
-      status_qty: pq === null ? null : statusFor(pq, a.wh),
-      status_cbm: pv === null ? null : statusFor(pv, a.wh),
-      status_bin: statusFor(pb, a.wh),
+      ...summary,
+      rack_zones: group.rack_zones.sort((a, b) => naturalOrder.compare(a.rack_zone, b.rack_zone)),
     } satisfies ZoneSummary;
-  }).sort((a, b) => a.wh.localeCompare(b.wh) || a.zone.localeCompare(b.zone));
+  }).sort((a, b) => naturalOrder.compare(a.wh, b.wh) || naturalOrder.compare(a.zone, b.zone));
   setBoundedCache(zoneCache, cacheKey, { at: Date.now(), rows: out }, 10);
   return out;
 }
@@ -564,6 +603,7 @@ export async function getHeatmapPreviews(
   wh: string,
   perZone = 36,
 ): Promise<Record<string, SlocOccupancy[]>> {
+  refreshCachesForHistoryChange();
   const scope = cleanScope({ wh, operational: true });
   if (!scope.wh) return {};
   const safePerZone = Number.isFinite(perZone)
@@ -580,7 +620,7 @@ export async function getHeatmapPreviews(
        SELECT v.sloc_id, v.sloc_code, m.wh, v.zone, v.rack_zone, v.aisle, v.bay, v.level, v.bin,
               v.storage_handling AS storage, v.max_quantity, v.max_volume, v.location_id,
               row_number() OVER (
-                PARTITION BY v.zone
+                PARTITION BY v.zone, v.rack_zone
                 ORDER BY v.rack_zone, v.aisle, v.bay, v.level, v.bin, v.sloc_code
               )::INT AS rn
        FROM vw_sloc v ${JOIN_WH}
@@ -645,7 +685,7 @@ export async function getHeatmapPreviews(
       status_cbm: pv === null ? null : statusFor(pv, m.wh), status_bin: "NORMAL",
       product_count: o.pc,
     } satisfies SlocOccupancy;
-    (data[m.zone] ??= []).push(cell);
+    (data[`${m.zone}|${m.rack_zone}`] ??= []).push(cell);
   }
   setBoundedCache(heatPreviewCache, cacheKey, { at: Date.now(), data }, 10);
   return data;
@@ -660,6 +700,7 @@ export async function getHeatmapPreviews(
 export async function getHeatmapPage(
   wh: string,
   zone: string,
+  rackZone = "",
   offset = 0,
   limit = 600
 ): Promise<{ cells: SlocOccupancy[]; total: number; offset: number; nextOffset: number | null }> {
@@ -672,6 +713,7 @@ export async function getHeatmapPage(
     : 600;
   const scope = cleanScope({ wh, zone, operational: true });
   if (!scope.wh || !scope.zone) return { cells: [], total: 0, offset: safeOffset, nextOffset: null };
+  const normalizedRackZone = rackZone.trim().toUpperCase();
 
   // One bounded query returns the page, its total, and stock aggregates from
   // the same read snapshot. This replaces three connection opens per click.
@@ -683,6 +725,7 @@ export async function getHeatmapPage(
               v.storage_handling AS storage, v.max_quantity, v.max_volume, v.location_id
        FROM vw_sloc v ${JOIN_WH}
        WHERE ${OPERATIONAL_SLOC} AND m.wh = ? AND v.zone = ?
+         ${normalizedRackZone ? "AND v.rack_zone = ?" : ""}
      ), paged AS (
        SELECT *, count(*) OVER ()::INT AS total
        FROM scoped
@@ -706,7 +749,7 @@ export async function getHeatmapPage(
      LEFT JOIN stock_agg a
        ON a.location_id = p.location_id AND a.sloc_code = p.sloc_code
      ORDER BY p.rack_zone, p.aisle, p.bay, p.level, p.bin, p.sloc_code`,
-    [scope.wh, scope.zone, safeLimit, safeOffset],
+    [scope.wh, scope.zone, ...(normalizedRackZone ? [normalizedRackZone] : []), safeLimit, safeOffset],
   );
   if (!pageRows.length) return { cells: [], total: 0, offset: safeOffset, nextOffset: null };
 
@@ -881,6 +924,7 @@ export async function getZoneDetail(
 }
 
 export async function getWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
+  refreshCachesForHistoryChange();
   const safeHours = Math.max(1, Math.floor(hoursBack));
   const cached = trendCache.get(safeHours);
   if (cached && Date.now() - cached.at < DASHBOARD_TTL) return cached.rows;
@@ -905,7 +949,7 @@ export async function getWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
             count(DISTINCT s.product_id)::INT AS sku,
             count(DISTINCT CASE
               WHEN s.stock_qty > 0 OR s.occupied_cbm > 0
-              THEN concat(s.location_id::VARCHAR, '|', s.sloc_code)
+              THEN (s.location_id, s.sloc_code)
             END)::INT AS bins
      FROM stock_history s
      JOIN effective e

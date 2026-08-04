@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import ThemeToggle from "@/components/ui/theme-toggle";
 import CommandPalette from "@/components/ui/command-palette";
@@ -9,33 +9,35 @@ import { useT } from "@/lib/i18n-client";
 
 // A full server refresh re-runs dashboard DuckDB queries. Keep it operationally
 // fresh without doing that work every minute in every background tab.
-const INTERVAL_S = 120;
+const INTERVAL_MS = 600_000;
 
 export default function Topbar({
   userName, role, onOpenMobileNav,
 }: { userName: string; role: string; onOpenMobileNav: () => void }) {
   const router = useRouter();
   const { t } = useT();
-  const [left, setLeft] = useState(INTERVAL_S);
   const [paused, setPaused] = useState(false);
+  const nextRefresh = useRef(Date.now() + INTERVAL_MS);
   const roleLabel = t(`shell.role.${role}`, role);
 
   const refresh = useCallback(() => {
     router.refresh();
-    setLeft(INTERVAL_S);
+    nextRefresh.current = Date.now() + INTERVAL_MS;
   }, [router]);
 
   useEffect(() => {
-    if (paused) return;
-    const t = setInterval(() => {
-      setLeft((s) => {
-        if (document.hidden) return s;
-        if (s <= 1) { router.refresh(); return INTERVAL_S; }
-        return s - 1;
-      });
-    }, 1000);
-    return () => clearInterval(t);
-  }, [paused, router]);
+    if (paused) return undefined;
+    nextRefresh.current = Date.now() + INTERVAL_MS;
+    const refreshIfDue = () => {
+      if (!document.hidden && Date.now() >= nextRefresh.current) refresh();
+    };
+    const timer = window.setInterval(refreshIfDue, INTERVAL_MS);
+    document.addEventListener("visibilitychange", refreshIfDue);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshIfDue);
+    };
+  }, [paused, refresh]);
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -69,7 +71,7 @@ export default function Topbar({
           <span className="hidden lg:inline">
             {paused
               ? t("shell.refreshPaused")
-              : t("shell.refreshIn").replace("{seconds}", `${left}`)}
+              : t("shell.refreshEvery")}
           </span>
         </button>
         <button className="btn btn-sm topbar-refresh" onClick={refresh}>{t("action.refresh")}</button>

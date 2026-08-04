@@ -27,6 +27,9 @@ if ($existing) {
 }
 
 $node = (Get-Command node.exe -ErrorAction Stop).Source
+$env:DUCKDB_STATE_PATH = Join-Path $workspace "db\app_state_preview_$Port.duckdb"
+$env:WIOM_EMBEDDED_SYNC = "0"
+$env:WIOM_API_SYNC_BOOTSTRAP = "0"
 $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
 $startInfo.FileName = $node
 $startInfo.Arguments = "`"scripts\start-production.mjs`" --port $Port --sync-optional"

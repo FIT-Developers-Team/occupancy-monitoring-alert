@@ -38,9 +38,9 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -119,10 +119,77 @@ def pid_alive(pid: int):
         return None
 
 
+def process_start_token(pid: int) -> Optional[str]:
+    """Stable process-start identity so a recycled PID is not treated as owner."""
+    if not pid or pid <= 0:
+        return None
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.windll.kernel32
+            handle = k32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return None
+            created = wintypes.FILETIME()
+            exited = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            ok = k32.GetProcessTimes(
+                handle,
+                ctypes.byref(created), ctypes.byref(exited),
+                ctypes.byref(kernel), ctypes.byref(user),
+            )
+            k32.CloseHandle(handle)
+            if not ok:
+                return None
+            return str((created.dwHighDateTime << 32) | created.dwLowDateTime)
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as handle:
+            return handle.read().split()[21]
+    except (OSError, IndexError):
+        return None
+
+
+def process_executable(pid: int) -> Optional[str]:
+    """Best-effort executable basename, used for legacy locks without a token."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            handle = k32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return None
+            size = ctypes.c_ulong(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            ok = k32.QueryFullProcessImageNameW(
+                handle, 0, buffer, ctypes.byref(size)
+            )
+            k32.CloseHandle(handle)
+            return os.path.basename(buffer.value).lower() if ok else None
+        return os.path.basename(os.readlink(f"/proc/{pid}/exe")).lower()
+    except OSError:
+        return None
+
+
+def lock_owner_alive(pid: Optional[int], start_token: Optional[str]) -> bool:
+    alive = pid_alive(pid) if pid else False
+    if alive is not True:
+        return False
+    current_token = process_start_token(int(pid))
+    if start_token and current_token:
+        return start_token == current_token
+    # Legacy locks stored only PID. Reject a recycled non-Python process, which
+    # is the observed Windows failure mode; unknown protected processes remain
+    # conservatively alive.
+    executable = process_executable(int(pid))
+    return executable is None or executable.startswith(("python", "py.exe"))
+
+
 def read_lock_file(path: str):
-    """(pid|None, umur_detik|None) dari file lock berformat 'pid|epoch' (kompatibel 'pid')."""
+    """Return (pid, age_seconds, process_start_token), compatible with old locks."""
     pid = None
     age = None
+    start_token = None
     try:
         raw = open(path, "r", encoding="utf-8", errors="ignore").read().strip()
         head = raw.split("|")
@@ -130,6 +197,8 @@ def read_lock_file(path: str):
             pid = int(head[0])
         if len(head) > 1 and head[1].isdigit():
             age = max(0.0, time.time() - int(head[1]))
+        if len(head) > 2 and head[2]:
+            start_token = head[2]
     except OSError:
         pass
     if age is None:
@@ -137,7 +206,7 @@ def read_lock_file(path: str):
             age = max(0.0, time.time() - os.path.getmtime(path))
         except OSError:
             pass
-    return pid, age
+    return pid, age, start_token
 
 
 def acquire_daemon_lock(path: str) -> None:
@@ -148,15 +217,18 @@ def acquire_daemon_lock(path: str) -> None:
     def create() -> None:
         descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(f"{os.getpid()}|{int(time.time())}\n")
+            handle.write(
+                f"{os.getpid()}|{int(time.time())}|"
+                f"{process_start_token(os.getpid()) or ''}\n"
+            )
             handle.flush()
             os.fsync(handle.fileno())
 
     try:
         create()
     except FileExistsError:
-        owner_pid, _ = read_lock_file(lock_path)
-        if owner_pid and pid_alive(owner_pid):
+        owner_pid, _, owner_token = read_lock_file(lock_path)
+        if lock_owner_alive(owner_pid, owner_token):
             raise RuntimeError(
                 f"Managed daemon lain masih aktif (pid {owner_pid})."
             )
@@ -167,8 +239,9 @@ def acquire_daemon_lock(path: str) -> None:
         create()
 
     def release() -> None:
-        owner_pid, _ = read_lock_file(lock_path)
-        if owner_pid != os.getpid():
+        owner_pid, _, owner_token = read_lock_file(lock_path)
+        if (owner_pid != os.getpid()
+                or owner_token != process_start_token(os.getpid())):
             return
         try:
             os.remove(lock_path)
@@ -1201,6 +1274,28 @@ class DuckDBSink:
         ).fetchone()
         return {"watermark": r[0], "key_max": r[1]} if r else {"watermark": None, "key_max": None}
 
+    def seconds_since_run(self, job: str) -> Optional[float]:
+        """Age of the last successful run, or None if the job never ran."""
+        row = self.con.execute(
+            "SELECT updated_at FROM _sync_state WHERE job = ?", [job]
+        ).fetchone()
+        if not row or row[0] is None:
+            return None
+        last = row[0]
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return max(0.0, (now_utc() - last).total_seconds())
+
+    def mark_run(self, job: str) -> None:
+        """Record a successful run without disturbing an incremental watermark."""
+        self.con.execute(
+            """
+            INSERT INTO _sync_state VALUES (?,?,?,?)
+            ON CONFLICT (job) DO UPDATE SET updated_at = excluded.updated_at
+            """,
+            [job, None, None, now_utc()],
+        )
+
     def set_state(self, job: str, watermark: Optional[str], key_max: Optional[str]) -> None:
         self.con.execute(
             """
@@ -1301,6 +1396,46 @@ class DuckDBSink:
         return self._align_insert(table, df, synced_at, stamp=True)
 
     # -- retention ------------------------------------------------------------ #
+    def thin_snapshots(self, table: str, policy: Dict[str, Any],
+                       time_col: str = SYNCED_AT) -> int:
+        """Thin out old snapshots, keeping full detail only where it is read.
+
+        A snapshot job appends the ENTIRE current state on every pass, so at a
+        30-minute interval the table grows by ~48 full copies per day. Nothing
+        reads every one of them: flow rates diff consecutive snapshots over the
+        last ~26 h, and the trend chart only needs a curve. So keep every
+        snapshot in the recent window, then one per hour, then one per day.
+
+        Rows are deleted whole-snapshot (by distinct timestamp) so any surviving
+        snapshot stays internally consistent.
+        """
+        if not self._table_exists(table) or time_col not in self._columns(table):
+            return 0
+        keep_all_hours = max(1, int(policy.get("keep_all_hours", 30)))
+        hourly_days = max(0, int(policy.get("hourly_days", 7)))
+        before = self.con.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
+        self.con.execute(
+            f'''
+            WITH snaps AS (SELECT DISTINCT "{time_col}" AS t FROM "{table}"),
+            keep AS (
+                SELECT t FROM snaps
+                 WHERE t >= now() - INTERVAL {keep_all_hours} HOUR
+                UNION
+                SELECT min(t) FROM snaps
+                 WHERE t <  now() - INTERVAL {keep_all_hours} HOUR
+                   AND t >= now() - INTERVAL {hourly_days} DAY
+                 GROUP BY date_trunc('hour', t)
+                UNION
+                SELECT min(t) FROM snaps
+                 WHERE t < now() - INTERVAL {hourly_days} DAY
+                 GROUP BY date_trunc('day', t)
+            )
+            DELETE FROM "{table}" WHERE "{time_col}" NOT IN (SELECT t FROM keep)
+            '''
+        )
+        after = self.con.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
+        return before - after
+
     def apply_retention(self, table: str, days: int, time_col: str = SYNCED_AT) -> int:
         if not self._table_exists(table) or time_col not in self._columns(table):
             return 0
@@ -1330,6 +1465,12 @@ class Job:
     retention_days: Optional[int] = None
     enabled: bool = True
     dataset: Optional[Dict[str, Any]] = None     # mode superset_dataset (Chart Data API)
+    # snapshot mode only: how long full-resolution snapshots are kept before
+    # being thinned to hourly, then daily. See DuckDBSink.thin_snapshots.
+    snapshot_retention: Dict[str, Any] = field(default_factory=dict)
+    # Master/dimension data barely changes, so re-pulling it on every pass is
+    # mostly wasted network and CPU. 0 = run on every pass.
+    min_interval_seconds: int = 0
 
 
 class SyncEngine:
@@ -1341,11 +1482,108 @@ class SyncEngine:
         self.results: List[Dict[str, Any]] = []
         perf = config.get("performance", {}) or {}
         self.lookback_minutes = int(perf.get("lookback_minutes", 10))
-        self.max_batch_size = int(perf.get("max_batch_size", 500_000))
-        self.concurrency = max(1, int(perf.get("concurrency", 4)))
-        self.adaptive_batch = bool(perf.get("adaptive_batch", True))
-        self.max_retries = int(perf.get("max_retries", 5))
+        # Paging is driven by job.chunk_size and superset.server_row_cap; the
+        # former max_batch_size / concurrency / adaptive_batch / max_retries
+        # settings were read here and never used by anything.
         self.progress: Dict[str, Any] = {}
+
+    def _connect(self, read_only: bool = False) -> "duckdb.DuckDBPyConnection":
+        """Open DuckDB with a small, explicit VPS resource envelope."""
+        perf = self.config.get("performance", {}) or {}
+        threads = max(1, min(8, int(perf.get("duckdb_threads", 2))))
+        memory_limit = str(perf.get("duckdb_memory_limit", "384MB")).upper()
+        if not re.fullmatch(r"\d+(?:MB|GB)", memory_limit):
+            memory_limit = "384MB"
+        storage_version = str(perf.get("duckdb_storage_version", "v1.3.0"))
+        if not re.fullmatch(r"v\d+\.\d+\.\d+", storage_version):
+            storage_version = "v1.3.0"
+        return duckdb.connect(
+            self.duckdb_path,
+            read_only=read_only,
+            config={
+                "threads": str(threads),
+                "memory_limit": memory_limit,
+                "preserve_insertion_order": "false",
+                "storage_compatibility_version": storage_version,
+                "temp_directory": os.path.join(
+                    tempfile.gettempdir(), f"wiom-duckdb-{os.getpid()}"
+                ),
+            },
+        )
+
+    @staticmethod
+    def _is_database_lock_error(error: Exception) -> bool:
+        message = str(error).lower()
+        return (
+            "being used by another process" in message
+            or "could not set lock" in message
+            or "conflicting lock" in message
+            or ("cannot open file" in message and ("lock" in message or "process" in message))
+        )
+
+    @contextmanager
+    def _writer_connection(self, wait_seconds: float = 45.0):
+        """Drain Node readers before opening the short DuckDB write window.
+
+        DuckDB does not support a Python writer and Node readers in separate
+        processes. On Windows the OS lock is strict, so retries alone can keep
+        colliding with the Settings status poll. A tiny intent file makes new
+        web reads wait while this method lets any in-flight reader finish.
+        Network extraction remains outside this context.
+        """
+        intent_path = self.duckdb_path + ".write-intent"
+        _write_json_atomic(intent_path, {
+            "pid": os.getpid(),
+            "created_at": now_utc().isoformat(),
+        })
+        con: Optional[duckdb.DuckDBPyConnection] = None
+        deadline = time.monotonic() + max(1.0, wait_seconds)
+        delay = 0.10
+        try:
+            while True:
+                try:
+                    con = self._connect()
+                    break
+                except Exception as error:  # noqa: BLE001
+                    if not self._is_database_lock_error(error) or time.monotonic() >= deadline:
+                        raise
+                    self.progress = {
+                        **self.progress,
+                        "phase": "waiting_for_database",
+                    }
+                    log.info("menunggu pembaca dashboard melepas DuckDB (%.1f dtk)", delay)
+                    time.sleep(delay)
+                    delay = min(0.50, delay * 1.5)
+            yield con
+        finally:
+            if con is not None:
+                con.close()
+            marker = _read_json(intent_path)
+            if not marker or int(marker.get("pid") or 0) == os.getpid():
+                try:
+                    os.remove(intent_path)
+                except FileNotFoundError:
+                    pass
+
+    def _read_job_state(self, job_name: str) -> tuple[Dict[str, Any], Optional[float]]:
+        """Read the cursor and last-run age without opening a write connection."""
+        con = self._connect(read_only=True)
+        try:
+            row = con.execute(
+                "SELECT watermark, key_max, updated_at FROM _sync_state WHERE job = ?",
+                [job_name],
+            ).fetchone()
+        finally:
+            con.close()
+        if not row:
+            return {"watermark": None, "key_max": None}, None
+        age = None
+        if row[2] is not None:
+            last = row[2]
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            age = max(0.0, (now_utc() - last).total_seconds())
+        return {"watermark": row[0], "key_max": row[1]}, age
 
     @staticmethod
     def _parse_job(j: Dict[str, Any]) -> Job:
@@ -1363,6 +1601,8 @@ class SyncEngine:
             retention_days=j.get("retention_days"),
             enabled=j.get("enabled", True),
             dataset=j.get("dataset"),
+            snapshot_retention=j.get("snapshot_retention") or {},
+            min_interval_seconds=int(j.get("min_interval_seconds") or 0),
         )
 
     @property
@@ -1392,7 +1632,11 @@ class SyncEngine:
 
         def acquire() -> int:
             f = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            os.write(f, f"{os.getpid()}|{int(time.time())}".encode())
+            os.write(
+                f,
+                (f"{os.getpid()}|{int(time.time())}|"
+                 f"{process_start_token(os.getpid()) or ''}").encode(),
+            )
             return f
 
         fd = None
@@ -1400,8 +1644,8 @@ class SyncEngine:
             try:
                 fd = acquire()
             except FileExistsError:
-                pid, age = read_lock_file(lock_path)
-                alive = pid_alive(pid) if pid else False
+                pid, age, start_token = read_lock_file(lock_path)
+                alive = lock_owner_alive(pid, start_token)
                 stale = alive is False or (alive is None and age is not None
                                            and age > self.LOCK_STALE_SEC)
                 if stale:
@@ -1431,44 +1675,58 @@ class SyncEngine:
                     pass
 
     def run_all(self, only: Optional[str] = None,
-                fetch_pages=None) -> List[Dict[str, Any]]:
+                fetch_pages=None, force_due: bool = False) -> List[Dict[str, Any]]:
         """
         fetch_pages: injectable extractor for testing. Signature:
             fetch_pages(job, extra_where, start_after) -> Iterable[list[dict]]
         Defaults to the live Superset keyset extractor.
         """
         with self._lock():
-            con = duckdb.connect(self.duckdb_path)
-            bootstrap_schema(con, self.config)
-            sink = DuckDBSink(con)
-            try:
-                completed = {
-                    result["name"]
-                    for result in self.results
-                    if result.get("status") in ("OK", "SKIPPED")
-                }
-                for job in self.jobs:
-                    if only and job.name != only:
-                        continue
-                    # A retry continues after jobs that already committed
-                    # successfully, preventing duplicate snapshot batches.
-                    if job.name in completed:
-                        continue
-                    if not job.enabled:
-                        log.info("skip %s (disabled)", job.name)
-                        self.results.append({
-                            "name": job.name, "status": "SKIPPED",
-                            "rows_pulled": 0, "rows_written": 0, "duration_ms": 0,
-                        })
-                        continue
-                    self._run_job(job, sink, fetch_pages)
-            finally:
-                con.close()
+            # Schema repair is a short write. Close it before any network work so
+            # the web process can keep opening read-only dashboard connections.
+            with self._writer_connection() as con:
+                bootstrap_schema(con, self.config)
+                DuckDBSink(con)
+
+            completed = {
+                result["name"]
+                for result in self.results
+                if result.get("status") in ("OK", "SKIPPED", "UP_TO_DATE")
+            }
+            for job in self.jobs:
+                if only and job.name != only:
+                    continue
+                # A retry continues after jobs that already committed
+                # successfully, preventing duplicate snapshot batches.
+                if job.name in completed:
+                    continue
+                if not job.enabled:
+                    log.info("skip %s (disabled)", job.name)
+                    self.results.append({
+                        "name": job.name, "status": "SKIPPED",
+                        "rows_pulled": 0, "rows_written": 0, "duration_ms": 0,
+                    })
+                    continue
+                state, age = self._read_job_state(job.name)
+                # Explicit jobs and manual requests always refresh required
+                # sources. Only automatic scheduled sweeps honour the longer
+                # master-data interval used to save Superset/VPS resources.
+                if (not force_due and only != job.name and job.min_interval_seconds
+                        and age is not None and age < job.min_interval_seconds):
+                    due_in = job.min_interval_seconds - age
+                    log.info("skip %s (belum jatuh tempo, %.0f menit lagi)",
+                             job.name, due_in / 60)
+                    self.results.append({
+                        "name": job.name, "status": "UP_TO_DATE",
+                        "rows_pulled": 0, "rows_written": 0, "duration_ms": 0,
+                        "message": f"belum jatuh tempo ({due_in / 60:.0f} menit lagi)",
+                    })
+                    continue
+                self._run_job(job, state, fetch_pages)
         return list(self.results)
 
-    def _run_job(self, job: Job, sink: DuckDBSink, fetch_pages) -> None:
+    def _run_job(self, job: Job, state: Dict[str, Any], fetch_pages) -> None:
         started = now_utc()
-        state = sink.get_state(job.name)
         extra_where = None
         start_after = None
 
@@ -1511,57 +1769,115 @@ class SyncEngine:
         max_watermark = state["watermark"]
         max_key = state["key_max"]
         run_started = time.time()
+        db_dir = os.path.dirname(os.path.abspath(self.duckdb_path))
+        os.makedirs(db_dir, exist_ok=True)
+        stage_fd, stage_path = tempfile.mkstemp(
+            prefix=".superset-sync-extract-", suffix=".jsonl", dir=db_dir,
+        )
+        os.close(stage_fd)
+        con: Optional[duckdb.DuckDBPyConnection] = None
+        sink: Optional[DuckDBSink] = None
         transaction_open = False
+        writer_context = None
+        writer_active = False
         try:
-            # A failed page must not leave a partial snapshot/upsert behind.
-            # DuckDB supports transactional DDL, so table creation/alignment is
-            # rolled back together with the data changes.
+            # Network extraction is staged first. This is intentionally outside
+            # the DuckDB write connection: a slow Superset response no longer
+            # makes the dashboard unavailable for the whole download window.
+            with open(stage_path, "w", encoding="utf-8", newline="\n") as staged:
+                for rows in pages:
+                    if pd is None:
+                        raise RuntimeError("pandas is required for real sync (pip install pandas)")
+                    if not rows:
+                        continue
+                    df = pd.DataFrame(rows)
+                    pulled += len(df)
+                    batch_idx += 1
+                    for row in rows:
+                        staged.write(json.dumps(
+                            row, ensure_ascii=False, default=str, separators=(",", ":"),
+                        ))
+                        staged.write("\n")
+
+                    if job.watermark_column and job.watermark_column in df.columns:
+                        wm = str(df[job.watermark_column].max())
+                        max_watermark = wm if not max_watermark else max(max_watermark, wm)
+                    if job.key_col in df.columns:
+                        max_key = str(df[job.key_col].max())
+
+                    elapsed = time.time() - run_started
+                    throughput = round(pulled / elapsed, 1) if elapsed > 0 else 0
+                    self.progress = {
+                        "job": job.name,
+                        "phase": "extracting",
+                        "current_batch": batch_idx,
+                        "rows_pulled": pulled,
+                        "rows_written": 0,
+                        "cursor": max_key or max_watermark,
+                        "throughput_rows_per_sec": throughput,
+                    }
+                    log.info("[%s] unduh batch %d: %d rows (total %d, %.0f rows/s)",
+                             job.name, batch_idx, len(df), pulled, throughput)
+
+            # Only the local write phase owns DuckDB. All changes remain one
+            # transaction, so a failed batch cannot leave a partial snapshot.
+            writer_context = self._writer_connection()
+            con = writer_context.__enter__()
+            writer_active = True
+            sink = DuckDBSink(con)
             sink.con.execute("BEGIN TRANSACTION")
             transaction_open = True
-            for rows in pages:
-                if pd is None:
-                    raise RuntimeError("pandas is required for real sync (pip install pandas)")
-                df = pd.DataFrame(rows)
-                pulled += len(df)
+            batch_idx = 0
+            buffer: List[Dict[str, Any]] = []
+
+            def write_batch(rows: List[Dict[str, Any]]) -> None:
+                nonlocal written, batch_idx
+                if not rows:
+                    return
+                frame = pd.DataFrame(rows)
                 batch_idx += 1
                 if job.mode == "snapshot":
-                    written += sink.append_snapshot(job.target_table, df, started)
+                    written += sink.append_snapshot(job.target_table, frame, started)
                 elif job.mode == "incremental":
-                    written += sink.append_incremental(job.target_table, df, started)
+                    written += sink.append_incremental(job.target_table, frame, started)
                 elif job.mode == "upsert":
-                    written += sink.upsert(job.target_table, df, job.primary_key,
+                    written += sink.upsert(job.target_table, frame, job.primary_key,
                                            started, job.history_table)
                 else:
                     raise ValueError(f"Unknown mode {job.mode}")
-
-                if job.watermark_column and job.watermark_column in df.columns:
-                    wm = str(df[job.watermark_column].max())
-                    max_watermark = wm if not max_watermark else max(max_watermark, wm)
-                if job.key_col in df.columns:
-                    max_key = str(df[job.key_col].max())
-
-                # Update progress for real-time monitoring
-                elapsed = time.time() - run_started
-                throughput = round(pulled / elapsed, 1) if elapsed > 0 else 0
                 self.progress = {
                     "job": job.name,
+                    "phase": "writing",
                     "current_batch": batch_idx,
                     "rows_pulled": pulled,
                     "rows_written": written,
                     "cursor": max_key or max_watermark,
-                    "throughput_rows_per_sec": throughput,
                 }
-                log.info("[%s] batch %d: %d rows (total %d, %.0f rows/s, cursor %s)",
-                         job.name, batch_idx, len(df), pulled, throughput,
-                         max_key or max_watermark)
+                log.info("[%s] tulis batch %d: %d rows (total %d)",
+                         job.name, batch_idx, len(frame), written)
+
+            with open(stage_path, "r", encoding="utf-8") as staged:
+                for line in staged:
+                    buffer.append(json.loads(line))
+                    if len(buffer) >= job.chunk_size:
+                        write_batch(buffer)
+                        buffer = []
+                write_batch(buffer)
 
             # snapshot mode advances no watermark (it re-reads current state each run)
             if job.mode != "snapshot":
                 sink.set_state(job.name, max_watermark, max_key)
+            else:
+                # Still record the run so min_interval_seconds can be honoured.
+                sink.mark_run(job.name)
 
             purged = 0
             if job.retention_days:
                 purged = sink.apply_retention(job.target_table, job.retention_days)
+            if job.mode == "snapshot":
+                # Only snapshot tables have whole-copy duplicates to thin; for
+                # upsert/incremental _synced_at marks a row edit, not a copy.
+                purged += sink.thin_snapshots(job.target_table, job.snapshot_retention)
 
             sink.audit(job=job.name, mode=job.mode, started_at=started, finished_at=now_utc(),
                        rows_pulled=pulled, rows_written=written, watermark=max_watermark,
@@ -1577,16 +1893,21 @@ class SyncEngine:
             log.info("[%s] done: pulled=%d written=%d watermark=%s purged=%d",
                      job.name, pulled, written, max_watermark, purged)
         except Exception as e:  # noqa: BLE001
-            if transaction_open:
+            if transaction_open and sink is not None:
                 try:
                     sink.con.execute("ROLLBACK")
                 except Exception:  # noqa: BLE001
                     log.exception("[%s] rollback gagal", job.name)
             # Record the failed attempt after rollback so the audit survives.
             try:
-                sink.audit(job=job.name, mode=job.mode, started_at=started, finished_at=now_utc(),
-                           rows_pulled=pulled, rows_written=0, watermark=max_watermark,
-                           status="ERROR", message=str(e)[:500])
+                if con is None:
+                    raise RuntimeError("writer DuckDB belum berhasil dibuka; audit tersedia di status runtime")
+                audit_con = con
+                audit_sink = DuckDBSink(audit_con)
+                audit_sink.audit(job=job.name, mode=job.mode, started_at=started,
+                                 finished_at=now_utc(), rows_pulled=pulled,
+                                 rows_written=0, watermark=max_watermark,
+                                 status="ERROR", message=str(e)[:500])
             except Exception:  # noqa: BLE001
                 log.exception("[%s] gagal menulis audit error", job.name)
             self.results.append({
@@ -1597,6 +1918,15 @@ class SyncEngine:
             })
             log.exception("[%s] FAILED: %s", job.name, e)
             raise
+        finally:
+            if writer_active and writer_context is not None:
+                writer_context.__exit__(None, None, None)
+            elif con is not None:
+                con.close()
+            try:
+                os.remove(stage_path)
+            except FileNotFoundError:
+                pass
 
 
 # ----------------------------------------------------------------------------- #
@@ -1609,8 +1939,8 @@ def run_unlock(engine: "SyncEngine") -> None:
     if not os.path.exists(lock_path):
         log.info("Tidak ada lock: %s", lock_path)
         return
-    pid, age = read_lock_file(lock_path)
-    alive = pid_alive(pid) if pid else False
+    pid, age, start_token = read_lock_file(lock_path)
+    alive = lock_owner_alive(pid, start_token)
     if alive is True:
         log.error("Proses %s MASIH HIDUP memegang lock — TIDAK dihapus. "
                   "Matikan proses itu dulu (Task Manager / taskkill), atau tunggu selesai.", pid)
@@ -1619,6 +1949,54 @@ def run_unlock(engine: "SyncEngine") -> None:
     log.info("Lock dihapus: %s (pid=%s%s%s)", lock_path, pid or "?",
              " mati" if alive is False else " tak terverifikasi",
              f", umur {int(age)} dtk" if age is not None else "")
+
+
+def run_compact(engine: "SyncEngine") -> None:
+    """Rewrite the DuckDB file so deleted snapshots actually return disk space.
+
+    DELETE frees blocks for reuse but never shrinks the file, so a database that
+    once grew to tens of GB keeps occupying that much on the VPS. Copying into a
+    fresh file and swapping it in is the only way to reclaim it.
+    """
+    src = os.path.abspath(engine.duckdb_path)
+    if not os.path.isfile(src):
+        raise RuntimeError(f"Database tidak ditemukan: {src}")
+    tmp = f"{src}.compact-{os.getpid()}"
+    for leftover in (tmp, f"{tmp}.wal"):
+        if os.path.exists(leftover):
+            os.remove(leftover)
+    before = os.path.getsize(src)
+    with engine._lock():  # noqa: SLF001 — same single-writer guarantee as a sync
+        con = engine._connect()  # noqa: SLF001
+        try:
+            bootstrap_schema(con, engine.config)
+            con.execute("CHECKPOINT")
+            # The attached name of the opened file is its basename without the
+            # extension; COPY FROM DATABASE needs it explicitly.
+            source_alias = con.execute(
+                "SELECT database_name FROM duckdb_databases() "
+                "WHERE NOT internal AND database_name <> 'compacted' LIMIT 1"
+            ).fetchone()[0]
+            perf = engine.config.get("performance", {}) or {}
+            storage_version = str(perf.get("duckdb_storage_version", "v1.3.0"))
+            if not re.fullmatch(r"v\d+\.\d+\.\d+", storage_version):
+                storage_version = "v1.3.0"
+            escaped_tmp = tmp.replace("'", "''")
+            con.execute(
+                f"ATTACH '{escaped_tmp}' AS compacted "
+                f"(STORAGE_VERSION '{storage_version}')"
+            )
+            con.execute(f'COPY FROM DATABASE "{source_alias}" TO compacted')
+            con.execute("DETACH compacted")
+        finally:
+            con.close()
+        os.replace(tmp, src)
+        for stale in (f"{src}.wal", f"{tmp}.wal"):
+            if os.path.exists(stale):
+                os.remove(stale)
+    after = os.path.getsize(src)
+    log.info("compact selesai: %.1f MB -> %.1f MB (hemat %.1f MB)",
+             before / 1048576, after / 1048576, (before - after) / 1048576)
 
 
 def run_columns(engine: "SyncEngine") -> None:
@@ -1854,6 +2232,7 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
                             "state": "running",
                             "finished_at": None,
                             "next_run_at": None,
+                            "phase": prog.get("phase"),
                             "current_batch": prog.get("current_batch"),
                             "cursor": prog.get("cursor"),
                             "throughput_rows_per_sec": prog.get("throughput_rows_per_sec"),
@@ -1875,11 +2254,12 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
     ).start()
     log.info("managed sync daemon started — configuration reload is active")
 
-    def run_with_retry(active_engine: SyncEngine, retries: int) -> List[Dict[str, Any]]:
+    def run_with_retry(active_engine: SyncEngine, retries: int,
+                       force_due: bool = False) -> List[Dict[str, Any]]:
         delay = 5
         for attempt in range(1, retries + 1):
             try:
-                return active_engine.run_all(only=only_job)
+                return active_engine.run_all(only=only_job, force_due=force_due)
             except Exception as exc:  # noqa: BLE001
                 log.warning("pass failed (attempt %d/%d): %s", attempt, retries, exc)
                 if attempt >= retries:
@@ -1889,7 +2269,7 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
                 active_engine.results = [
                     result
                     for result in active_engine.results
-                    if result.get("status") in ("OK", "SKIPPED")
+                    if result.get("status") in ("OK", "SKIPPED", "UP_TO_DATE")
                 ]
                 active_engine._client = None
                 time.sleep(delay)
@@ -1956,6 +2336,7 @@ def run_managed_daemon(config_path: str, only_job: Optional[str], default_retrie
                 results = run_with_retry(
                     active_engine,
                     max(1, int(schedule.get("retry_count", default_retries))),
+                    force_due=manual,
                 )
                 finished_at = now_utc()
                 next_due = time.time() + interval
@@ -2085,6 +2466,8 @@ def main() -> None:
                     help="Cetak kolom ASLI tiap dataset di config (utk menyelaraskan mapping)")
     ap.add_argument("--unlock", action="store_true",
                     help="Hapus lock basi db/*.duckdb.lock (menolak bila pemegang masih hidup)")
+    ap.add_argument("--compact", action="store_true",
+                    help="Tulis ulang file DuckDB agar ruang bekas hapus snapshot kembali")
     ap.add_argument("--check-runtime", action="store_true",
                     help="Validasi dependency/config/storage lokal tanpa menghubungi Superset")
     ap.add_argument("--check-auth", action="store_true",
@@ -2105,6 +2488,9 @@ def main() -> None:
         return
     if args.unlock:
         run_unlock(engine)
+        return
+    if args.compact:
+        run_compact(engine)
         return
     if args.daemon:
         run_managed_daemon(args.config, args.job, args.retry)
