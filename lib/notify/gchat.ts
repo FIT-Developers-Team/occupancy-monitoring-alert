@@ -42,9 +42,13 @@ export function googleChatMentionText(values: string[]): string {
   return normalizeGoogleChatMentionIds(values).map((id) => `<users/${id}>`).join(" ");
 }
 
-function addMentions(text: string, mentionUserIds: string[]): string {
+function addMentions(text: string, mentionUserIds: string[], mentionEmails: string[] = []): string {
   const mentions = googleChatMentionText(mentionUserIds);
-  return mentions ? `${mentions}\n${text}` : text;
+  // Incoming webhooks cannot resolve an address into a real @mention, so the
+  // PIC line is informational: it names who owns the warehouse without
+  // pretending Chat will notify them.
+  const pic = mentionEmails.length ? `PIC: ${mentionEmails.join(", ")}` : "";
+  return [mentions, pic, text].filter(Boolean).join("\n");
 }
 
 async function post(url: string, body: unknown): Promise<GChatSendResult> {
@@ -97,6 +101,7 @@ export async function sendGChatAlert(
   alert: Alert,
   escalationPrefix?: string,
   mentionUserIds: string[] = [],
+  mentionEmails: string[] = [],
 ): Promise<GChatSendResult> {
   const base = process.env.APP_BASE_URL?.replace(/\/$/, "");
   const location = [
@@ -109,6 +114,7 @@ export async function sendGChatAlert(
   const fallback = addMentions(
     `${SEV_ICON[alert.severity] ?? ""} [${alert.severity}] ${alert.rule_name}${prefix} — ${location}\n${alert.title}`,
     mentionUserIds,
+    mentionEmails,
   );
   const card = {
     text: fallback,
@@ -123,6 +129,9 @@ export async function sendGChatAlert(
           widgets: [
             { textParagraph: { text: `<b>${escapeHtml(alert.title)}</b>` } },
             { textParagraph: { text: escapeHtml(alert.detail) } },
+            ...(mentionEmails.length ? [{
+              textParagraph: { text: `<b>PIC ${escapeHtml(alert.warehouse_code)}:</b> ${escapeHtml(mentionEmails.join(", "))}` },
+            }] : []),
             { textParagraph: { text: `<i>Alert ${escapeHtml(alert.alert_id)} · kejadian ke-${alert.occurrences}</i>` } },
             ...(base ? [{
               buttonList: { buttons: [{

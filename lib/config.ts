@@ -71,6 +71,14 @@ const GoogleChatRouteSchema = z.object({
     }
     return normalized;
   }),
+  // Emails of the team owning these warehouses. An incoming webhook cannot turn
+  // an address into a real Chat @mention — only a numeric user id can do that —
+  // so these are rendered as a visible "PIC" line on the card instead of being
+  // silently dropped, which is what happened when admins typed an address into
+  // the user-id field.
+  mention_emails: z.array(z.string().trim().toLowerCase().email({
+    message: "Tag email harus berupa alamat email yang valid.",
+  })).default([]).transform((values) => [...new Set(values)]),
 });
 
 const RecipientsSchema = z.object({

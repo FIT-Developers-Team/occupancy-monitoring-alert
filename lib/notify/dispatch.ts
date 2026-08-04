@@ -70,7 +70,7 @@ export async function dispatchToLevel(
 
   // Merge overlapping matches by URL, so one Space receives one post per
   // alert/level even when an admin created overlapping warehouse scopes.
-  const googleChatTargets = new Map<string, { label: string; mentions: string[] }>();
+  const googleChatTargets = new Map<string, { label: string; mentions: string[]; emails: string[] }>();
   for (const route of tier.gchat_routes) {
     if (!route.enabled) continue;
     if (!route.warehouse_codes.includes("*") && !route.warehouse_codes.includes(alert.warehouse_code)) continue;
@@ -81,6 +81,7 @@ export async function dispatchToLevel(
         ...(existing?.mentions ?? []),
         ...route.mention_user_ids,
       ]),
+      emails: [...new Set([...(existing?.emails ?? []), ...route.mention_emails])],
     });
   }
 
@@ -88,12 +89,12 @@ export async function dispatchToLevel(
   // until an admin saves them as explicit routes in the new editor.
   for (const webhookUrl of tier.gchat_webhooks) {
     if (!googleChatTargets.has(webhookUrl)) {
-      googleChatTargets.set(webhookUrl, { label: "Rute lama (semua WH)", mentions: [] });
+      googleChatTargets.set(webhookUrl, { label: "Rute lama (semua WH)", mentions: [], emails: [] });
     }
   }
 
   for (const [webhookUrl, target] of googleChatTargets) {
-    const result = await sendGChatAlert(webhookUrl, alert, escalationPrefix, target.mentions);
+    const result = await sendGChatAlert(webhookUrl, alert, escalationPrefix, target.mentions, target.emails);
     await log(
       alert.alert_id,
       "gchat",

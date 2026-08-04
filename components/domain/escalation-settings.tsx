@@ -11,6 +11,8 @@ interface GoogleChatRoute {
   warehouse_codes: string[];
   webhook_url: string;
   mention_user_ids: string[];
+  /** Warehouse PIC addresses; shown on the card, cannot become a Chat ping. */
+  mention_emails: string[];
 }
 
 interface EscalationLevel {
@@ -68,6 +70,7 @@ function migrateLegacy(config: RecipientsConfig): RecipientsConfig {
           warehouse_codes: ["*"],
           webhook_url: webhookUrl,
           mention_user_ids: [],
+          mention_emails: [],
         })),
       ],
       gchat_webhooks: [],
@@ -195,6 +198,7 @@ export default function EscalationSettings() {
         warehouse_codes: ["*"],
         webhook_url: "",
         mention_user_ids: [],
+        mention_emails: [],
       }],
     });
   }
@@ -219,6 +223,7 @@ export default function EscalationSettings() {
         body: JSON.stringify({
           webhook_url: route.webhook_url,
           mention_user_ids: route.mention_user_ids,
+          mention_emails: route.mention_emails,
           label: route.label,
           warehouse_code: route.warehouse_codes.includes("*")
             ? t("set.ui.recipients.allWarehouses")
@@ -435,6 +440,17 @@ export default function EscalationSettings() {
                           onChange={(event) => updateRoute(levelIndex, routeIndex, { mention_user_ids: splitValues(event.target.value) })}
                         />
                         <small>{t("set.ui.recipients.mentionHint")}</small>
+                      </label>
+                      <label>
+                        <span>{t("set.ui.recipients.mentionEmails")}</span>
+                        <textarea
+                          className="input escalation-mentions"
+                          rows={2}
+                          placeholder="ops.cbt@astronauts.id, spv.cbt@astronauts.id"
+                          value={route.mention_emails.join(", ")}
+                          onChange={(event) => updateRoute(levelIndex, routeIndex, { mention_emails: splitValues(event.target.value) })}
+                        />
+                        <small>{t("set.ui.recipients.mentionEmailsHint")}</small>
                       </label>
                     </div>
                     <div className="escalation-route-footer">

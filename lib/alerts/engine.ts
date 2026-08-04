@@ -111,17 +111,38 @@ async function insertAlert(violation: Violation): Promise<Alert> {
   return rows[0];
 }
 
+const SEVERITY_ORDER: Severity[] = ["INFO", "WARNING", "HIGH", "CRITICAL", "EMERGENCY"];
+
 async function bumpAlert(existing: Alert, violation: Violation): Promise<Alert> {
+  // Never silently downgrade a live alert, and when it gets worse move it to
+  // the tier that severity is configured to start at. Without this an alert
+  // that opened as WARNING (tier 1) but escalated to CRITICAL kept notifying
+  // tier 1 only, because severity_start_level was applied at creation alone.
+  const severity = SEVERITY_ORDER.indexOf(violation.severity) > SEVERITY_ORDER.indexOf(existing.severity)
+    ? violation.severity
+    : existing.severity;
+  const level = Math.max(existing.escalation_level, startLevelFor(severity));
+  const delay = nextEscalationDelayMin(level);
+
   await stateExec(
     `UPDATE alerts SET occurrences = occurrences + 1, updated_at = now(),
-        severity = ?, title = ?, detail = ? WHERE alert_id = ?`,
-    [violation.severity, violation.title, violation.detail, existing.alert_id],
+        severity = ?, title = ?, detail = ?, escalation_level = ?,
+        next_escalation_at = ${delay === null ? "NULL" : `now() + INTERVAL ${delay} MINUTE`}
+     WHERE alert_id = ?`,
+    [severity, violation.title, violation.detail, level, existing.alert_id],
   );
+  if (level > existing.escalation_level) {
+    await stateExec(
+      "INSERT INTO alert_events VALUES (?, ?, now(), 'system', 'ESCALATED', ?)",
+      [uid("evt-"), existing.alert_id, `Severity naik ke ${severity} — langsung ke level ${level}`],
+    );
+  }
   return {
     ...existing,
-    severity: violation.severity,
+    severity,
     title: violation.title,
     detail: violation.detail,
+    escalation_level: level,
     occurrences: existing.occurrences + 1,
   };
 }
