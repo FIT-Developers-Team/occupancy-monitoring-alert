@@ -661,12 +661,14 @@
     letter-spacing: .07em; text-transform: uppercase;
   }
   .zone-aisle-head h3 strong { font-size: 13px; }
-  .zone-aisle-stat { display: flex; align-items: baseline; gap: 4px; color: var(--text-muted); font-size: 10px; }
+  .zone-aisle-stat { display: flex; align-items: baseline; gap: 3px; color: var(--text-muted); font-size: 10px; }
+  .zone-aisle-stat b { color: var(--text); font-size: 11px; }
   .zone-aisle-stat small { font-size: 8.5px; }
+  .zone-aisle-stat i { padding-inline: 2px; font-style: normal; opacity: .5; }
 
   /* Bays sit side by side; each one is a self-contained rack elevation. */
   .zone-bay-list {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
     gap: 8px; align-items: start;
   }
   .zone-bay {
@@ -685,15 +687,21 @@
   .zone-bay-head small { color: var(--text-muted); font-size: 9px; }
 
   /* Highest level renders first, so the stack reads like the physical rack. */
-  .zone-bay-levels { display: grid; gap: 3px; }
-  .zone-level-row { display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; gap: 5px; }
+  .zone-bay-levels { display: grid; gap: 2px; }
+  .zone-level-row { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: stretch; gap: 5px; }
   .zone-level-label {
-    padding: 2px 0; border-radius: 4px; background: var(--surface-sunken);
+    display: grid; place-content: center; border-radius: 4px; background: var(--surface-sunken);
     color: var(--text-muted); font-size: 8.5px; text-align: center;
   }
-  .zone-bin-row { display: flex; flex-wrap: wrap; gap: 3px; }
-  .heat-cell-bin { width: 26px; height: 22px; }
-  .heat-cell-bin .heat-cell-swatch { width: 100%; height: 100%; padding: 0; }
+  /* Every level divides the SAME row width by its own bin count, so a level
+     holding 10 bins and one holding 5 still line up as one rectangle — that is
+     how the rack is actually labelled on the floor. */
+  .zone-bin-row {
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr);
+    gap: 2px; min-width: 0;
+  }
+  .heat-cell-bin { width: 100%; height: 24px; min-width: 0; }
+  .heat-cell-bin .heat-cell-swatch { width: 100%; height: 100%; padding: 0; overflow: hidden; }
   .heat-cell-bin .heat-cell-swatch b { font-size: 8px; font-weight: 600; line-height: 1; }
   .heat-cell-bin .heat-cell-normal b,
   .heat-cell-bin .heat-cell-monitor b,
@@ -701,6 +709,12 @@
   .heat-cell-bin .heat-cell-occupied b { color: #0B1120; }
   .heat-cell-bin .heat-cell-critical b,
   .heat-cell-bin .heat-cell-breach b { color: #FFF; }
+  /* Empty but ACTIVE bins must stay legible: they are usable capacity, not
+     absent locations. Dashed outline, muted number, never filled. */
+  .heat-cell-bin .heat-cell-empty {
+    border-style: dashed; border-color: var(--border-strong); background: transparent;
+  }
+  .heat-cell-bin .heat-cell-empty b { color: var(--text-muted); font-weight: 500; }
   .heat-zone-loading { padding: 50px 0; color: var(--text-muted); font-size: 11px; text-align: center; }
   .heat-zone-dialog-foot {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -813,8 +827,10 @@
     .heatmap-content { padding: 7px; }
     .heat-zone-card { padding: 9px; }
     .heat-cell-matrix:not(.heat-cell-coordinate-matrix) { grid-template-columns: repeat(6, 28px); grid-auto-rows: 28px; }
-    .heat-cell-button:not(.heat-cell-coordinate) { width: 28px; height: 28px; }
-    .heat-cell-button:not(.heat-cell-coordinate) .heat-cell-swatch { width: 21px; height: 21px; }
+    /* Bin cells are sized by their grid column, so they must opt out of the
+       fixed mobile tap-target width or they stop filling the level row. */
+    .heat-cell-button:not(.heat-cell-coordinate):not(.heat-cell-bin) { width: 28px; height: 28px; }
+    .heat-cell-button:not(.heat-cell-coordinate):not(.heat-cell-bin) .heat-cell-swatch { width: 21px; height: 21px; }
     .heat-rack-foot { align-items: flex-start; flex-direction: column; }
     .heat-detail-drawer { padding: 11px; }
   }
@@ -860,7 +876,8 @@
      below a comfortable tap target. */
   .zone-bay-list { grid-template-columns: 1fr; }
   .zone-aisle { padding: 8px; }
-  .heat-cell-bin { width: 30px; height: 26px; }
+  /* Width stays grid-driven; only the tap target grows. */
+  .heat-cell-bin { height: 30px; }
   .topbar-basis { display: none; }
   .account-basis { display: grid; }
   .account-trigger { min-width: 72px; max-width: 104px; }

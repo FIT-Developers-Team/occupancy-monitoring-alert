@@ -294,8 +294,13 @@ const ZoneLayout = memo(function ZoneLayout({
               <strong className="num">{aisleGroup.aisle}</strong>
             </h3>
             <span className="zone-aisle-stat num">
-              {aisleGroup.filled.toLocaleString(locale)}/{aisleGroup.total.toLocaleString(locale)}
+              <b>{aisleGroup.filled.toLocaleString(locale)}</b>
               <small>{t("heat.filled", "terisi")}</small>
+              <i aria-hidden>·</i>
+              {/* Empty ACTIVE bins are usable capacity, so they get their own
+                  number rather than being implied by the difference. */}
+              <b>{(aisleGroup.total - aisleGroup.filled).toLocaleString(locale)}</b>
+              <small>{t("heat.emptyActive", "kosong")}</small>
             </span>
           </header>
           <div className="zone-bay-list">
