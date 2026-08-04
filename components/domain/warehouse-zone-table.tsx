@@ -28,7 +28,7 @@ export default function WarehouseZoneTable({ code, rows, mode, thresholds }: { c
     {th("Qty%", "pct_qty", "text-right")}{th("CBM%", "pct_cbm", "text-right")}{th("Bin%", "pct_bin", "text-right")}{th("Empty SLOC", "sloc_empty", "text-right")}
   </tr></thead><tbody>{sorted.map((z) => {
     const raw = pickViewPct(z, mode); const shown = raw ?? z.pct;
-    return <tr key={z.zone}><td><Link href={`/occupancy/${code}/${encodeURIComponent(z.zone)}`} className="font-semibold underline decoration-dotted underline-offset-2 hover:opacity-80" style={{ color: "var(--accent)" }}>{z.zone}</Link></td>
+    return <tr key={z.zone}><td><Link href={`/occupancy/${code}/${encodeURIComponent(z.zone)}`} prefetch={false} className="font-semibold underline decoration-dotted underline-offset-2 hover:opacity-80" style={{ color: "var(--accent)" }}>{z.zone}</Link></td>
       <td className="text-[11px]">{z.storage}</td><td><span className="chip">{z.basis.toUpperCase()}</span></td>
       <td><div className="flex items-center gap-2"><div className="flex-1"><OccupancyBar pct={shown} status={pickViewStatus(z, mode)} thresholds={thresholds} /></div><span className="num w-12 text-right text-[12px] font-semibold">{raw === null ? "—" : `${shown}%`}</span></div></td>
       <td className="num text-right">{fmtPct(z.pct_qty)}</td><td className="num text-right">{fmtPct(z.pct_cbm)}</td><td className="num text-right">{fmtPct(z.pct_bin)}</td>

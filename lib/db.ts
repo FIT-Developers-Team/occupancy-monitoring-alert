@@ -1,19 +1,32 @@
 // ---------------------------------------------------------------------------
 // DuckDB data layer.
 //   HISTORY DB  : written by scripts/superset_to_duckdb.py (or seed). The web
-//                 app opens it READ-ONLY per query, with retry — this respects
-//                 DuckDB's single-writer model while the Python sync runs.
+//                 app queries a short-lived process-local replica so Windows
+//                 never leaves the sync source file locked by Node.
 //   STATE DB    : owned exclusively by this app (alerts, audit, notifications,
 //                 rule/hysteresis state). Singleton writer connection.
 // ---------------------------------------------------------------------------
 import duckdb from "duckdb";
 import path from "path";
 import fs from "fs";
+import os from "os";
 
 const HISTORY_PATH =
   process.env.DUCKDB_HISTORY_PATH || path.join(process.cwd(), "db", "warehouse_history.duckdb");
 const STATE_PATH =
   process.env.DUCKDB_STATE_PATH || path.join(process.cwd(), "db", "app_state.duckdb");
+const HISTORY_WRITE_INTENT_PATH = `${HISTORY_PATH}.write-intent`;
+// The dashboard reads a process-local snapshot instead of the writer's file.
+// This is important on Windows: even a read-only DuckDB handle prevents the
+// Superset worker from opening the source database for its next sync.
+const HISTORY_REPLICA_DIR = path.join(os.tmpdir(), "fit-occupancy-read", String(process.pid));
+const HISTORY_THREADS = Math.max(1, Math.min(8, Number.parseInt(process.env.WIOM_DUCKDB_THREADS || "2", 10) || 2));
+// 256 MB made the legacy DuckDB Node binding terminate natively on the 48-hour
+// trend aggregation. 320 MB is the lowest verified ceiling with headroom
+// inside the 384 MiB web-service limit; normal post-query RSS is ~120 MiB.
+const requestedMemory = (process.env.WIOM_DUCKDB_MEMORY_LIMIT || "320MB").toUpperCase();
+const HISTORY_MEMORY = /^\d+(?:MB|GB)$/.test(requestedMemory) ? requestedMemory : "320MB";
+const HISTORY_TEMP = path.join(os.tmpdir(), `wiom-duckdb-${process.pid}`).replaceAll("'", "''");
 
 // ---- normalizer: BigInt -> number, Date -> ISO string (verified behaviour) --
 function norm(v: unknown): unknown {
@@ -71,8 +84,175 @@ export function historyDbExists(): boolean {
   return fs.existsSync(HISTORY_PATH);
 }
 
-/** Read-only query against the history DB, retrying through sync-writer lock windows. */
-export async function queryHistory<T = Record<string, unknown>>(
+function historyWriterPending(): boolean {
+  try {
+    const age = Date.now() - fs.statSync(HISTORY_WRITE_INTENT_PATH).mtimeMs;
+    // A crashed writer must not block the dashboard forever. The next worker
+    // pass replaces this marker; five minutes is well above the measured local
+    // write window while still self-healing without manual file deletion.
+    return age >= 0 && age < 300_000;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForHistoryWriter(): Promise<void> {
+  const deadline = Date.now() + 45_000;
+  while (historyWriterPending() && Date.now() < deadline) await sleep(150);
+  if (historyWriterPending()) {
+    throw new Error("Sinkronisasi sedang memperbarui database. Coba lagi setelah proses tulis selesai.");
+  }
+}
+
+// ---- history DB: shared, short-lived replica reader ------------------------
+// Opening DuckDB per query cost a measured ~18 ms against ~4 ms on a reused
+// handle, and one dashboard render issues several queries. The replica handle
+// is therefore shared and reference-counted, then dropped as soon as it falls
+// idle. This keeps query overhead low without ever holding the source DB.
+interface SharedReader {
+  db: duckdb.Database;
+  file: string;
+  refs: number;
+  idleTimer: ReturnType<typeof setTimeout> | null;
+  expiresAt: number;
+}
+
+const IDLE_CLOSE_MS = 50;
+const MAX_LIFETIME_MS = 1_500;
+
+let reader: SharedReader | null = null;
+let opening: Promise<SharedReader> | null = null;
+let replicaOpening: Promise<string> | null = null;
+let replicaVersion = "";
+let replicaPath = "";
+
+function historyVersionFromStat(stat: fs.Stats): string {
+  return `${stat.size}-${Math.trunc(stat.mtimeMs)}`;
+}
+
+export function historyDbVersion(): string {
+  try { return historyVersionFromStat(fs.statSync(HISTORY_PATH)); } catch { return "missing"; }
+}
+
+async function ensureHistoryReplica(): Promise<string> {
+  const source = fs.statSync(HISTORY_PATH);
+  const version = historyVersionFromStat(source);
+  if (replicaVersion === version && replicaPath && fs.existsSync(replicaPath)) return replicaPath;
+  if (replicaOpening) return replicaOpening;
+
+  replicaOpening = (async () => {
+    await fs.promises.mkdir(HISTORY_REPLICA_DIR, { recursive: true });
+    // The worker raises write-intent before opening DuckDB. If that marker
+    // appears while copying, discard the partial snapshot and retry after the
+    // writer closes so readers never observe a torn database file.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await waitForHistoryWriter();
+      const before = await fs.promises.stat(HISTORY_PATH);
+      const nextVersion = historyVersionFromStat(before);
+      const target = path.join(HISTORY_REPLICA_DIR, `history-${nextVersion}.duckdb`);
+      if (!fs.existsSync(target)) {
+        const staging = `${target}.${Date.now()}.tmp`;
+        try {
+          await fs.promises.copyFile(HISTORY_PATH, staging);
+          const after = await fs.promises.stat(HISTORY_PATH);
+          if (historyWriterPending() || historyVersionFromStat(after) !== nextVersion) {
+            await fs.promises.unlink(staging).catch(() => undefined);
+            continue;
+          }
+          await fs.promises.rename(staging, target).catch(async (error: NodeJS.ErrnoException) => {
+            await fs.promises.unlink(staging).catch(() => undefined);
+            if (error.code !== "EEXIST") throw error;
+          });
+        } catch (error) {
+          await fs.promises.unlink(staging).catch(() => undefined);
+          throw error;
+        }
+      }
+      replicaVersion = nextVersion;
+      replicaPath = target;
+      return target;
+    }
+    throw new Error("Database sedang disinkronkan; snapshot baca belum stabil.");
+  })().finally(() => {
+    replicaOpening = null;
+  });
+  return replicaOpening;
+}
+
+function disposeReader(target: SharedReader): void {
+  if (reader === target) reader = null;
+  if (target.idleTimer) {
+    clearTimeout(target.idleTimer);
+    target.idleTimer = null;
+  }
+  void closeAsync(target.db).then(() => {
+    if (target.file !== replicaPath) void fs.promises.unlink(target.file).catch(() => undefined);
+  });
+}
+
+async function acquireReader(): Promise<SharedReader> {
+  const file = await ensureHistoryReplica();
+  if (reader && reader.file === file && Date.now() < reader.expiresAt) {
+    if (reader.idleTimer) {
+      clearTimeout(reader.idleTimer);
+      reader.idleTimer = null;
+    }
+    reader.refs += 1;
+    return reader;
+  }
+  // An expired handle with queries still in flight is left for its own release
+  // to close; only an idle one can be torn down here.
+  if (reader && reader.refs === 0) disposeReader(reader);
+  if (!opening) {
+    opening = openAsync(file, duckdb.OPEN_READONLY)
+      .then(async (db) => {
+        try {
+          await execAsync(
+            db,
+            `SET threads = ${HISTORY_THREADS}; SET memory_limit = '${HISTORY_MEMORY}'; ` +
+              `SET preserve_insertion_order = false; SET temp_directory = '${HISTORY_TEMP}';`,
+          );
+        } catch (error) {
+          await closeAsync(db);
+          throw error;
+        }
+        reader = { db, file, refs: 0, idleTimer: null, expiresAt: Date.now() + MAX_LIFETIME_MS };
+        opening = null;
+        return reader;
+      })
+      .catch((error) => {
+        opening = null;
+        throw error;
+      });
+  }
+  const active = await opening;
+  active.refs += 1;
+  return active;
+}
+
+function releaseReader(target: SharedReader, failed: boolean): void {
+  target.refs -= 1;
+  if (target.refs > 0) return;
+  // A failed query may mean the file was replaced mid-read; never reuse it.
+  if (failed || Date.now() >= target.expiresAt) {
+    disposeReader(target);
+    return;
+  }
+  target.idleTimer = setTimeout(() => {
+    if (target.refs === 0) disposeReader(target);
+  }, IDLE_CLOSE_MS);
+  target.idleTimer.unref?.();
+}
+
+/**
+ * DuckDB's Node binding can terminate the process when several native `all`
+ * calls share one Database handle concurrently. A single queue is also kinder
+ * to a small VPS: analytical scans reuse one short-lived reader and two threads
+ * instead of competing for memory.
+ */
+let historyQueryQueue: Promise<void> = Promise.resolve();
+
+async function runHistoryQuery<T = Record<string, unknown>>(
   sql: string,
   params: unknown[] = []
 ): Promise<T[]> {
@@ -82,61 +262,42 @@ export async function queryHistory<T = Record<string, unknown>>(
     );
   }
   let lastErr: unknown;
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    let db: duckdb.Database | null = null;
-    let shouldRetry = false;
+  const maxAttempts = 8;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let active: SharedReader | null = null;
+    let failed = false;
     try {
-      db = await openAsync(HISTORY_PATH, duckdb.OPEN_READONLY);
-      const rows = await allAsync(db, sql, params);
+      await waitForHistoryWriter();
+      active = await acquireReader();
+      const rows = await allAsync(active.db, sql, params);
       return rows.map(norm) as T[];
     } catch (e) {
       lastErr = e;
-      shouldRetry = attempt < 4 && isRetryableHistoryError(e);
-      if (!shouldRetry) throw e;
+      failed = true;
+      if (!(attempt < maxAttempts && isRetryableHistoryError(e))) throw e;
     } finally {
-      if (db) await closeAsync(db);
+      if (active) releaseReader(active, failed);
     }
-    if (shouldRetry) await sleep(250 * attempt);
+    await sleep(200 * Math.min(attempt, 4));
   }
   throw lastErr;
 }
 
-/**
- * Runs related read queries through one read-only connection. Dashboard reads
- * often need several compact aggregates from the same snapshot; opening and
- * closing DuckDB for every aggregate added avoidable latency.
- */
-export async function queryHistoryBatch(
-  queries: Array<{ sql: string; params?: unknown[] }>,
-): Promise<unknown[][]> {
-  if (!historyDbExists()) {
-    throw new Error(
-      `Database history tidak ditemukan di ${HISTORY_PATH}. Jalankan "npm run seed" (demo) atau sync Superset terlebih dahulu.`,
-    );
-  }
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    let db: duckdb.Database | null = null;
-    let shouldRetry = false;
-    try {
-      db = await openAsync(HISTORY_PATH, duckdb.OPEN_READONLY);
-      const result: unknown[][] = [];
-      for (const query of queries) {
-        const rows = await allAsync(db, query.sql, query.params ?? []);
-        result.push(rows.map(norm));
-      }
-      return result;
-    } catch (error) {
-      lastErr = error;
-      shouldRetry = attempt < 4 && isRetryableHistoryError(error);
-      if (!shouldRetry) throw error;
-    } finally {
-      if (db) await closeAsync(db);
-    }
-    if (shouldRetry) await sleep(250 * attempt);
-  }
-  throw lastErr;
+/** Read-only query, serialized and retried through sync-writer lock windows. */
+export function queryHistory<T = Record<string, unknown>>(
+  sql: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  const result = historyQueryQueue.then(() => runHistoryQuery<T>(sql, params));
+  historyQueryQueue = result.then(() => undefined, () => undefined);
+  return result;
 }
+
+// Best-effort cleanup. The replica is disposable and never contains the state
+// database, configuration, or secrets.
+process.once("exit", () => {
+  try { fs.rmSync(HISTORY_REPLICA_DIR, { recursive: true, force: true }); } catch {}
+});
 
 // ---- state DB: singleton writer, schema self-initialising ------------------
 const STATE_SCHEMA = `

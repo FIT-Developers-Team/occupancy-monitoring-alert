@@ -13,10 +13,16 @@ export async function GET() {
     return NextResponse.json({ error: "Khusus admin." }, { status: 403 });
   }
   try {
-    const [runtimeStatus, history] = await Promise.all([
-      Promise.resolve(getSupersetSyncStatus()),
-      historyDbExists() ? getSyncHealth().catch(() => null) : Promise.resolve(null),
-    ]);
+    const runtimeStatus = getSupersetSyncStatus();
+    // Polling this route used to reopen warehouse_history.duckdb every 2.5s
+    // while the Python worker was trying to become the exclusive writer. On
+    // Windows those status reads repeatedly won the file lock and made manual
+    // sync fail. Runtime progress is file-backed, so defer DB history until the
+    // queued/write window has finished.
+    const writerBusy = runtimeStatus.state === "queued" || runtimeStatus.state === "running";
+    const history = !writerBusy && historyDbExists()
+      ? await getSyncHealth().catch(() => null)
+      : null;
     return NextResponse.json({ status: runtimeStatus, history });
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 500 });

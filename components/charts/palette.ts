@@ -8,6 +8,6 @@ export function chartTheme() {
   return {
     grid: dark ? "rgba(148,163,184,0.14)" : "rgba(100,116,139,0.16)",
     ticks: dark ? "#94A3B8" : "#64748B",
-    font: { family: "Inconsolata, monospace", size: 10 },
+    font: { family: "ui-monospace, SFMono-Regular, Consolas, monospace", size: 10 },
   };
 }

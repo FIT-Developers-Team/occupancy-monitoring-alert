@@ -7,7 +7,7 @@ import { fmtNum, fmtPct, fmtHours, fmtDateTime } from "@/lib/utils";
 import KpiCard from "@/components/ui/kpi-card";
 import Section from "@/components/ui/section";
 import { StatusBadge, SeverityBadge } from "@/components/ui/badges";
-import TrendChart from "@/components/charts/trend-chart";
+import TrendChart from "@/components/charts/trend-chart-lazy";
 import WarehouseOverviewTable from "@/components/domain/warehouse-overview-table";
 import PageHeader from "@/components/ui/page-header";
 
@@ -18,7 +18,7 @@ const STATUS_RANK = { BREACH: 0, CRITICAL: 1, WARNING: 2, MONITOR: 3, NORMAL: 4 
 export default async function ExecutivePage() {
   const [mode, t] = await Promise.all([getBasisMode(), getT()]);
   const [warehouseData, integrity, active, counts, scopeQuality] = await Promise.all([
-    getWarehouseDashboard(168),
+    getWarehouseDashboard(48),
     getIntegrity().catch(() => []),
     listAlerts({ status: ["NEW", "NOTIFIED", "ACKNOWLEDGED"], limit: 6 }),
     activeCountsBySeverity(),
@@ -52,23 +52,15 @@ export default async function ExecutivePage() {
 
   return (
     <div className="dashboard-page">
-      <PageHeader
-        eyebrow="Fulfillment Intelligence Team"
-        title={t("exec.title")}
-        description={t("exec.scopeDetail")}
-      />
+      <PageHeader title={t("exec.title")} />
 
-      <div className="metric-strip metric-strip-seven">
+      <div className="metric-strip metric-strip-five">
         <KpiCard label={t("exec.qtyOcc")} value={netQ === null ? "—" : fmtPct(netQ)} tone={tone(netQ)}
           sub={`${fmtNum(qOcc)} / ${fmtNum(qCap)} ${t("common.unit")}`} />
         <KpiCard label={t("exec.cbmOcc")} value={netV === null ? "—" : fmtPct(netV)} tone={tone(netV)}
           sub={`${fmtNum(vOcc)} / ${fmtNum(vCap)} m³`} />
         <KpiCard label={t("exec.binOcc")} value={fmtPct(netBin)} tone={tone(netBin)}
           sub={`${fmtNum(slocFilled)} / ${fmtNum(slocTotal)} ${t("common.sloc").toLowerCase()}`} />
-        <KpiCard label={t("occ.slocOccupied")} value={fmtNum(slocFilled)} tone="accent"
-          sub={`${fmtPct(netBin)} · ${fmtNum(slocTotal)} ${t("common.active")}`} />
-        <KpiCard label={t("occ.emptySloc")} value={fmtNum(slocTotal - slocFilled)}
-          sub={`${t("common.of")} ${fmtNum(slocTotal)} ${t("common.active")}`} />
         <KpiCard label={t("exec.activeAlerts")} value={fmtNum(totalActive)}
           tone={worstSev === "EMERGENCY" || worstSev === "CRITICAL" ? "critical"
             : worstSev === "HIGH" ? "warning" : totalActive ? "monitor" : "normal"}
@@ -91,7 +83,7 @@ export default async function ExecutivePage() {
         <Section eyebrow={`${sums.length} ${t("common.warehouse").toLowerCase()}`} title={t("exec.netOccupancy")}>
           <div className="list-rows">
             {topRisk.map((w) => (
-              <Link key={w.code} href={`/occupancy/${w.code}`} className="list-row">
+              <Link key={w.code} href={`/occupancy/${w.code}`} prefetch={false} className="list-row">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="num text-sm font-semibold">{w.code}</span>
@@ -113,7 +105,7 @@ export default async function ExecutivePage() {
         </Section>
 
         <Section eyebrow={`${totalActive} ${t("common.total").toLowerCase()}`} title={t("exec.activeAlerts")}
-          action={<Link className="btn btn-ghost btn-sm" href="/alerts">{t("action.detail")}</Link>}>
+          action={<Link className="btn btn-ghost btn-sm" href="/alerts" prefetch={false}>{t("action.detail")}</Link>}>
           {active.length === 0 ? (
             <p className="py-4 text-center text-xs" style={{ color: "var(--text-muted)" }}>
               {t("common.none")}
@@ -122,7 +114,7 @@ export default async function ExecutivePage() {
             <ul className="list-rows">
               {active.map((a) => (
                 <li key={a.alert_id}>
-                  <Link href={`/alerts?id=${a.alert_id}`} className="list-row">
+                  <Link href={`/alerts?id=${a.alert_id}`} prefetch={false} className="list-row">
                     <div className="min-w-0">
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate text-[12.5px] font-semibold">{a.rule_name}</span>

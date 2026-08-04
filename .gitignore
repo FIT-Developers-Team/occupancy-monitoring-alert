@@ -138,3 +138,14 @@ target/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
+# --- Data runtime & artefak QA (JANGAN di-commit) ---
+# DuckDB adalah data hidup, bukan sumber kode: satu commit bisa ratusan MB.
+db/*.duckdb
+db/*.duckdb.wal
+db/*.duckdb.lock
+db/*.duckdb.write-intent
+db/*.duckdb.web.lock
+db/.superset-sync-*
+db/.wiom-session-secret
+!db/schema.sql
+audit/

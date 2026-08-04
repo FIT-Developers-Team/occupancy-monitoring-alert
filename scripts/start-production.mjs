@@ -311,15 +311,172 @@ function commandLineValue(name) {
   return index >= 0 ? clean(process.argv[index + 1]) : undefined;
 }
 
-const syncSupervisor = startSyncSupervisor();
-if (embeddedSyncRequired()) {
-  await syncSupervisor.waitUntilReady();
-  console.info("[WIOM] Worker Superset siap; web server dapat menerima trafik.");
+function acquireWebInstanceLock(port) {
+  const stateDb = path.resolve(
+    clean(process.env.DUCKDB_STATE_PATH) || "./db/app_state.duckdb"
+  );
+  const lockFile = `${stateDb}.web.lock`;
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const record = {
+        pid: process.pid,
+        web_pid: null,
+        port,
+        started_at: new Date().toISOString(),
+      };
+      fs.writeFileSync(
+        lockFile,
+        `${JSON.stringify(record)}\n`,
+        { encoding: "utf8", flag: "wx", mode: 0o600 },
+      );
+      let released = false;
+      return {
+        file: lockFile,
+        setWebPid(webPid) {
+          record.web_pid = Number(webPid) || null;
+          fs.writeFileSync(lockFile, `${JSON.stringify(record)}\n`, "utf8");
+        },
+        release() {
+          if (released) return;
+          released = true;
+          try {
+            const owner = JSON.parse(fs.readFileSync(lockFile, "utf8"));
+            if (Number(owner?.pid) === process.pid) fs.rmSync(lockFile, { force: true });
+          } catch {
+            // A missing or replaced marker is already safe to leave alone.
+          }
+        },
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      let owner;
+      try {
+        owner = JSON.parse(fs.readFileSync(lockFile, "utf8"));
+      } catch {
+        owner = undefined;
+      }
+      const ownerPid = Number(owner?.pid);
+      const webPid = Number(owner?.web_pid);
+      const activePid = pidAlive(webPid) ? webPid : pidAlive(ownerPid) ? ownerPid : null;
+      if (activePid) {
+        throw new Error(
+          `Instance WIOM lain (PID ${activePid}, port ${owner?.port || "?"}) ` +
+          `sudah memakai ${stateDb}. Hentikan instance tersebut atau gunakan ` +
+          "DUCKDB_STATE_PATH yang berbeda untuk preview."
+        );
+      }
+      fs.rmSync(lockFile, { force: true });
+    }
+  }
+  throw new Error(`Lock instance WIOM tidak dapat dibuat: ${lockFile}`);
 }
+
+function startScheduler(port) {
+  const secret = clean(process.env.CRON_SECRET);
+  if (!secret) {
+    console.warn("[WIOM] CRON_SECRET belum diisi; evaluasi alert terjadwal dinonaktifkan.");
+    return undefined;
+  }
+  const base = `http://127.0.0.1:${port}`;
+  const tickMs = Math.max(300_000, Number(process.env.TICK_INTERVAL_MS || 600_000));
+  let sentDaily = "";
+  let stopping = false;
+  const timers = [];
+
+  async function healthy() {
+    try {
+      const response = await fetch(`${base}/api/health`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async function call(route) {
+    if (stopping || !(await healthy())) return false;
+    try {
+      const response = await fetch(`${base}${route}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${secret}` },
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 160)}`);
+      }
+      console.info(`[WIOM] ${route} OK`);
+      return true;
+    } catch (error) {
+      console.error(`[WIOM] ${route} gagal: ${error.message}`);
+      return false;
+    }
+  }
+
+  function jakartaNow() {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Jakarta",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date()).reduce(
+      (out, part) => ({ ...out, [part.type]: part.value }),
+      {},
+    );
+    return {
+      date: `${parts.year}-${parts.month}-${parts.day}`,
+      hour: Number(parts.hour),
+      minute: Number(parts.minute),
+    };
+  }
+
+  async function dailyIfDue() {
+    const now = jakartaNow();
+    if (now.hour === 8 && now.minute < 5 && sentDaily !== now.date) {
+      if (await call("/api/cron/daily-summary")) sentDaily = now.date;
+    }
+  }
+
+  const initial = setTimeout(() => { void call("/api/cron/tick"); }, 30_000);
+  const tick = setInterval(() => { void call("/api/cron/tick"); }, tickMs);
+  const daily = setInterval(() => { void dailyIfDue(); }, 60_000);
+  initial.unref?.();
+  tick.unref?.();
+  daily.unref?.();
+  timers.push(initial, tick, daily);
+  void dailyIfDue();
+  console.info(`[WIOM] Scheduler ringan aktif setiap ${Math.round(tickMs / 60_000)} menit.`);
+  return {
+    stop() {
+      stopping = true;
+      for (const timer of timers) clearTimeout(timer);
+    },
+  };
+}
+
 const port = commandLineValue("--port") || process.env.PORT?.trim() || "3000";
 if (!/^\d{2,5}$/.test(port) || Number(port) > 65_535) {
-  syncSupervisor?.stop();
   throw new Error(`Port tidak valid: ${port}`);
+}
+const webInstanceLock = acquireWebInstanceLock(port);
+process.on("exit", () => webInstanceLock.release());
+
+let syncSupervisor;
+try {
+  syncSupervisor = startSyncSupervisor();
+  if (embeddedSyncRequired()) {
+    await syncSupervisor.waitUntilReady();
+    console.info("[WIOM] Worker Superset siap; web server dapat menerima trafik.");
+  }
+} catch (error) {
+  webInstanceLock.release();
+  throw error;
 }
 
 const standaloneServer = path.join(process.cwd(), "server.js");
@@ -347,22 +504,29 @@ const child = spawn(
     stdio: "inherit",
   }
 );
+webInstanceLock.setWebPid(child.pid);
+const scheduler = startScheduler(port);
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
+    scheduler?.stop();
     syncSupervisor?.stop(signal);
     child.kill(signal);
   });
 }
 
 child.on("error", (error) => {
+  scheduler?.stop();
   syncSupervisor?.stop();
+  webInstanceLock.release();
   console.error(`[WIOM] Gagal menjalankan Next.js: ${error.message}`);
   process.exitCode = 1;
 });
 
 child.on("exit", (code, signal) => {
+  scheduler?.stop();
   syncSupervisor?.stop(signal || "SIGTERM");
+  webInstanceLock.release();
   if (signal) process.kill(process.pid, signal);
   else process.exitCode = code ?? 1;
 });

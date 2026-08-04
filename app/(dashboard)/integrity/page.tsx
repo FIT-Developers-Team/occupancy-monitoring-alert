@@ -151,6 +151,7 @@ export default async function IntegrityPage(
                   <td className="num font-semibold">
                     <Link
                       href={`/integrity?wh=${row.warehouse}`}
+                      prefetch={false}
                       className="underline decoration-dotted underline-offset-2"
                       style={{ color: "var(--accent)" }}
                     >

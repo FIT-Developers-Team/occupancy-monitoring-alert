@@ -28,9 +28,8 @@ const Logo = ({ withText }: { withText: boolean }) => (
       <rect x="18" y="18" width="8" height="8" rx="1.5" fill="#EA580C" />
     </svg>
     {withText && (
-      <span className="leading-tight">
-        <span className="block font-semibold text-[13px]" style={{ fontFamily: "var(--font-display)" }}>WIOM</span>
-        <span className="eyebrow block" style={{ fontSize: 9 }}>Control Tower</span>
+      <span className="brand-name" style={{ fontFamily: "var(--font-display)" }}>
+        FIT Occupancy Alert and Monitoring
       </span>
     )}
   </span>
@@ -59,8 +58,8 @@ export default function Sidebar({
       {/* Konten mobile selalu penuh; desktop mengikuti mode */}
       <div className="flex h-full w-60 flex-col px-3 py-4 md:w-auto md:px-2">
         <div className={`flex items-center pb-4 ${rail ? "md:flex-col md:gap-2" : "justify-between"}`}>
-          <Link href="/" onClick={onNavigate} className={rail ? "md:px-0 px-2" : "px-2"}
-            aria-label="WIOM Control Tower">
+          <Link href="/" prefetch={false} onClick={onNavigate} className={rail ? "md:px-0 px-2" : "px-2"}
+            aria-label="FIT Occupancy Alert and Monitoring">
             <span className="md:hidden"><Logo withText /></span>
             <span className="hidden md:block"><Logo withText={!rail} /></span>
           </Link>
@@ -83,7 +82,7 @@ export default function Sidebar({
           {NAV.map((n) => {
             const active = n.href === "/" ? pathname === "/" : pathname.startsWith(n.href);
             return (
-              <Link key={n.href} href={n.href} onClick={onNavigate} title={t(n.key)}
+              <Link key={n.href} href={n.href} prefetch={false} onClick={onNavigate} title={t(n.key)}
                 className={`navlink ${active ? "active" : ""} ${rail ? "md:justify-center md:px-0" : ""}`}>
                 <svg className="navicon shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                   strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>

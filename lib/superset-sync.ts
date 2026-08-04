@@ -62,6 +62,15 @@ const JobSchema = z.object({
   primary_key: z.array(z.string().trim().min(1)).default([]),
   history_table: z.string().trim().nullable().optional(),
   retention_days: z.number().int().min(1).max(3_650).nullable().optional(),
+  // Master/dimension jobs do not need re-pulling every pass. 0 = every pass.
+  min_interval_seconds: z.number().int().min(0).max(604_800).default(0),
+  // Snapshot jobs append a full copy of current state every pass. Without
+  // thinning, a 30-minute interval grows the database by ~390 MB/day. Declared
+  // here so a save from Settings does not strip the policy from the config.
+  snapshot_retention: z.object({
+    keep_all_hours: z.number().int().min(1).max(720).default(30),
+    hourly_days: z.number().int().min(0).max(365).default(7),
+  }).optional(),
   dataset: DatasetSchema,
 }).superRefine((job, ctx) => {
   if (job.enabled && job.required && !String(job.dataset.id).match(/^\d+$/)) {
@@ -99,15 +108,17 @@ export const SupersetSyncConfigSchema = z.object({
   }),
   schedule: z.object({
     enabled: z.boolean().default(true),
-    interval_seconds: z.number().int().min(15).max(86_400).default(300),
+    interval_seconds: z.number().int().min(15).max(86_400).default(600),
     retry_count: z.number().int().min(1).max(8).default(3),
   }),
+  // These are the only worker controls that materially change resource use.
+  // Keep them in the schema so saving Settings cannot silently strip the
+  // low-memory VPS guardrails from config/superset-sync.json.
   performance: z.object({
     lookback_minutes: z.number().int().min(0).max(1440).default(10),
-    max_batch_size: z.number().int().min(1_000).max(2_000_000).default(500_000),
-    concurrency: z.number().int().min(1).max(16).default(4),
-    adaptive_batch: z.boolean().default(true),
-    max_retries: z.number().int().min(1).max(10).default(5),
+    duckdb_threads: z.number().int().min(1).max(8).default(2),
+    duckdb_memory_limit: z.string().trim().regex(/^\d+(?:MB|GB)$/i).default("384MB"),
+    duckdb_storage_version: z.string().trim().regex(/^v\d+\.\d+\.\d+$/).default("v1.3.0"),
   }).default({}),
   scope: z.object({
     location_ids: z.array(z.number().int().positive()).min(1),
@@ -188,13 +199,14 @@ export interface SupersetSyncStatus {
   requested_by?: string | null;
   rows_pulled?: number;
   rows_written?: number;
+  phase?: "extracting" | "waiting_for_database" | "writing" | null;
   current_batch?: number;
   total_batches?: number | null;
   cursor?: string | null;
   throughput_rows_per_sec?: number | null;
   jobs?: Array<{
     name: string;
-    status: "OK" | "ERROR" | "SKIPPED";
+    status: "OK" | "ERROR" | "SKIPPED" | "UP_TO_DATE";
     rows_pulled: number;
     rows_written: number;
     duration_ms: number;

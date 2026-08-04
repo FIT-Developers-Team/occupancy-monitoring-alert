@@ -8,25 +8,25 @@
   "superset": {
     "base_url": "https://dash.astronauts.id",
     "timeout_sec": 180,
-    "server_row_cap": 1000000,
+    "server_row_cap": 10000000,
     "force_refresh": false,
     "auth": {
-      "mode": "auto",
+      "mode": "cookie",
       "provider": "db",
+      "username": "",
       "csrf": true
     }
   },
   "schedule": {
     "enabled": true,
-    "interval_seconds": 300,
+    "interval_seconds": 1800,
     "retry_count": 3
   },
   "performance": {
     "lookback_minutes": 10,
-    "max_batch_size": 500000,
-    "concurrency": 4,
-    "adaptive_batch": true,
-    "max_retries": 5
+    "duckdb_threads": 2,
+    "duckdb_memory_limit": "384MB",
+    "duckdb_storage_version": "v1.3.0"
   },
   "scope": {
     "location_ids": [
@@ -57,13 +57,14 @@
       "base_sql": "SELECT location_id, location_name, location_latitude AS latitude, location_longitude AS longitude, id AS sloc_id, rack_name AS sloc_code, area, zone AS rack_zone, aisle, bay, level, bin, active, max_quantity, max_volume, rack_storage_name AS storage_handling FROM <DATASET_MASTER_LOKASI>",
       "key_col": "sloc_id",
       "key_type": "int",
-      "chunk_size": 50000,
+      "chunk_size": 15000,
       "watermark_column": null,
       "primary_key": [
         "sloc_id"
       ],
       "history_table": null,
       "retention_days": null,
+      "min_interval_seconds": 43200,
       "dataset": {
         "id": 344,
         "chart_id": 19731,
@@ -117,11 +118,16 @@
       "base_sql": "SELECT location_id, fpd.product_id AS product_id, product_name, sku_number, l1_category_name AS l1_category, rack_storage_name AS storage_handling, length, width, height, rack_name AS sloc_code, product_detail_status_name AS status, SUM(stock) AS stock_qty, sku_cbm, occupied_cbm, coalesce(rack_name,'~LOST') || '|' || CAST(fpd.product_id AS VARCHAR) AS _k FROM <DATASET_STOK> GROUP BY <SEMUA_KOLOM_NON_AGREGAT>",
       "key_col": "_k",
       "key_type": "string",
-      "chunk_size": 50000,
+      "chunk_size": 15000,
       "watermark_column": null,
       "primary_key": [],
       "history_table": null,
-      "retention_days": 90,
+      "retention_days": 30,
+      "min_interval_seconds": 0,
+      "snapshot_retention": {
+        "keep_all_hours": 6,
+        "hourly_days": 3
+      },
       "dataset": {
         "id": 273,
         "chart_id": 14856,
@@ -191,6 +197,7 @@
       "primary_key": [],
       "history_table": null,
       "retention_days": 120,
+      "min_interval_seconds": 0,
       "dataset": {
         "id": "",
         "chart_id": null,
@@ -242,6 +249,7 @@
       "primary_key": [],
       "history_table": null,
       "retention_days": null,
+      "min_interval_seconds": 0,
       "dataset": {
         "id": "",
         "chart_id": null,

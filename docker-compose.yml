@@ -2,7 +2,9 @@
 # Jalankan: docker compose up -d
 services:
   web:
-    build: .
+    build:
+      context: .
+      target: web-runtime
     ports: ["3000:3000"]
     env_file: .env
     environment:
@@ -15,6 +17,11 @@ services:
       sync:
         condition: service_healthy
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 384M
 
   sync:
     build:
@@ -43,17 +50,8 @@ services:
       timeout: 5s
       retries: 6
     restart: unless-stopped
-
-  scheduler:
-    image: node:22-alpine
-    working_dir: /app
-    env_file: .env
-    environment:
-      SCHEDULER_BASE_URL: http://web:3000
-    volumes:
-      - ./scripts/scheduler.mjs:/app/scheduler.mjs:ro
-    command: ["node", "/app/scheduler.mjs"]
-    depends_on:
-      web:
-        condition: service_healthy
-    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 640M

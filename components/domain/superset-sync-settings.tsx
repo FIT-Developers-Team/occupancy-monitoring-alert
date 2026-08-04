@@ -17,6 +17,7 @@ type SecretState = Record<SupersetSyncSecretKey, {
 interface SettingsResponse {
   config: SupersetSyncConfig;
   secret_state: SecretState;
+  warning?: string;
 }
 
 interface StatusResponse {
@@ -80,7 +81,12 @@ export default function SupersetSyncSettings() {
     const response = await fetch("/api/superset-sync/status", { cache: "no-store" });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || c("Status sync gagal dimuat.", "Sync status could not be loaded."));
-    setStatus(body);
+    setStatus((current) => ({
+      ...body,
+      // During queued/running the API deliberately avoids opening DuckDB, so
+      // retain the last safe history snapshot instead of making the UI blink.
+      history: body.history ?? current?.history ?? null,
+    }));
   }, [c]);
 
   useEffect(() => {
@@ -112,7 +118,7 @@ export default function SupersetSyncSettings() {
     if (state !== "queued" && state !== "running" && workerReady) return;
     const timer = window.setInterval(
       () => { loadStatus().catch(() => undefined); },
-      workerReady ? 2_500 : 5_000,
+      5_000,
     );
     return () => window.clearInterval(timer);
   }, [
@@ -159,7 +165,10 @@ export default function SupersetSyncSettings() {
       setSettings(body);
       setSecrets(EMPTY_SECRET);
       setClearSecrets([]);
-      if (!quiet) setNotice({ tone: "ok", text: c("Konfigurasi Superset tersimpan.", "Superset configuration saved.") });
+      if (!quiet) setNotice({
+        tone: body.warning ? "info" : "ok",
+        text: body.warning || c("Konfigurasi Superset tersimpan.", "Superset configuration saved."),
+      });
       return true;
     } catch (error) {
       setNotice({ tone: "error", text: (error as Error).message || c("Konfigurasi gagal disimpan.", "Configuration could not be saved.") });
@@ -252,17 +261,27 @@ export default function SupersetSyncSettings() {
     paused: ["Dijeda", "Paused"],
     not_started: ["Belum berjalan", "Not started"],
   };
+  const phaseCopy: Record<NonNullable<SupersetSyncStatus["phase"]>, [string, string]> = {
+    extracting: ["Mengunduh data", "Downloading data"],
+    waiting_for_database: ["Menunggu database", "Waiting for database"],
+    writing: ["Menulis database", "Writing database"],
+  };
   const stateLabel = !runtime
     ? c("Memuat", "Loading")
     : !workerOnline
       ? c("Worker offline", "Worker offline")
       : !workerReady
         ? c("Worker belum siap", "Worker not ready")
-        : c(...stateCopy[runtime.state]);
+        : runtime.state === "running" && runtime.phase
+          ? c(...phaseCopy[runtime.phase])
+          : c(...stateCopy[runtime.state]);
   const stateTone = !workerReady || runtime?.state === "failed" ? "error"
     : runtime?.state === "succeeded" || runtime?.state === "running" ? "ok"
     : "neutral";
   const failedJob = runtime?.jobs?.find((job) => job.status === "ERROR")?.name;
+  const syncActive = runtime?.state === "queued" || runtime?.state === "running";
+  const databaseLockFailure = runtime?.error_category === "DATABASE_WRITE_ERROR"
+    && /(used by another process|lock|cannot open file)/i.test(runtime.error ?? "");
 
   return (
     <div className="sync-settings">
@@ -273,7 +292,7 @@ export default function SupersetSyncSettings() {
             {stateLabel}
           </div>
           <div>
-            <h3>{c("Superset langsung ke WIOM", "Superset directly to WIOM")}</h3>
+            <h3>{c("Superset ke FIT Occupancy Alert and Monitoring", "Superset to FIT Occupancy Alert and Monitoring")}</h3>
             <p>{settings.config.superset.base_url.replace(/^https?:\/\//, "")}</p>
           </div>
         </div>
@@ -313,16 +332,18 @@ export default function SupersetSyncSettings() {
           </button>
           <button
             className="btn"
-            disabled={busy !== null || !settings.config.schedule.enabled}
+            disabled={busy !== null || syncActive || !settings.config.schedule.enabled}
             title={!workerReady
               ? c(
-                "WIOM akan mencoba memulai worker lalu menjalankan sync.",
-                "WIOM will try to start the worker before synchronising.",
+                "FIT Occupancy Alert and Monitoring akan mencoba memulai worker lalu menjalankan sync.",
+                "FIT Occupancy Alert and Monitoring will try to start the worker before synchronising.",
               )
               : undefined}
             onClick={runNow}
           >
-            {busy === "run"
+            {syncActive
+              ? c("Sync berjalan…", "Sync in progress…")
+              : busy === "run"
               ? workerReady
                 ? c("Mengantrekan…", "Queuing…")
                 : c("Memulai worker…", "Starting worker…")
@@ -363,8 +384,21 @@ export default function SupersetSyncSettings() {
       {runtime?.state === "failed" && runtime.error && (
         <div className="sync-worker-alert" role="alert">
           <div>
-            <strong>{c("Sinkronisasi terakhir gagal", "Last synchronisation failed")}</strong>
-            <span>{failedJob ? `[${failedJob}] ${runtime.error}` : runtime.error}</span>
+            <strong>{databaseLockFailure
+              ? c("Sinkronisasi tertahan oleh pembaca database", "Synchronisation was held by a database reader")
+              : c("Sinkronisasi terakhir gagal", "Last synchronisation failed")}</strong>
+            <span>{databaseLockFailure
+              ? c(
+                "FIT Occupancy Alert and Monitoring akan menunggu pembaca selesai pada percobaan berikutnya. Database tidak perlu dihapus.",
+                "FIT Occupancy Alert and Monitoring will wait for readers to finish on the next attempt. The database does not need to be deleted.",
+              )
+              : failedJob ? `[${failedJob}] ${runtime.error}` : runtime.error}</span>
+            {databaseLockFailure && (
+              <details className="sync-error-details">
+                <summary>{c("Detail teknis", "Technical details")}</summary>
+                <code>{failedJob ? `[${failedJob}] ${runtime.error}` : runtime.error}</code>
+              </details>
+            )}
           </div>
           {runtime.error_category && <span className="chip num">{runtime.error_category}</span>}
         </div>
@@ -497,12 +531,6 @@ export default function SupersetSyncSettings() {
               </div>
             </label>
           </div>
-          <p className="sync-helper">
-            {c(
-              "Kredensial tidak dikirim kembali ke browser dan disimpan terpisah dari konfigurasi publik.",
-              "Credentials are never returned to the browser and are stored separately from public configuration.",
-            )}
-          </p>
         </section>
 
         <section className="card card-pad sync-config-card">
@@ -583,7 +611,7 @@ export default function SupersetSyncSettings() {
                   superset: { ...settings.config.superset, server_row_cap: Number(event.target.value) },
                 })}
               />
-              <small>{c("Maks 10.000.000, sesuaikan dgn kapasitas server Superset.", "Max 10,000,000, adjust to Superset server capacity.")}</small>
+              <small>{c("Maks 10.000.000", "Max 10,000,000")}</small>
             </label>
             <label className="sync-field">
               <span>{c("Lookback (menit)", "Lookback (minutes)")}</span>
@@ -598,48 +626,6 @@ export default function SupersetSyncSettings() {
                 })}
               />
             </label>
-            <label className="sync-field">
-              <span>{c("Batch maksimum", "Max batch size")}</span>
-              <input
-                className="input num"
-                type="number"
-                min={1_000}
-                max={2_000_000}
-                step={1_000}
-                value={settings.config.performance?.max_batch_size ?? 500_000}
-                onChange={(event) => updateConfig({
-                  performance: { ...settings.config.performance, max_batch_size: Number(event.target.value) },
-                })}
-              />
-              <small>{c("Maks 2.000.000 baris per batch untuk data besar.", "Max 2,000,000 rows per batch for large data.")}</small>
-            </label>
-            <label className="sync-field">
-              <span>{c("Konkurensi", "Concurrency")}</span>
-              <input
-                className="input num"
-                type="number"
-                min={1}
-                max={16}
-                value={settings.config.performance?.concurrency ?? 4}
-                onChange={(event) => updateConfig({
-                  performance: { ...settings.config.performance, concurrency: Number(event.target.value) },
-                })}
-              />
-              <small>{c("Thread paralel utk segmentasi data besar (1-16).", "Parallel threads for large data segmentation (1-16).")}</small>
-            </label>
-            <label className="sync-check">
-              <input
-                type="checkbox"
-                checked={settings.config.performance?.adaptive_batch ?? true}
-                onChange={(event) => updateConfig({
-                  performance: { ...settings.config.performance, adaptive_batch: event.target.checked },
-                })}
-              />
-              <span>
-                {c("Batch adaptif", "Adaptive batch")}
-                <small>{c("Kecilkan batch saat error, perbesar saat sukses.", "Shrink batch on error, grow on success.")}</small>
-              </span>
-            </label>
           </div>
           <div className="sync-scope">
             <span>{c("Gudang yang disinkronkan", "Synchronised warehouses")}</span>
@@ -648,10 +634,7 @@ export default function SupersetSyncSettings() {
             </div>
           </div>
           <p className="sync-helper">
-            {c(
-              "Filter location_id selalu ditambahkan ke setiap dataset agar HUB dan lokasi di luar gudang tidak ikut ditarik.",
-              "The location_id filter is always added to every dataset so HUBs and non-warehouse locations are excluded.",
-            )}
+            {c("Hanya location_id ini yang ditarik.", "Only these location_ids are pulled.")}
           </p>
         </section>
       </div>
@@ -667,6 +650,9 @@ export default function SupersetSyncSettings() {
         <div className="sync-job-list">
           {settings.config.jobs.map((job, index) => {
             const latest = runtime?.jobs?.find((item) => item.name === job.name);
+            const latestLabel = latest?.status === "UP_TO_DATE"
+              ? c("TERKINI", "CURRENT")
+              : latest?.status ?? "—";
             const columns = Object.entries(job.dataset.columns);
             return (
               <article key={job.name} className={`sync-job ${job.enabled ? "" : "is-disabled"}`}>
@@ -685,13 +671,15 @@ export default function SupersetSyncSettings() {
                     <span>{job.target_table} · {job.mode}</span>
                   </div>
                   <div className="sync-job-result">
-                    <b className={latest?.status === "ERROR" ? "is-error" : ""}>{latest?.status ?? "—"}</b>
+                    <b className={latest?.status === "ERROR" ? "is-error" : ""}>{latestLabel}</b>
                     <span
                       className={latest?.status === "ERROR" && latest.message ? "is-error-message" : ""}
                       title={latest?.status === "ERROR" ? latest.message : undefined}
                     >
                       {latest?.status === "ERROR" && latest.message
                         ? latest.message
+                        : latest?.status === "UP_TO_DATE" && latest.message
+                          ? latest.message
                         : latest
                           ? `${latest.rows_written.toLocaleString()} ${c("baris", "rows")}`
                           : c("Belum ada hasil", "No result yet")}
@@ -736,7 +724,7 @@ export default function SupersetSyncSettings() {
                   <div className="sync-mapping-list">
                     <div className="sync-mapping-labels">
                       <span>{c("Kolom Superset", "Superset column")}</span>
-                      <span>{c("Kolom WIOM", "WIOM column")}</span>
+                      <span>{c("Kolom aplikasi", "Application column")}</span>
                     </div>
                     {columns.map(([source, target], columnIndex) => (
                       <div key={`${source}-${columnIndex}`} className="sync-mapping-row">
@@ -754,7 +742,7 @@ export default function SupersetSyncSettings() {
                         <input
                           className="input"
                           value={target}
-                          aria-label={c("Kolom target WIOM", "WIOM target column")}
+                          aria-label={c("Kolom target aplikasi", "Application target column")}
                           onChange={(event) => updateDataset(index, {
                             columns: { ...job.dataset.columns, [source]: event.target.value },
                           })}

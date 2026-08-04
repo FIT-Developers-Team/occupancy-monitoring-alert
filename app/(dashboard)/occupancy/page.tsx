@@ -44,7 +44,7 @@ export default async function OccupancyPage() {
           const raw = pickPct(w, mode);
           const shownStatus = raw === null ? null : pickStatus(w, mode);
           return (
-            <Link key={w.code} href={`/occupancy/${w.code}`} className="occ-warehouse-card">
+            <Link key={w.code} href={`/occupancy/${w.code}`} prefetch={false} className="occ-warehouse-card">
               <div className="occ-warehouse-head">
                 <div className="min-w-0">
                   <strong className="num">{w.code}</strong>

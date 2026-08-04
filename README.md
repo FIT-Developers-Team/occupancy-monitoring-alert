@@ -1,6 +1,6 @@
-# WIOM Control Tower
+# FIT Occupancy Alert and Monitoring
 
-**Warehouse Inventory Occupancy Monitoring & Alert** — FIT · Astro.
+Pemantauan okupansi, kapasitas, dan alert gudang — FIT · Astro.
 Next.js 16 · Tailwind v4 (FIT Design System) · TypeScript · DuckDB · Chart.js · Google Chat/Email.
 
 Menjawab tiga hal: **seberapa penuh (Qty & CBM), kapan penuh, pelanggaran apa yang terjadi** — dengan alert ber-siklus-hidup, bukan broadcast.
@@ -25,7 +25,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-preview.
 ```
 
 Launcher akan selesai setelah HTTP merespons, sementara web tetap berjalan
-terpisah di `http://localhost:3105`.
+terpisah di `http://localhost:3105`. Preview memakai `app_state` khusus per port
+dan tidak menyalakan worker Superset kedua, sehingga aman saat port 3000 aktif.
 
 | Login | Password | Role |
 |---|---|---|
@@ -42,7 +43,7 @@ Cara pakai lengkap: menu **Panduan** di aplikasi.
 ## 2. Arsitektur
 
 ```
-Superset ──(scripts/superset_to_duckdb.py, 5 mnt)──► db/warehouse_history.duckdb ──READ-ONLY──► Next.js
+Superset ──(scripts/superset_to_duckdb.py, 10 mnt)─► db/warehouse_history.duckdb ──READ-ONLY──► Next.js
                                                                                         │
                                               db/app_state.duckdb (alert/audit) ◄───────┘ satu-satunya penulis: web app
 ```
@@ -70,7 +71,7 @@ Langkah (mode default `superset_dataset` — **tanpa SQL Lab, tanpa Google Sheet
    manager dan selalu memiliki prioritas.
 3. Isi **Dataset ID** dan opsional **Chart ID** untuk Master lokasi dan Snapshot
    stok. Mapping kolom dapat diedit langsung dari panel tiap dataset.
-4. Tekan **Uji koneksi**. WIOM memeriksa health, identitas akun, dan akses ke
+4. Tekan **Uji koneksi**. FIT Occupancy Alert and Monitoring memeriksa health, identitas akun, dan akses ke
    setiap dataset wajib tanpa menulis data.
 5. Tekan **Sync sekarang**. Bila worker belum aktif, tombol berubah menjadi
    **Mulai & sync**: endpoint admin menjalankan preflight, memulai daemon,
@@ -143,7 +144,7 @@ Switch **Kebijakan/Qty/CBM/Bin** di topbar mengubah metrik, bar, dan warna yang 
 
 ## 5. Fitur
 
-Ringkasan Eksekutif (KPI Qty & CBM, tren 7 hari, Top Risiko) · Okupansi per gudang/zona · Heatmap SLOC + drawer isi produk & movement · Forecast time-to-full (laju %, Qty & SKU/jam) + What-If Inbound/Outbound · Pelanggaran + Pareto + CSV · Alert Center (dedup, hysteresis, auto-resolve, eskalasi L1–L4, notifikasi real-time Google Chat) · Integritas (phantom/ghost) · Audit Trail · Pengaturan 5 tab termasuk Superset Sync · Panduan · sidebar ⇄ icon-rail smooth + drawer mobile · ⌘K.
+Ringkasan Eksekutif (KPI Qty & CBM, tren operasional 48 jam, Top Risiko) · Okupansi per gudang/zona · Heatmap SLOC + drawer isi produk & movement · Forecast time-to-full (laju %, Qty & SKU/jam) + What-If Inbound/Outbound · Pelanggaran + CSV · Alert Center (dedup, hysteresis, auto-resolve, eskalasi L1–L4, notifikasi real-time Google Chat) · Integritas (phantom/ghost) · Audit Trail · Pengaturan 5 tab termasuk Superset Sync · Panduan · sidebar ⇄ icon-rail smooth + drawer mobile · ⌘K.
 
 Rule aktif: **R03** Over-Capacity (basis kebijakan) · **R11** Stok Negatif · **R13** Bad di luar BADSTOCK · **R14** Lost (→ ILSIM). Tangga okupansi OCC-70/85/95/100 per gudang. Rule movement (wrong putaway/FEFO dsb.) menyusul saat dataset movement disinkron (job placeholder sudah ada, `enabled:false`).
 
@@ -152,11 +153,34 @@ Rule aktif: **R03** Over-Capacity (basis kebijakan) · **R11** Stok Negatif · *
 ## 6. Operasional
 
 - **Cron**: `deploy/crontab.example` (sync → tick → ringkasan harian 08:00 WIB `POST /api/cron/daily-summary`).
-- **Google Chat (real-time)**: buat *incoming webhook* di Space (Space → Apps & integrations → Webhooks → Add), tempel URL-nya di **Pengaturan → Eskalasi** pada level yang diinginkan (boleh banyak, pisah koma). Alert terkirim sebagai kartu saat tercipta & tiap eskalasi; update alert yang sama tergabung satu thread (`threadKey = dedup_key`). Set `APP_BASE_URL` agar kartu punya tombol "Buka WIOM". Catatan jujur: webhook Chat tidak mendukung tombol callback interaktif — Ack/Resolve tetap dilakukan di Alert Center (butuh Chat App + service account bila mau tombol interaktif; bisa jadi fase berikutnya).
+- **Google Chat (real-time)**: buat *incoming webhook* di Space (Space → Apps & integrations → Webhooks → Add), tempel URL-nya di **Pengaturan → Eskalasi** pada level yang diinginkan (boleh banyak, pisah koma). Alert terkirim sebagai kartu saat tercipta & tiap eskalasi; update alert yang sama tergabung satu thread (`threadKey = dedup_key`). Set `APP_BASE_URL` agar kartu punya tombol "Buka FIT Occupancy Alert and Monitoring". Catatan jujur: webhook Chat tidak mendukung tombol callback interaktif — Ack/Resolve tetap dilakukan di Alert Center (butuh Chat App + service account bila mau tombol interaktif; bisa jadi fase berikutnya).
 - **Penerima lain**: kolom *Webhook Lain* per level menerima URL apa pun yang mau di-POST JSON alert (n8n, Apps Script, sistem tiket).
 - **Email**: `SMTP_*` di `.env` (kosong = dilewati).
-- **Docker**: `docker compose up -d --build` = web + managed sync daemon + scheduler tick/summary.
+- **Docker**: `docker compose up -d --build` = dua service: web Node-only + managed sync. Scheduler tick/summary sudah menyatu di supervisor web, jadi tidak memerlukan container ketiga.
 - **Integrasi keluar**: `GET /api/alerts|forecast|integrity|sloc?code=`, monitoring `GET /api/health`.
+
+### Profil VPS hemat
+
+- Seluruh stack aplikasi gratis dan open source: Next.js, React, DuckDB, Python,
+  pandas, Chart.js, serta Docker Engine/Compose pada VPS Linux.
+- Baseline yang masuk akal untuk Compose adalah **2 vCPU / 2 GB RAM**. Limit
+  service disetel ke web `0,75 CPU / 384 MB` dan sync `1 CPU / 640 MB`; host
+  tetap membutuhkan ruang untuk kernel dan Docker.
+- Sync stok berjalan tiap 10 menit. Unduhan Superset disimpan sementara lebih
+  dulu; koneksi tulis DuckDB baru dibuka setelah seluruh batch siap, sehingga
+  dashboard tidak terkunci selama waktu tunggu jaringan.
+- DuckDB sync dibatasi 2 thread/384 MB, pembaca web 2 thread/320 MB. Cache query
+  server 5 menit dan refresh browser 10 menit; tab latar belakang tidak refresh.
+- Retensi snapshot: detail 6 jam, per jam sampai 3 hari, lalu satu snapshot per
+  hari; histori detail maksimum 30 hari. Master ditarik maksimum tiap 12 jam.
+- Setelah retensi besar atau penghapusan indeks, kembalikan ruang disk dengan:
+
+```bash
+python3 scripts/superset_to_duckdb.py --config config/superset-sync.json --compact
+```
+
+Jalankan saat web/sync berhenti. Proses memakai lock eksklusif dan membutuhkan
+ruang sementara kira-kira sebesar database aktif sebelum pertukaran atomik.
 
 ---
 
@@ -230,8 +254,8 @@ Kebutuhan: super cepat · near-realtime · muat data besar · efisien · 100% gr
 | Opsi penampung/sumber | Kecepatan | Realtime | Data besar | Gratis | Verdict |
 |---|---|---|---|---|---|
 | Google Sheets sebagai backend | lambat (API + limit 10 jt sel) | tidak (kuota) | ❌ | ✔ | **Ditolak** — bottleneck & rapuh |
-| **Superset Chart Data API (dataset) → DuckDB** *(DEFAULT baru)* | baik | loop 60–300 dtk | ✔ (keyset/offset server-side) | ✔ | **Dipakai** — TANPA SQL Lab, cukup cookie viewer yang bisa buka dashboard (pola Auto Sync v5.5) |
-| Superset SQL Lab → DuckDB | baik | loop 60–300 dtk | ✔ (keyset paging) | ✔ | Cadangan — butuh permission SQL Lab (saat ini tidak tersedia) |
+| **Superset Chart Data API (dataset) → DuckDB** *(DEFAULT baru)* | baik | loop 600 dtk | ✔ (keyset/offset server-side) | ✔ | **Dipakai** — TANPA SQL Lab, cukup cookie viewer yang bisa buka dashboard (pola Auto Sync v5.5) |
+| Superset SQL Lab → DuckDB | baik | loop 600 dtk | ✔ (keyset paging) | ✔ | Cadangan — butuh permission SQL Lab (saat ini tidak tersedia) |
 | ClickHouse HTTP langsung → DuckDB | terbaik | loop 60 dtk near-realtime | ✔✔ | ✔ | Cadangan — butuh user read-only ClickHouse (saat ini tidak tersedia) |
 | Web query ClickHouse langsung tiap request | cepat | ya | ✔ | ✔ | Ditunda — dashboard jadi tergantung uptime & beban DB produksi; read model tetap best practice |
 
@@ -250,7 +274,7 @@ Keputusan: **DuckDB tetap read model** (embedded, gratis, OLAP kolumnar) dan sum
 
 **Galat login `{"message":"Not authorized"}`** — kredensial ditolak provider `db`: khas instance yang login web-nya via **Google SSO** (Superset tidak menyimpan password Google). Jangan paksa mode login; `auth.mode: "auto"` (default baru) memakai cookie bila tersedia dan tidak lagi menghentikan run saat login gagal (provider `db` gagal → otomatis dicoba `ldap` sekali). Jalur data kini bertingkat otomatis: **(1)** API v1 `chart/data` (Bearer/sesi) → **(2)** `GET` chart tersimpan bila `chart_id` diisi → **(3)** **legacy `explore_json`** via GET + session cookie (bebas CSRF — jalur klasik integrasi cookie era Auto Sync v5.5; keyset untuk master, sekali-tarik `legacy_row_limit` 200k untuk stok). `--doctor` kini juga **mendekode cookie `session`** tanpa secret: menampilkan usia, utuh/korup-terpotong saat disalin (penyebab tersembunyi "Missing Authorization Header" meski cookie baru), dan ada-tidaknya `_user_id` (cookie anonim = disalin sebelum login), lalu mem-probe jalur legacy per dataset.
 
-**Apakah sync mengikuti filter chart?** Secara desain mode dataset menembak *dataset* langsung, jadi tanpa apa-apa ia menarik **seluruh dataset** (filter yang menempel di SQL virtual dataset selalu ikut). Agar hasil sama dengan irisan chart: **isi `dataset.chart_id`** — filter TERSIMPAN chart (adhoc SIMPLE, custom SQL WHERE, time range/TEMPORAL_RANGE) otomatis **diwarisi** di semua jalur (POST v1 via `filters`+`extras.where`+`time_range`, legacy via `adhoc_filters`+`time_range`), sementara kolom/metrik tetap milik WIOM agar skema stabil; `--doctor` menampilkan filter warisan yang terbaca. Dua batasan jujur: filter dari **filter bar dashboard (native filter) tidak tersimpan di chart** — pindahkan ke chart (panel Data → Filters) lalu Save, atau tulis manual di `dataset.filters`; dan jalur fallback `GET chart` memakai query chart sepenuhnya (kolom = kolom chart), jadi pastikan chart fallback memuat semua kolom yang WIOM butuhkan.
+**Apakah sync mengikuti filter chart?** Secara desain mode dataset menembak *dataset* langsung, jadi tanpa apa-apa ia menarik **seluruh dataset** (filter yang menempel di SQL virtual dataset selalu ikut). Agar hasil sama dengan irisan chart: **isi `dataset.chart_id`** — filter TERSIMPAN chart (adhoc SIMPLE, custom SQL WHERE, time range/TEMPORAL_RANGE) otomatis **diwarisi** di semua jalur (POST v1 via `filters`+`extras.where`+`time_range`, legacy via `adhoc_filters`+`time_range`), sementara kolom/metrik aplikasi tetap stabil; `--doctor` menampilkan filter warisan yang terbaca. Dua batasan jujur: filter dari **filter bar dashboard (native filter) tidak tersimpan di chart** — pindahkan ke chart (panel Data → Filters) lalu Save, atau tulis manual di `dataset.filters`; dan jalur fallback `GET chart` memakai query chart sepenuhnya (kolom = kolom chart), jadi pastikan chart fallback memuat semua kolom yang aplikasi butuhkan.
 
 **Melampaui Row Limit 120.000 (SQL_MAX_ROW)** — 120 rb adalah cap *server* per request: tidak ada satu request pun yang bisa melewatinya, dan itu berlaku untuk semua klien. Namun **total baris kini tak terbatas**: jalur POST v1 mem-paging keyset/offset dengan tiap halaman ≤ cap (offset kini memakai *orderby total-order* — seluruh dimensi — agar tidak ada baris terlewat/dobel antar halaman, dan `chunk_size` job boleh dinaikkan sampai cap untuk mengurangi jumlah halaman); jalur legacy agregasi, yang tidak punya offset, otomatis **disegmentasi** per nilai `segment_by` (default `location_id` — nilainya diambil gratis dari filter `IN` warisan chart, atau di-discover lewat query kecil), dan bila satu segmen masih menyentuh cap, dipecah lagi ke kolom berikutnya (mis. `product_detail_status_name`). Satu-satunya jalur yang tetap terpotong di cap adalah fallback terakhir **GET chart** (tanpa parameter paging) — log akan memberi tahu bila itu terjadi; selama POST atau legacy hidup, totalnya tak terbatas. `server_row_cap` bisa disetel di config bila instance berubah.
 
@@ -259,6 +283,12 @@ Keputusan: **DuckDB tetap read model** (embedded, gratis, OLAP kolumnar) dan sum
 **Galat `Columns missing in dataset: [...]`** — kabar baik: ini berarti **auth sudah tembus** (request sampai ke validasi query Superset); yang salah tinggal nama kolom. Sync kini **anti tebak-tebakan**: sebelum menarik data ia meng-introspeksi skema asli via `GET /api/v1/dataset/{id}`, meminta hanya kolom yang benar-benar ada, menyaring `orderby`, dan memvalidasi kolom metric & key dengan pesan yang menyebut daftar kolom tersedia; bila endpoint metadata dibatasi, ia memangkas berdasarkan pesan error server lalu mencoba ulang sekali. Kolom yang hilang tidak mematikan aplikasi: `rack_zone/aisle/bay/level/bin` **diturunkan dari `sloc_code`** (format `PGS-ABB1-01-02-L1-01`), `occupied_cbm` dihitung `stock_qty × sku_cbm` bila kosong, sisanya NULL. Untuk merapikan mapping secara permanen jalankan `--columns` — mencetak skema asli tiap dataset dengan tanda kolom mana yang sudah dipakai config.
 
 **Galat `Another sync holds the lock`** — sisa lock dari run yang mati tidak wajar (crash / terminal ditutup), atau memang ada `--loop` lain yang masih berjalan. Lock kini **self-healing**: menyimpan `pid|timestamp`, memeriksa apakah pemegangnya masih hidup (Windows via OpenProcess, POSIX via kill-0), dan **mengambil alih otomatis** bila pemegangnya mati atau lock tak terverifikasi berumur > 1 jam; pemegang yang masih hidup tetap dihormati. Untuk kontrol manual ada `--unlock` — menghapus lock hanya bila pemegangnya terbukti mati (menolak bila masih hidup, lengkap dengan pid-nya untuk di-`taskkill`).
+
+**Galat `warehouse_history.duckdb ... used by another process`** — jangan hapus database. Worker kini mengunduh data tanpa membuka DuckDB, lalu membuat penanda tulis singkat agar pembaca web berhenti membuka koneksi baru. Reader aktif diberi waktu selesai dan worker mencoba kembali sampai 45 detik. Endpoint status tidak lagi membaca DuckDB selama state `queued`/`running`, sehingga halaman Superset Sync aman dibiarkan terbuka saat proses berjalan.
+
+**Galat `app_state.duckdb ... used by another process`** — ada dua instance FIT Occupancy Alert and Monitoring yang memakai state database sama. Startup sekarang menolak instance kedua dan menyebut PID/port pemiliknya. Gunakan satu instance produksi; untuk preview pakai `scripts/start-preview.ps1`, yang otomatis memberi `DUCKDB_STATE_PATH` terpisah dan menonaktifkan worker kedua. Lock startup dan daemon memeriksa identitas waktu mulai proses, sehingga PID Windows yang didaur ulang tidak dianggap sebagai pemilik lama.
+
+Pada sync terjadwal, master SLOC yang masih segar ditandai **TERKINI** dan tidak diunduh ulang untuk menghemat Superset/VPS. Tombol **Sync sekarang** selalu memaksa dua sumber wajib—Master Lokasi dan Snapshot Stok—sehingga keduanya harus berstatus **OK** pada hasil manual.
 
 **Bila sync error** — mulai dari **Pengaturan → Superset Sync → Uji koneksi**. Untuk diagnosis CLI yang lebih rinci jalankan `python3 scripts/superset_to_duckdb.py --config config/superset-sync.json --doctor`: ia mengetes `/health` (jaringan/gateway), `/api/v1/me/` (validitas cookie — penyebab #1 error 401; ambil ulang nilai cookie `session` dari DevTools → Application → Cookies), token CSRF, lalu probe 1 baris tiap dataset dan menunjukkan kolom yang tidak cocok. Galat `502/524` = gateway Cloudflare (origin lambat / bot-filter) — klien kini memakai User-Agent browser, auto-retry dengan backoff, dan timeout 90 dtk. Bila POST `chart/data` tetap ditolak (401/403/CSRF), isi `dataset.chart_id` → sync otomatis fallback ke **GET data chart tersimpan** (bebas CSRF): buat chart *Table · Raw Records* berisi semua kolom raw (untuk stok: + metric `SUM(stock)` berlabel persis `stock_qty`), **Row Limit ≥ 200000**, dan ambil id dari URL `/explore/?slice_id=ANGKA`.
 

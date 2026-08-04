@@ -22,7 +22,7 @@ async function handle(req: NextRequest) {
     weekday: "long", day: "numeric", month: "long", timeZone: "Asia/Jakarta",
   });
 
-  const lines: string[] = [`📊 <b>Ringkasan Harian WIOM — ${tanggal}</b>`, ""];
+  const lines: string[] = [`📊 <b>Ringkasan Harian FIT Occupancy Alert and Monitoring — ${tanggal}</b>`, ""];
   for (const s of [...sums].sort((a, b) => b.pct - a.pct)) {
     const icon =
       s.status === "BREACH" || s.status === "CRITICAL" ? "🔴"
@@ -44,7 +44,7 @@ async function handle(req: NextRequest) {
       if ((await sendGChatText(hook, text.replace(/<\/?b>/g, "*"), "wiom-daily")).ok) sent++;
     }
     for (const em of lv.emails) {
-      if ((await sendEmail(em, `Ringkasan Harian WIOM — ${tanggal}`, text.replace(/<[^>]+>/g, ""))).ok) sent++;
+      if ((await sendEmail(em, `Ringkasan Harian FIT Occupancy Alert and Monitoring — ${tanggal}`, text.replace(/<[^>]+>/g, ""))).ok) sent++;
     }
   }
   return NextResponse.json({ ok: true, sent, preview: text });

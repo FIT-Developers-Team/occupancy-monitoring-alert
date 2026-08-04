@@ -67,6 +67,20 @@ export interface ZoneSummary {
   status_qty: OccupancyStatus | null;
   status_cbm: OccupancyStatus | null;
   status_bin: OccupancyStatus;
+  /** Ordered rack-level sections used by the interactive heatmap. */
+  rack_zones?: RackZoneSummary[];
+}
+
+export interface RackZoneSummary {
+  wh: string; zone: string; rack_zone: string; storage: string; basis: Basis;
+  occ_qty: number; cap_qty: number; occ_cbm: number; cap_cbm: number;
+  pct: number; pct_qty: number | null; pct_cbm: number | null;
+  pct_bin: number;
+  sloc_total: number; sloc_empty: number; sloc_occupied: number;
+  status: OccupancyStatus;
+  status_qty: OccupancyStatus | null;
+  status_cbm: OccupancyStatus | null;
+  status_bin: OccupancyStatus;
 }
 
 export interface TrendPoint {

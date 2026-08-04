@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef } from "react";
-import Chart from "chart.js/auto";
+import Chart from "./chart-core";
 import { chartTheme } from "./palette";
 import { useT } from "@/lib/i18n-client";
 
@@ -64,7 +64,7 @@ export default function ForecastChart({
             ctx.strokeStyle = String(color); ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
             ctx.beginPath(); ctx.moveTo(chartArea.left, y); ctx.lineTo(chartArea.right, y); ctx.stroke();
             ctx.fillStyle = String(color);
-            ctx.font = "9px Inconsolata, monospace";
+            ctx.font = "9px ui-monospace, SFMono-Regular, Consolas, monospace";
             ctx.fillText(`${val}%`, chartArea.right - 24, y - 3);
             ctx.restore();
           }
