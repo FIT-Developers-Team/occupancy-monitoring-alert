@@ -378,35 +378,6 @@
   .guide-diagram { display: block; width: 100%; }
   .guide-flow-diagram { min-width: 880px; }
   .guide-resolver-diagram { min-width: 720px; max-width: 900px; }
-  .dashboard-route-loading {
-    opacity: 1;
-  }
-  .route-loading-status {
-    display: flex; width: max-content; align-items: center; gap: 7px;
-    min-height: 28px; padding: 5px 9px; border: 1px solid var(--border);
-    border-radius: 7px; background: var(--surface-raised);
-    color: var(--text-muted); font-size: 11px;
-  }
-  .route-loading-dot {
-    width: 7px; height: 7px; border-radius: 999px; background: var(--accent);
-    animation: skeleton-pulse 1.6s ease-in-out infinite;
-  }
-  .loading-heading { display: grid; width: min(340px, 72%); gap: 7px; }
-  .loading-heading span,
-  .loading-heading strong,
-  .loading-metrics span,
-  .loading-panel {
-    background: var(--surface-raised);
-    animation: skeleton-pulse 1.8s ease-in-out infinite;
-  }
-  .loading-heading span { width: 42%; height: 10px; border-radius: 5px; }
-  .loading-heading strong { width: 70%; height: 24px; border-radius: 6px; }
-  .loading-metrics {
-    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px;
-    overflow: hidden; padding: 1px; border-radius: 9px; background: var(--border);
-  }
-  .loading-metrics span { height: 78px; }
-  .loading-panel { height: 280px; border: 1px solid var(--border); border-radius: 9px; }
 
   /* Occupancy: one quiet summary surface, dense read model, mobile disclosure cards. */
   .occ-summary-strip,
@@ -672,10 +643,64 @@
   }
   .heat-zone-dialog-summary b { color: var(--text); }
   .heat-zone-dialog-grid-wrap { min-height: 220px; overflow: auto; padding: 12px 14px; }
-  .heat-zone-dialog-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, 24px); grid-auto-rows: 24px;
-    gap: 2px; width: 100%; align-content: start;
+
+  /* Zone layout — reconstructs the rack: Aisle > Bay > Level > Bin.
+     Replaces the flat cell wall, which gave no positional context. */
+  .zone-layout { display: grid; gap: 14px; align-content: start; }
+  .zone-aisle {
+    display: grid; gap: 8px; padding: 10px;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface-sunken);
   }
+  .zone-aisle-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+    padding-bottom: 7px; border-bottom: 1px solid var(--border);
+  }
+  .zone-aisle-head h3 { display: flex; align-items: baseline; gap: 5px; margin: 0; }
+  .zone-aisle-head h3 span {
+    color: var(--text-muted); font-size: 8.5px; font-weight: 600;
+    letter-spacing: .07em; text-transform: uppercase;
+  }
+  .zone-aisle-head h3 strong { font-size: 13px; }
+  .zone-aisle-stat { display: flex; align-items: baseline; gap: 4px; color: var(--text-muted); font-size: 10px; }
+  .zone-aisle-stat small { font-size: 8.5px; }
+
+  /* Bays sit side by side; each one is a self-contained rack elevation. */
+  .zone-bay-list {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 8px; align-items: start;
+  }
+  .zone-bay {
+    display: grid; gap: 5px; padding: 7px;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised);
+  }
+  .zone-bay-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  }
+  .zone-bay-head span { display: flex; align-items: baseline; gap: 4px; }
+  .zone-bay-head b {
+    color: var(--text-muted); font-size: 8px; font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase;
+  }
+  .zone-bay-head strong { font-size: 11px; }
+  .zone-bay-head small { color: var(--text-muted); font-size: 9px; }
+
+  /* Highest level renders first, so the stack reads like the physical rack. */
+  .zone-bay-levels { display: grid; gap: 3px; }
+  .zone-level-row { display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; gap: 5px; }
+  .zone-level-label {
+    padding: 2px 0; border-radius: 4px; background: var(--surface-sunken);
+    color: var(--text-muted); font-size: 8.5px; text-align: center;
+  }
+  .zone-bin-row { display: flex; flex-wrap: wrap; gap: 3px; }
+  .heat-cell-bin { width: 26px; height: 22px; }
+  .heat-cell-bin .heat-cell-swatch { width: 100%; height: 100%; padding: 0; }
+  .heat-cell-bin .heat-cell-swatch b { font-size: 8px; font-weight: 600; line-height: 1; }
+  .heat-cell-bin .heat-cell-normal b,
+  .heat-cell-bin .heat-cell-monitor b,
+  .heat-cell-bin .heat-cell-warning b,
+  .heat-cell-bin .heat-cell-occupied b { color: #0B1120; }
+  .heat-cell-bin .heat-cell-critical b,
+  .heat-cell-bin .heat-cell-breach b { color: #FFF; }
   .heat-zone-loading { padding: 50px 0; color: var(--text-muted); font-size: 11px; text-align: center; }
   .heat-zone-dialog-foot {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -792,7 +817,6 @@
     .heat-cell-button:not(.heat-cell-coordinate) .heat-cell-swatch { width: 21px; height: 21px; }
     .heat-rack-foot { align-items: flex-start; flex-direction: column; }
     .heat-detail-drawer { padding: 11px; }
-    .loading-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 
   .navlink {
@@ -832,6 +856,11 @@
   box-shadow: 0 1px 2px rgba(15, 23, 42, .18);
 }
 @media (max-width: 640px) {
+  /* One bay per row on phones — side-by-side bays would squeeze the bin cells
+     below a comfortable tap target. */
+  .zone-bay-list { grid-template-columns: 1fr; }
+  .zone-aisle { padding: 8px; }
+  .heat-cell-bin { width: 30px; height: 26px; }
   .topbar-basis { display: none; }
   .account-basis { display: grid; }
   .account-trigger { min-width: 72px; max-width: 104px; }
@@ -849,7 +878,6 @@
 @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
-@keyframes route-loading-in { to { opacity: 1; } }
 @keyframes skeleton-pulse { 0%, 100% { opacity: .72; } 50% { opacity: 1; } }
 @keyframes slide-in-right { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
 .anim-in { animation: fadeUp .28s cubic-bezier(.22,.61,.36,1) both; }
@@ -973,10 +1001,43 @@
 .sync-job-result { display: grid; min-width: 78px; justify-items: end; gap: 1px; }
 .sync-job-result b { color: var(--st-normal-fg); font-family: var(--font-mono); font-size: 10px; }
 .sync-job-result b.is-error { color: var(--st-critical-fg); }
-/* Reserves the chart's box while Chart.js is fetched, so nothing jumps. */
-.chart-placeholder {
-  height: 100%; width: 100%; border-radius: 6px;
-  background: linear-gradient(180deg, transparent, var(--panel-2, rgba(127, 127, 127, .06)));
+/* Loading popup — one indicator for route transitions and lazy components.
+   Nothing paints during the grace period; see components/ui/loading-popup.tsx. */
+/* Full-width add affordance under the override rules table. */
+.rules-add {
+  display: flex; width: 100%; min-height: 36px; align-items: center; justify-content: center;
+  gap: 6px; border: 1px dashed var(--border-strong); border-radius: 7px;
+  background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.rules-add:hover, .rules-add:focus-visible {
+  border-color: var(--accent); border-style: solid;
+  background: var(--surface-sunken); color: var(--text);
+}
+.rules-add span { font-size: 13px; line-height: 1; }
+
+.loading-hold { height: 100%; width: 100%; }
+.loading-popup { display: grid; place-items: center; pointer-events: none; }
+.loading-popup-overlay { position: fixed; inset: 0; z-index: 80; }
+.loading-popup-inline { height: 100%; width: 100%; }
+.loading-popup-card {
+  display: flex; align-items: center; gap: 9px; padding: 10px 15px;
+  border: 1px solid var(--border-strong); border-radius: 9px;
+  background: var(--surface-raised); color: var(--text); font-size: 11.5px;
+  box-shadow: 0 10px 32px rgba(8, 12, 24, .22);
+  animation: loadingPopupIn 140ms ease-out both;
+}
+.loading-popup-spinner {
+  width: 13px; height: 13px; flex: none; border-radius: 50%;
+  border: 2px solid color-mix(in oklab, var(--text) 18%, transparent);
+  border-top-color: var(--accent);
+  animation: loadingPopupSpin 620ms linear infinite;
+}
+@keyframes loadingPopupIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@keyframes loadingPopupSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .loading-popup-card { animation: none; }
+  .loading-popup-spinner { animation-duration: 1.6s; }
 }
 
 .sync-job-result span { color: var(--text-muted); font-size: 9.5px; }
@@ -1105,6 +1166,5 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .anim-in, .stagger > *, .anim-fade { animation: none !important; }
-  .dashboard-route-loading { opacity: 1; animation: none !important; }
   * { transition-duration: .01ms !important; }
 }

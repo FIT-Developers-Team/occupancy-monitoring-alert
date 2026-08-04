@@ -164,6 +164,7 @@ function CellButton({
   onSelect,
   index,
   showCoordinates = false,
+  binLabel = false,
 }: {
   cell: SlocOccupancy;
   basis: BasisMode;
@@ -171,6 +172,7 @@ function CellButton({
   onSelect: (cell: SlocOccupancy) => void;
   index?: number;
   showCoordinates?: boolean;
+  binLabel?: boolean;
 }) {
   const status = heatStatus(cell, basis);
   const pct = cellPct(cell, basis);
@@ -179,7 +181,7 @@ function CellButton({
     <button
       type="button"
       role={index === undefined ? undefined : "gridcell"}
-      className={`heat-cell-button${showCoordinates ? " heat-cell-coordinate" : ""}${dimmed ? " is-muted" : ""}`}
+      className={`heat-cell-button${showCoordinates ? " heat-cell-coordinate" : ""}${binLabel ? " heat-cell-bin" : ""}${dimmed ? " is-muted" : ""}`}
       title={`${cell.sloc_code} · Aisle ${cell.aisle || "—"} · Bay ${cell.bay || "—"} · Level ${cell.level || "—"} · Bin ${cell.bin || "—"} · ${status} · ${pctText(pct)}`}
       aria-label={`${cell.sloc_code}, Aisle ${cell.aisle || "—"}, Bay ${cell.bay || "—"}, Level ${cell.level || "—"}, Bin ${cell.bin || "—"}, ${status}, ${pctText(pct)}`}
       data-heat-index={index}
@@ -197,10 +199,144 @@ function CellButton({
             <small>L{cell.level || "—"} · {cell.bin || "—"}</small>
           </>
         )}
+        {/* Inside the zone layout the aisle, bay and level are already row
+            labels, so the cell itself only needs to identify its bin. */}
+        {binLabel && !showCoordinates && <b>{cell.bin || "—"}</b>}
       </span>
     </button>
   );
 }
+
+interface ZoneBayGroup {
+  bay: string;
+  levels: Array<{ level: string; cells: SlocOccupancy[] }>;
+  total: number;
+  filled: number;
+}
+interface ZoneAisleGroup {
+  aisle: string;
+  bays: ZoneBayGroup[];
+  total: number;
+  filled: number;
+}
+
+/**
+ * Rebuild the physical rack layout (Aisle -> Bay -> Level -> Bin) from the flat
+ * SLOC rows the API returns. The zone dialog used to render every cell as one
+ * undifferentiated wall, so there was no way to tell which bay or level a cell
+ * belonged to.
+ */
+function groupZoneByPosition(cells: SlocOccupancy[]): ZoneAisleGroup[] {
+  const byAisle = new Map<string, Map<string, Map<string, SlocOccupancy[]>>>();
+  for (const cell of sortCells(cells)) {
+    const aisle = cell.aisle || "—";
+    const bay = cell.bay || "—";
+    const level = cell.level || "—";
+    let bays = byAisle.get(aisle);
+    if (!bays) { bays = new Map(); byAisle.set(aisle, bays); }
+    let levels = bays.get(bay);
+    if (!levels) { levels = new Map(); bays.set(bay, levels); }
+    const list = levels.get(level) ?? [];
+    list.push(cell);
+    levels.set(level, list);
+  }
+
+  const aisles: ZoneAisleGroup[] = [];
+  for (const [aisle, bays] of byAisle) {
+    const bayGroups: ZoneBayGroup[] = [];
+    let aisleTotal = 0;
+    let aisleFilled = 0;
+    for (const [bay, levels] of bays) {
+      // Highest level first so a bay reads like a real rack elevation.
+      const levelRows = [...levels.entries()]
+        .sort((a, b) => naturalOrder.compare(b[0], a[0]))
+        .map(([level, list]) => ({ level, cells: list }));
+      let total = 0;
+      let filled = 0;
+      for (const row of levelRows) {
+        total += row.cells.length;
+        filled += row.cells.filter((cell) => !isEmpty(cell)).length;
+      }
+      aisleTotal += total;
+      aisleFilled += filled;
+      bayGroups.push({ bay, levels: levelRows, total, filled });
+    }
+    aisles.push({ aisle, bays: bayGroups, total: aisleTotal, filled: aisleFilled });
+  }
+  return aisles;
+}
+
+const ZoneLayout = memo(function ZoneLayout({
+  aisles,
+  basis,
+  filter,
+  locale,
+  label,
+  t,
+  onSelect,
+}: {
+  aisles: ZoneAisleGroup[];
+  basis: BasisMode;
+  filter: StatusFilter;
+  locale: string;
+  label: string;
+  t: (key: string, fallback?: string) => string;
+  onSelect: (cell: SlocOccupancy) => void;
+}) {
+  if (!aisles.length) return null;
+  return (
+    <div className="zone-layout" role="group" aria-label={label}>
+      {aisles.map((aisleGroup) => (
+        <section key={aisleGroup.aisle} className="zone-aisle">
+          <header className="zone-aisle-head">
+            <h3>
+              <span>{t("heat.aisle", "Aisle")}</span>
+              <strong className="num">{aisleGroup.aisle}</strong>
+            </h3>
+            <span className="zone-aisle-stat num">
+              {aisleGroup.filled.toLocaleString(locale)}/{aisleGroup.total.toLocaleString(locale)}
+              <small>{t("heat.filled", "terisi")}</small>
+            </span>
+          </header>
+          <div className="zone-bay-list">
+            {aisleGroup.bays.map((bayGroup) => (
+              <article key={bayGroup.bay} className="zone-bay">
+                <header className="zone-bay-head">
+                  <span>
+                    <b>{t("heat.bay", "Bay")}</b>
+                    <strong className="num">{bayGroup.bay}</strong>
+                  </span>
+                  <small className="num">{bayGroup.filled}/{bayGroup.total}</small>
+                </header>
+                <div className="zone-bay-levels">
+                  {bayGroup.levels.map((row) => (
+                    <div key={row.level} className="zone-level-row">
+                      <span className="zone-level-label num" title={`${t("heat.level", "Level")} ${row.level}`}>
+                        {row.level}
+                      </span>
+                      <div className="zone-bin-row">
+                        {row.cells.map((cell) => (
+                          <CellButton
+                            key={`${cell.sloc_id}-${cell.sloc_code}`}
+                            cell={cell}
+                            basis={basis}
+                            filter={filter}
+                            onSelect={onSelect}
+                            binLabel
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+});
 
 const HeatZoneGroup = memo(function HeatZoneGroup({
   zone,
@@ -339,6 +475,10 @@ export default function HeatmapGrid({
   const [zoneNextOffset, setZoneNextOffset] = useState<number | null>(null);
   const [zoneLoading, setZoneLoading] = useState(false);
   const [zoneError, setZoneError] = useState(false);
+
+  // Regrouping 600 cells on every render would be wasteful; only the loaded
+  // page changes.
+  const zoneAisles = useMemo(() => groupZoneByPosition(zoneCells), [zoneCells]);
 
   const zoneAbortRef = useRef<AbortController | null>(null);
   const initialLookupDoneRef = useRef(false);
@@ -696,19 +836,20 @@ export default function HeatmapGrid({
               </div>
             ) : (
               <div className="heat-zone-dialog-grid-wrap" aria-busy={zoneLoading}>
-                <div className="heat-zone-dialog-grid" role="group" aria-label={`${selectedZone.rack_zone} SLOC`}>
-                  {zoneCells.map((cell) => (
-                    <CellButton
-                      key={`${cell.sloc_id}-${cell.sloc_code}`}
-                      cell={cell}
-                      basis={basis}
-                      filter={statusFilter}
-                      onSelect={openCell}
-                    />
-                  ))}
-                </div>
+                <ZoneLayout
+                  aisles={zoneAisles}
+                  basis={basis}
+                  filter={statusFilter}
+                  locale={locale}
+                  label={`${selectedZone.rack_zone} SLOC`}
+                  t={t}
+                  onSelect={openCell}
+                />
                 {zoneLoading && zoneCells.length === 0 && (
                   <div className="heat-zone-loading">{t("common.loading")}</div>
+                )}
+                {!zoneLoading && zoneCells.length === 0 && (
+                  <div className="heat-zone-loading">{t("heat.noCells", "Tidak ada SLOC pada zona ini.")}</div>
                 )}
               </div>
             )}

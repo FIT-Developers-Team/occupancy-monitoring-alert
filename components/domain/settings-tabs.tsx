@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n-client";
 
@@ -61,6 +61,10 @@ export default function SettingsTabs() {
   const [tab, setTab] = useState<"sync" | "thresholds" | "capacity" | "rules" | "recipients">("sync");
   const [thresholds, setThresholds] = useState<Thresholds | null>(null);
   const [capacity, setCapacity] = useState<Capacity | null>(null);
+  // Index of a freshly appended override rule, so it can be focused once the
+  // new row exists in the DOM.
+  const [focusRuleIndex, setFocusRuleIndex] = useState<number | null>(null);
+  const rulesBodyRef = useRef<HTMLTableSectionElement | null>(null);
   const [capMeta, setCapMeta] = useState<CapMeta | null>(null);
   const [rules, setRules] = useState<Rule[] | null>(null);
   const [recipients, setRecipients] = useState<Recipients | null>(null);
@@ -120,6 +124,22 @@ export default function SettingsTabs() {
   ];
 
   // ---- helper kapasitas ------------------------------------------------------
+  const addCapRule = () => {
+    if (!capacity) return;
+    setCapacity({ ...capacity, rules: [...capacity.rules, { scope: {}, set: {}, note: "" }] });
+    setFocusRuleIndex(capacity.rules.length);
+  };
+
+  // Put the caret straight into the new row. Without this the rule appears at
+  // the bottom of a long table and the admin has to hunt for it.
+  useEffect(() => {
+    if (focusRuleIndex === null) return;
+    const row = rulesBodyRef.current?.children[focusRuleIndex] as HTMLElement | undefined;
+    row?.querySelector<HTMLElement>("select, input")?.focus();
+    row?.scrollIntoView({ block: "nearest" });
+    setFocusRuleIndex(null);
+  }, [focusRuleIndex]);
+
   const setCapRule = (i: number, patch: Partial<CapRule>) => {
     if (!capacity) return;
     const next = [...capacity.rules];
@@ -282,19 +302,14 @@ export default function SettingsTabs() {
             </div>
 
             <div className="min-w-0 space-y-2">
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
                   <div className="panel-title">{t("set.ui.capacity.overrideRules")}</div>
                   <p className="mt-0.5 text-[10.5px]" style={{ color: "var(--text-muted)" }}>
                     {t("set.ui.capacity.overrideHint")}
                   </p>
                 </div>
-                <button className="btn btn-sm"
-                  onClick={() => setCapacity({
-                    ...capacity, rules: [...capacity.rules, { scope: {}, set: {}, note: "" }],
-                  })}>
-                  + {t("set.ui.capacity.addRule")}
-                </button>
+                <span className="chip num">{capacity.rules.length}</span>
               </div>
               <div className="capacity-rules-wrap overflow-x-auto">
                 <table className="tbl capacity-rules-table">
@@ -310,7 +325,7 @@ export default function SettingsTabs() {
                       <th>{t("set.ui.column.note")}</th><th></th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody ref={rulesBodyRef}>
                     {capacity.rules.map((r, i) => {
                       const catScoped = !!r.scope.l1_category;
                       return (
@@ -407,6 +422,11 @@ export default function SettingsTabs() {
                   </tbody>
                 </table>
               </div>
+              {/* Add sits below the table: new rules append to the end, so the
+                  control has to be where the admin already is. */}
+              <button type="button" className="rules-add" onClick={addCapRule}>
+                <span aria-hidden>+</span> {t("set.ui.capacity.addRule")}
+              </button>
               {(capMeta?.warehouses ?? []).map((w) => (
                 <datalist key={w} id={`zones-${w}`}>
                   {(capMeta?.zones[w] ?? []).map((z) => <option key={z} value={z} />)}

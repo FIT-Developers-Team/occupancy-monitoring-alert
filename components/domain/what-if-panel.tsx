@@ -6,12 +6,13 @@ import { hoursToTarget } from "@/lib/forecast";
 import { fmtHours, fmtNum } from "@/lib/utils";
 import { useT } from "@/lib/i18n-client";
 import dynamic from "next/dynamic";
+import LoadingPopup from "@/components/ui/loading-popup";
 
 // Keeps Chart.js out of the forecast page's initial bundle; it only loads once
 // this panel actually renders a chart.
 const ForecastChart = dynamic(() => import("@/components/charts/forecast-chart"), {
   ssr: false,
-  loading: () => <div className="chart-placeholder" aria-hidden />,
+  loading: () => <LoadingPopup variant="inline" />,
 });
 
 export default function WhatIfPanel({ rows }: { rows: ForecastRow[] }) {

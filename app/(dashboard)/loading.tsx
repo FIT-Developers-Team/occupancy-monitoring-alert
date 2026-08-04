@@ -1,23 +1,11 @@
-"use client";
+import LoadingPopup from "@/components/ui/loading-popup";
 
-import { useT } from "@/lib/i18n-client";
-
+/**
+ * Route-level fallback. This used to paint a full skeleton (heading bars, five
+ * metric tiles, a panel block) the moment a navigation began, so every click
+ * flashed a layout that was replaced milliseconds later. One delayed popup
+ * keeps the transition quiet instead.
+ */
 export default function Loading() {
-  const { t } = useT();
-  return (
-    <div className="dashboard-page dashboard-route-loading" aria-busy="true" aria-label={t("common.loading")}>
-      <div className="route-loading-status" role="status" aria-live="polite">
-        <span className="route-loading-dot" aria-hidden />
-        <span>{t("common.loading")}</span>
-      </div>
-      <div className="loading-heading">
-        <span />
-        <strong />
-      </div>
-      <div className="loading-metrics">
-        {[0, 1, 2, 3, 4].map((i) => <span key={i} />)}
-      </div>
-      <div className="loading-panel" />
-    </div>
-  );
+  return <LoadingPopup />;
 }

@@ -1,5 +1,6 @@
 "use client";
 import dynamic from "next/dynamic";
+import LoadingPopup from "@/components/ui/loading-popup";
 import type { TrendPoint } from "@/types";
 
 // Chart.js is canvas-only, so it is useless during SSR and does not belong in
@@ -8,7 +9,7 @@ import type { TrendPoint } from "@/types";
 // arrives. `ssr: false` requires a client component, which is what this file is.
 const TrendChart = dynamic(() => import("./trend-chart"), {
   ssr: false,
-  loading: () => <div className="chart-placeholder" aria-hidden />,
+  loading: () => <LoadingPopup variant="inline" />,
 });
 
 export default function TrendChartLazy({
