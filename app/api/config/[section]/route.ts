@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { currentUser, isAdmin } from "@/lib/auth";
-import { writeSection, getThresholds, getRules, getRecipients, getWarehouses, getCapacity, whMapSQL, type ConfigSection } from "@/lib/config";
+import { writeSection, getThresholds, getRules, getRecipients, getWarehouses, getCapacity, whMapSQL, type ConfigSection, type RecipientsConfig } from "@/lib/config";
 import { queryHistory } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { invalidateOccupancyReadCaches } from "@/lib/queries";
@@ -53,6 +53,30 @@ function valid(section: string): section is ConfigSection {
   return section in readers;
 }
 
+function auditSafeConfig(section: ConfigSection, value: unknown): unknown {
+  if (section !== "recipients") return value;
+  const recipients = value as RecipientsConfig;
+  return {
+    severity_start_level: recipients.severity_start_level,
+    levels: recipients.levels.map((level) => ({
+      level: level.level,
+      name: level.name,
+      delay_minutes: level.delay_minutes,
+      gchat_routes: level.gchat_routes.map((route) => ({
+        id: route.id,
+        label: route.label,
+        enabled: route.enabled,
+        warehouse_codes: route.warehouse_codes,
+        mention_count: route.mention_user_ids.length,
+        webhook_configured: Boolean(route.webhook_url),
+      })),
+      legacy_gchat_webhook_count: level.gchat_webhooks.length,
+      email_count: level.emails.length,
+      generic_webhook_count: level.webhooks.length,
+    })),
+  };
+}
+
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ section: string }> }) {
   const user = await currentUser();
   if (!user || !isAdmin(user.role)) {
@@ -79,7 +103,13 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ section: st
     // Capacity, warehouse allowlist, and thresholds all affect the read model.
     // Do not make an admin wait for the short in-process cache TTL.
     invalidateOccupancyReadCaches();
-    await audit(user.username, "CONFIG_UPDATE", `config:${section}`, before, after);
+    await audit(
+      user.username,
+      "CONFIG_UPDATE",
+      `config:${section}`,
+      auditSafeConfig(section, before),
+      auditSafeConfig(section, after),
+    );
     return NextResponse.json({ section, data: after });
   } catch (e) {
     return NextResponse.json(

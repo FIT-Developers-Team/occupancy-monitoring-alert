@@ -1,6 +1,14 @@
 import type { NextConfig } from "next";
 
+const allowedDevOrigins = process.env.NEXT_ALLOWED_DEV_ORIGINS
+  ?.split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 const nextConfig: NextConfig = {
+  // Optional local visual-QA bridge. It is unset in production and therefore
+  // does not broaden the default origin policy on deployed environments.
+  ...(allowedDevOrigins?.length ? { allowedDevOrigins } : {}),
   // Produce the minimal production runtime required by Docker. Copying the
   // complete build-time node_modules made the final image exceed 1 GB and
   // caused Coolify's helper to disconnect while exporting image layers.

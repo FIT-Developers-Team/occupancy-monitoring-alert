@@ -5,6 +5,7 @@ import { getWarehouseSummaries } from "@/lib/queries";
 import { activeCountsBySeverity } from "@/lib/alerts/store";
 import { getRecipients } from "@/lib/config";
 import { sendGChatText } from "@/lib/notify/gchat";
+import { normalizeGoogleChatMentionIds } from "@/lib/notify/gchat-url";
 import { sendEmail } from "@/lib/notify/email";
 import { fmtHours } from "@/lib/utils";
 
@@ -40,8 +41,26 @@ async function handle(req: NextRequest) {
   const cfg = getRecipients();
   let sent = 0;
   for (const lv of cfg.levels.filter((l) => l.level <= 2)) {
-    for (const hook of lv.gchat_webhooks) {
-      if ((await sendGChatText(hook, text.replace(/<\/?b>/g, "*"), "wiom-daily")).ok) sent++;
+    const chatTargets = new Map<string, string[]>();
+    for (const route of lv.gchat_routes) {
+      // A full-network summary must not leak other WH metrics into a Space
+      // explicitly scoped to one warehouse. Only global routes receive it.
+      if (!route.enabled || !route.warehouse_codes.includes("*")) continue;
+      chatTargets.set(route.webhook_url, normalizeGoogleChatMentionIds([
+        ...(chatTargets.get(route.webhook_url) ?? []),
+        ...route.mention_user_ids,
+      ]));
+    }
+    for (const webhookUrl of lv.gchat_webhooks) {
+      if (!chatTargets.has(webhookUrl)) chatTargets.set(webhookUrl, []);
+    }
+    for (const [webhookUrl, mentions] of chatTargets) {
+      if ((await sendGChatText(
+        webhookUrl,
+        text.replace(/<\/?b>/g, "*"),
+        "fit-occupancy-daily",
+        mentions,
+      )).ok) sent++;
     }
     for (const em of lv.emails) {
       if ((await sendEmail(em, `Ringkasan Harian FIT Occupancy Alert and Monitoring — ${tanggal}`, text.replace(/<[^>]+>/g, ""))).ok) sent++;

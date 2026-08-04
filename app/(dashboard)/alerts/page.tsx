@@ -1,7 +1,6 @@
 import { listAlerts, eventsFor } from "@/lib/alerts/store";
 import { currentUser, canWrite } from "@/lib/auth";
 import { getRecipients } from "@/lib/config";
-import { RULE_EVALUATORS } from "@/lib/alerts/rules";
 import { getT } from "@/lib/i18n";
 import { fmtDateTime } from "@/lib/utils";
 import Section from "@/components/ui/section";
@@ -17,7 +16,7 @@ const RULE_HINT_IDS = [
   "R08", "R09", "R10", "R11", "R12", "R13", "R14",
 ] as const;
 const OCCUPANCY_RULE_IDS = [
-  "OCC-MONITOR", "OCC-WARNING", "OCC-CRITICAL", "OCC-BREACH",
+  "OCC-MONITOR", "OCC-WARNING", "OCC-CRITICAL", "OCC-BREACH", "OCC-ZONE-BREACH",
 ] as const;
 
 export default async function AlertsPage(
@@ -47,7 +46,6 @@ export default async function AlertsPage(
     };
   }
   const runtimeRuleIds = new Set([
-    ...Object.keys(RULE_EVALUATORS),
     ...open.map((alert) => alert.rule_id),
     ...acked.map((alert) => alert.rule_id),
   ]);

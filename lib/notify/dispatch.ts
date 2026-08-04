@@ -1,69 +1,140 @@
-// Routing notifikasi per level eskalasi (config/recipients.json) + logging.
-// Channel: Google Chat webhook (real-time) · Email · Webhook generik.
+// Routing notifikasi per level eskalasi + per-warehouse Google Chat routes.
 import { getRecipients } from "@/lib/config";
 import { stateExec, uid } from "@/lib/db";
 import { sendGChatAlert, sendGenericWebhook } from "@/lib/notify/gchat";
+import { normalizeGoogleChatMentionIds, redactGoogleChatWebhook } from "@/lib/notify/gchat-url";
 import { sendEmail } from "@/lib/notify/email";
 import type { Alert } from "@/types";
 
-const sevIcon: Record<string, string> = {
-  INFO: "ℹ️", WARNING: "🟡", HIGH: "🟠", CRITICAL: "🔴", EMERGENCY: "🚨",
+const severityIcon: Record<string, string> = {
+  INFO: "\u2139\uFE0F",
+  WARNING: "\uD83D\uDFE1",
+  HIGH: "\uD83D\uDFE0",
+  CRITICAL: "\uD83D\uDD34",
+  EMERGENCY: "\uD83D\uDEA8",
 };
 
-export function alertText(a: Alert, escalationPrefix?: string): string {
-  const lines = [
-    `${sevIcon[a.severity] ?? ""} [${a.severity}] ${a.rule_name}${escalationPrefix ? ` — ${escalationPrefix}` : ""}`,
-    `Gudang: ${a.warehouse_code}${a.zone ? ` · Zona ${a.zone}` : ""}${a.sloc_code ? ` · ${a.sloc_code}` : ""}${a.sku ? ` · ${a.sku}` : ""}`,
-    a.title,
+export function alertText(alert: Alert, escalationPrefix?: string): string {
+  return [
+    `${severityIcon[alert.severity] ?? ""} [${alert.severity}] ${alert.rule_name}${escalationPrefix ? ` — ${escalationPrefix}` : ""}`,
+    `Gudang: ${alert.warehouse_code}${alert.zone ? ` · Zona ${alert.zone}` : ""}${alert.sloc_code ? ` · ${alert.sloc_code}` : ""}${alert.sku ? ` · ${alert.sku}` : ""}`,
+    alert.title,
     "",
-    a.detail,
+    alert.detail,
     "",
-    `Alert ${a.alert_id} · kejadian ke-${a.occurrences}`,
-  ];
-  return lines.join("\n");
+    `Alert ${alert.alert_id} · kejadian ke-${alert.occurrences}`,
+  ].join("\n");
 }
 
-const short = (s: string) => (s.length > 46 ? `…${s.slice(-42)}` : s);
+function safeUrlRecipient(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.hostname}${url.pathname}`.slice(0, 180);
+  } catch {
+    return "webhook";
+  }
+}
 
 async function log(
-  alertId: string, channel: string, recipient: string, status: string, message: string
-) {
+  alertId: string,
+  channel: string,
+  recipient: string,
+  status: string,
+  message: string,
+): Promise<void> {
   await stateExec(
     "INSERT INTO notification_log VALUES (?, ?, ?, ?, now(), ?, ?)",
-    [uid("ntf-"), alertId, channel, recipient, status, message.slice(0, 400)]
+    [uid("ntf-"), alertId, channel, recipient, status, message.slice(0, 400)],
   );
 }
 
-/** Kirim alert ke semua penerima pada satu level eskalasi. */
-export async function dispatchToLevel(
-  a: Alert,
-  level: number,
-  escalationPrefix?: string
-): Promise<number> {
-  const cfg = getRecipients();
-  const lv = cfg.levels.find((l) => l.level === level);
-  if (!lv) return 0;
-  let sent = 0;
+export interface DispatchResult {
+  sent: number;
+  failed: number;
+  skipped: number;
+}
 
-  for (const hook of lv.gchat_webhooks) {
-    const r = await sendGChatAlert(hook, a, escalationPrefix);
-    await log(a.alert_id, "gchat", short(hook), r.ok ? "SENT" : "SKIPPED", r.ok ? "ok" : r.error || "");
-    if (r.ok) sent++;
+/** Kirim alert ke semua penerima yang cocok pada satu level eskalasi. */
+export async function dispatchToLevel(
+  alert: Alert,
+  level: number,
+  escalationPrefix?: string,
+): Promise<DispatchResult> {
+  const config = getRecipients();
+  const tier = config.levels.find((item) => item.level === level);
+  if (!tier) return { sent: 0, failed: 0, skipped: 1 };
+
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  // Merge overlapping matches by URL, so one Space receives one post per
+  // alert/level even when an admin created overlapping warehouse scopes.
+  const googleChatTargets = new Map<string, { label: string; mentions: string[] }>();
+  for (const route of tier.gchat_routes) {
+    if (!route.enabled) continue;
+    if (!route.warehouse_codes.includes("*") && !route.warehouse_codes.includes(alert.warehouse_code)) continue;
+    const existing = googleChatTargets.get(route.webhook_url);
+    googleChatTargets.set(route.webhook_url, {
+      label: existing ? `${existing.label}, ${route.label}` : route.label,
+      mentions: normalizeGoogleChatMentionIds([
+        ...(existing?.mentions ?? []),
+        ...route.mention_user_ids,
+      ]),
+    });
   }
-  for (const em of lv.emails) {
-    const r = await sendEmail(em, `[${a.severity}] ${a.rule_name} — ${a.warehouse_code}`, alertText(a, escalationPrefix));
-    await log(a.alert_id, "email", em, r.ok ? "SENT" : "SKIPPED", r.ok ? "ok" : r.error || "");
-    if (r.ok) sent++;
+
+  // Backward compatibility: previous global webhook arrays remain deliverable
+  // until an admin saves them as explicit routes in the new editor.
+  for (const webhookUrl of tier.gchat_webhooks) {
+    if (!googleChatTargets.has(webhookUrl)) {
+      googleChatTargets.set(webhookUrl, { label: "Rute lama (semua WH)", mentions: [] });
+    }
   }
-  for (const url of lv.webhooks) {
-    const r = await sendGenericWebhook(url, a, escalationPrefix);
-    await log(a.alert_id, "webhook", short(url), r.ok ? "SENT" : "SKIPPED", r.ok ? "ok" : r.error || "");
-    if (r.ok) sent++;
+
+  for (const [webhookUrl, target] of googleChatTargets) {
+    const result = await sendGChatAlert(webhookUrl, alert, escalationPrefix, target.mentions);
+    await log(
+      alert.alert_id,
+      "gchat",
+      `${target.label} · ${redactGoogleChatWebhook(webhookUrl)}`.slice(0, 220),
+      result.ok ? "SENT" : "FAILED",
+      result.ok ? "ok" : result.error || "Google Chat gagal mengirim",
+    );
+    if (result.ok) sent++; else failed++;
   }
-  // Selalu tercatat di Notification Center dashboard meski channel eksternal kosong.
-  if (lv.gchat_webhooks.length + lv.emails.length + lv.webhooks.length === 0) {
-    await log(a.alert_id, "dashboard", lv.name, "SENT", "in-app only");
-    sent++;
+
+  for (const email of tier.emails) {
+    const result = await sendEmail(
+      email,
+      `[${alert.severity}] ${alert.rule_name} — ${alert.warehouse_code}`,
+      alertText(alert, escalationPrefix),
+    );
+    await log(alert.alert_id, "email", email, result.ok ? "SENT" : "FAILED", result.ok ? "ok" : result.error || "");
+    if (result.ok) sent++; else failed++;
   }
-  return sent;
+
+  for (const url of tier.webhooks) {
+    const result = await sendGenericWebhook(url, alert, escalationPrefix);
+    await log(alert.alert_id, "webhook", safeUrlRecipient(url), result.ok ? "SENT" : "FAILED", result.ok ? "ok" : result.error || "");
+    if (result.ok) sent++; else failed++;
+  }
+
+  if (googleChatTargets.size + tier.emails.length + tier.webhooks.length === 0) {
+    const routeExistsForAnotherWarehouse = tier.gchat_routes.some((route) => route.enabled);
+    const reason = routeExistsForAnotherWarehouse
+      ? `Tidak ada rute Google Chat L${level} untuk ${alert.warehouse_code}; alert hanya tersedia di aplikasi.`
+      : "Belum ada penerima eksternal; alert hanya tersedia di aplikasi.";
+    await log(alert.alert_id, "dashboard", tier.name, "SENT", reason);
+    skipped++;
+  }
+
+  if (sent > 0 && alert.status === "NEW") {
+    await stateExec(
+      "UPDATE alerts SET status = 'NOTIFIED', updated_at = now() WHERE alert_id = ? AND status = 'NEW'",
+      [alert.alert_id],
+    );
+  }
+
+  return { sent, failed, skipped };
 }

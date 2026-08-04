@@ -12,9 +12,13 @@ function SettingsPanelLoading() {
     </div>
   );
 }
-
 const SupersetSyncSettings = dynamic(
   () => import("@/components/domain/superset-sync-settings"),
+  { loading: () => <SettingsPanelLoading /> },
+);
+
+const EscalationSettings = dynamic(
+  () => import("@/components/domain/escalation-settings"),
   { loading: () => <SettingsPanelLoading /> },
 );
 
@@ -22,16 +26,6 @@ interface Thresholds {
   default: { monitor: number; warning: number; critical: number; breach: number; hysteresis_buffer: number };
   overrides: Record<string, Partial<{ monitor: number; warning: number; critical: number; breach: number; hysteresis_buffer: number }>>;
 }
-interface Rule {
-  id: string; name: string; category: string; severity: string; enabled: boolean;
-  params: Record<string, unknown>; description: string;
-}
-interface Level {
-  level: number; name: string; delay_minutes: number;
-  gchat_webhooks: string[]; emails: string[]; webhooks: string[];
-}
-interface Recipients { levels: Level[]; severity_start_level: Record<string, number> }
-
 interface CapRule {
   scope: {
     wh?: string; zone?: string; rack_zone?: string; aisle?: string; bay?: string;
@@ -53,12 +47,11 @@ interface CapMeta {
   storages: string[]; categories: string[]; statuses: string[];
 }
 
-const SEVERITIES = ["INFO", "WARNING", "HIGH", "CRITICAL", "EMERGENCY"];
 const TKEYS = ["monitor", "warning", "critical", "breach", "hysteresis_buffer"] as const;
 
 export default function SettingsTabs() {
   const { t } = useT();
-  const [tab, setTab] = useState<"sync" | "thresholds" | "capacity" | "rules" | "recipients">("sync");
+  const [tab, setTab] = useState<"sync" | "thresholds" | "capacity" | "recipients">("sync");
   const [thresholds, setThresholds] = useState<Thresholds | null>(null);
   const [capacity, setCapacity] = useState<Capacity | null>(null);
   // Index of a freshly appended override rule, so it can be focused once the
@@ -66,8 +59,6 @@ export default function SettingsTabs() {
   const [focusRuleIndex, setFocusRuleIndex] = useState<number | null>(null);
   const rulesBodyRef = useRef<HTMLTableSectionElement | null>(null);
   const [capMeta, setCapMeta] = useState<CapMeta | null>(null);
-  const [rules, setRules] = useState<Rule[] | null>(null);
-  const [recipients, setRecipients] = useState<Recipients | null>(null);
   const [warehouses, setWarehouses] = useState<string[]>([]);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -89,12 +80,6 @@ export default function SettingsTabs() {
         if (!active) return;
         setCapacity(body.data ?? null);
         setCapMeta(body.meta ?? null);
-      } else if (tab === "rules" && !rules) {
-        const body = await fetch("/api/config/rules").then((response) => response.json());
-        if (active) setRules(body.data?.rules ?? null);
-      } else if (tab === "recipients" && !recipients) {
-        const body = await fetch("/api/config/recipients").then((response) => response.json());
-        if (active) setRecipients(body.data ?? null);
       }
     })().catch(() => setMsg("set.ui.loadError"));
     return () => { active = false; };
@@ -119,7 +104,6 @@ export default function SettingsTabs() {
     { id: "sync" as const, label: t("set.ui.tab.sync", "Superset Sync") },
     { id: "thresholds" as const, label: t("set.ui.tab.thresholds") },
     { id: "capacity" as const, label: t("set.ui.tab.capacity") },
-    { id: "rules" as const, label: t("set.ui.tab.rules") },
     { id: "recipients" as const, label: t("set.ui.tab.recipients") },
   ];
 
@@ -201,11 +185,11 @@ export default function SettingsTabs() {
 
       {tab === "sync" && <SupersetSyncSettings />}
 
+      {tab === "recipients" && <EscalationSettings />}
+
       {tab !== "sync" && (
         (tab === "thresholds" && !thresholds)
         || (tab === "capacity" && !capacity)
-        || (tab === "rules" && !rules)
-        || (tab === "recipients" && !recipients)
       ) && <SettingsPanelLoading />}
 
       {/* ================= KAPASITAS QTY/CBM ================= */}
@@ -513,205 +497,6 @@ export default function SettingsTabs() {
         </div>
       )}
 
-      {/* ================= ATURAN ================= */}
-      {tab === "rules" && rules && (
-        <div className="space-y-4">
-          <div className="overflow-x-auto">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>{t("set.ui.rules.enabled")}</th>
-                  <th>{t("set.ui.rules.rule")}</th>
-                  <th>{t("set.ui.rules.category")}</th>
-                  <th>{t("set.ui.rules.severity")}</th>
-                  <th>{t("set.ui.rules.description")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rules.map((r, i) => (
-                  <tr key={r.id}>
-                    <td>
-                      <input type="checkbox" checked={r.enabled}
-                        aria-label={`${t("set.ui.rules.enable")} ${t(`set.ui.rule.${r.id}.name`, r.name)}`}
-                        onChange={(e) => {
-                          const next = [...rules];
-                          next[i] = { ...r, enabled: e.target.checked };
-                          setRules(next);
-                        }} />
-                    </td>
-                    <td>
-                      <span className="chip num mr-2">{r.id}</span>
-                      <span className="font-semibold">{t(`set.ui.rule.${r.id}.name`, r.name)}</span>
-                    </td>
-                    <td><span className="chip">{t(`set.ui.category.${r.category}`, r.category)}</span></td>
-                    <td>
-                      <select className="input w-auto" value={r.severity}
-                        onChange={(e) => {
-                          const next = [...rules];
-                          next[i] = { ...r, severity: e.target.value };
-                          setRules(next);
-                        }}>
-                        {SEVERITIES.map((s) => (
-                          <option key={s} value={s}>{t(`severity.${s}`, s)}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="max-w-[360px] text-[11.5px]" style={{ color: "var(--text-muted)" }}>
-                      {t(`set.ui.rule.${r.id}.description`, r.description)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <button className="btn btn-primary" disabled={busy}
-            onClick={() => save("rules", { rules })}>
-            {t("set.ui.rules.save")}
-          </button>
-        </div>
-      )}
-
-      {/* ================= ESKALASI ================= */}
-      {tab === "recipients" && recipients && (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[11.5px]" style={{ color: "var(--text-muted)" }}>
-              {t("set.ui.recipients.hint")}
-            </p>
-            <div className="flex gap-2">
-              <button className="btn btn-sm" onClick={() => {
-                const next = Math.max(0, ...recipients.levels.map((l) => l.level)) + 1;
-                setRecipients({
-                  ...recipients,
-                  levels: [...recipients.levels, {
-                    level: next, name: `${t("set.ui.recipients.level")} ${next}`,
-                    delay_minutes: (recipients.levels.at(-1)?.delay_minutes ?? 0) + 30,
-                    gchat_webhooks: [], emails: [], webhooks: [],
-                  }],
-                });
-              }}>+ {t("set.ui.recipients.addLevel")}</button>
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>{t("set.ui.recipients.level")}</th>
-                  <th>{t("set.ui.recipients.tierName")}</th>
-                  <th>{t("set.ui.recipients.delay")}</th>
-                  <th>{t("set.ui.recipients.googleChat")}</th>
-                  <th>{t("set.ui.recipients.email")}</th>
-                  <th>{t("set.ui.recipients.otherWebhook")}</th><th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {recipients.levels.map((lv, i) => (
-                  <tr key={lv.level}>
-                    <td className="num font-semibold">L{lv.level}</td>
-                    <td>
-                      <input className="input" value={lv.name}
-                        onChange={(e) => {
-                          const levels = [...recipients.levels];
-                          levels[i] = { ...lv, name: e.target.value };
-                          setRecipients({ ...recipients, levels });
-                        }} />
-                    </td>
-                    <td>
-                      <input type="number" className="input num w-20" value={lv.delay_minutes}
-                        onChange={(e) => {
-                          const levels = [...recipients.levels];
-                          levels[i] = { ...lv, delay_minutes: Number(e.target.value) };
-                          setRecipients({ ...recipients, levels });
-                        }} />
-                    </td>
-                    <td>
-                      <input className="input num min-w-[220px]" placeholder="https://chat.googleapis.com/v1/spaces/…"
-                        title={t("set.ui.recipients.googleChatTitle")}
-                        value={lv.gchat_webhooks.join(", ")}
-                        onChange={(e) => {
-                          const levels = [...recipients.levels];
-                          levels[i] = {
-                            ...lv,
-                            gchat_webhooks: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
-                          };
-                          setRecipients({ ...recipients, levels });
-                        }} />
-                    </td>
-                    <td>
-                      <input className="input" placeholder="spv@astro.example"
-                        value={lv.emails.join(", ")}
-                        onChange={(e) => {
-                          const levels = [...recipients.levels];
-                          levels[i] = {
-                            ...lv,
-                            emails: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
-                          };
-                          setRecipients({ ...recipients, levels });
-                        }} />
-                    </td>
-                    <td>
-                      <input className="input num min-w-[180px]" placeholder="https://… (POST JSON)"
-                        title={t("set.ui.recipients.otherWebhookTitle")}
-                        value={lv.webhooks.join(", ")}
-                        onChange={(e) => {
-                          const levels = [...recipients.levels];
-                          levels[i] = {
-                            ...lv,
-                            webhooks: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
-                          };
-                          setRecipients({ ...recipients, levels });
-                        }} />
-                    </td>
-                    <td>
-                      {recipients.levels.length > 1 && (
-                        <button className="btn btn-ghost btn-sm" title={t("set.ui.recipients.removeLevel")}
-                          aria-label={t("set.ui.recipients.removeLevel")}
-                          onClick={() => {
-                            const levels = recipients.levels.filter((_, k) => k !== i)
-                              .map((l, k) => ({ ...l, level: k + 1 }));
-                            const starts = { ...recipients.severity_start_level };
-                            const maxL = levels.length;
-                            for (const k of Object.keys(starts)) {
-                              starts[k as keyof typeof starts] =
-                                Math.min(starts[k as keyof typeof starts] ?? 1, maxL);
-                            }
-                            setRecipients({ ...recipients, levels, severity_start_level: starts });
-                          }}>✕</button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div>
-            <div className="eyebrow mb-1.5">{t("set.ui.recipients.startLevel")}</div>
-            <div className="flex flex-wrap gap-3">
-              {SEVERITIES.map((s) => (
-                <label key={s} className="flex items-center gap-1.5 text-[12px]">
-                  <span className="num w-24">{t(`severity.${s}`, s)}</span>
-                  <select className="input w-auto" value={recipients.severity_start_level[s] ?? 1}
-                    onChange={(e) => setRecipients({
-                      ...recipients,
-                      severity_start_level: {
-                        ...recipients.severity_start_level, [s]: Number(e.target.value),
-                      },
-                    })}>
-                    {recipients.levels.map((l) => <option key={l.level} value={l.level}>L{l.level}</option>)}
-                  </select>
-                </label>
-              ))}
-            </div>
-          </div>
-          <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            {t("set.ui.recipients.escalationHint")}
-          </p>
-          <button className="btn btn-primary" disabled={busy}
-            onClick={() => save("recipients", recipients)}>
-            {t("set.ui.recipients.save")}
-          </button>
-        </div>
-      )}
     </div>
   );
 }

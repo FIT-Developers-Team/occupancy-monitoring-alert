@@ -1,24 +1,18 @@
-// ---------------------------------------------------------------------------
-// Alert engine — dipanggil oleh /api/cron/tick (cron 5 menit) atau tombol
-// "Evaluasi sekarang" di Alert Center.
-//
-//   1. Okupansi per gudang → tangga severity dengan HYSTERESIS anti-flapping
-//      (naik saat menembus ambang, turun hanya setelah melewati ambang − buffer;
-//      94.8 → 95.1 → 94.9 tidak menghasilkan tiga alert).
-//   2. Rule stok (R03/R11/R13/R14) atas kondisi snapshot terbaru.
-//   3. Auto-resolve saat kondisi pulih pada evaluasi berikutnya.
-//   4. Eskalasi: alert terbuka tanpa Ack melewati timer → naik level, notifikasi
-//      tier berikutnya (matriks config/recipients.json).
-// ---------------------------------------------------------------------------
+// Alert engine fase saat ini:
+//   1. Hanya breach okupansi pada tingkat ZONA yang membuat alert.
+//   2. Hysteresis mencegah alert berulang saat nilai berosilasi dekat ambang.
+//   3. Alert pulih otomatis setelah zona turun di bawah breach - buffer.
+//   4. Alert tanpa acknowledgement naik mengikuti level dinamis.
+// Rule berbasis movement/stok sengaja tidak dijalankan sampai datanya tersedia.
 import { stateExec, stateQuery, uid } from "@/lib/db";
-import { getRules, getRecipients, thresholdsFor } from "@/lib/config";
-import { getWarehouseSummaries } from "@/lib/queries";
-import { RULE_EVALUATORS, STATE_RULES, type Violation } from "@/lib/alerts/rules";
-import { dispatchToLevel } from "@/lib/notify/dispatch";
+import { getRecipients, thresholdsFor } from "@/lib/config";
+import { getZoneSummary } from "@/lib/queries";
+import { dispatchToLevel, type DispatchResult } from "@/lib/notify/dispatch";
 import { audit } from "@/lib/audit";
-import type { Alert, Severity } from "@/types";
+import type { Alert, Severity, ZoneSummary } from "@/types";
 
 const OPEN = "('NEW','NOTIFIED','ACKNOWLEDGED')";
+const ZONE_BREACH_RULE = "OCC-ZONE-BREACH";
 
 export interface TickResult {
   created: number;
@@ -26,46 +20,68 @@ export interface TickResult {
   auto_resolved: number;
   escalated: number;
   notified: number;
+  notification_failed: number;
+  notification_skipped: number;
   evaluated_rules: string[];
 }
 
-// ---- helpers ---------------------------------------------------------------
-async function getState(key: string): Promise<string | null> {
-  const r = await stateQuery<{ value: string }>(
-    "SELECT value FROM rule_state WHERE key = ?", [key]
-  );
-  return r[0]?.value ?? null;
+interface Violation {
+  rule_id: string;
+  rule_name: string;
+  severity: Severity;
+  warehouse_code: string;
+  zone: string | null;
+  sloc_code: string | null;
+  sku: string | null;
+  title: string;
+  detail: string;
+  dedup_key: string;
 }
+
+async function getState(key: string): Promise<string | null> {
+  const rows = await stateQuery<{ value: string }>(
+    "SELECT value FROM rule_state WHERE key = ?",
+    [key],
+  );
+  return rows[0]?.value ?? null;
+}
+
 async function setState(key: string, value: string): Promise<void> {
   await stateExec(
     `INSERT INTO rule_state VALUES (?, 'v', ?, now())
      ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = now()`,
-    [key, value]
+    [key, value],
   );
 }
 
 async function openAlertByKey(dedupKey: string): Promise<Alert | null> {
-  const r = await stateQuery<Alert>(
+  const rows = await stateQuery<Alert>(
     `SELECT * FROM alerts WHERE dedup_key = ? AND status IN ${OPEN}
      ORDER BY created_at DESC LIMIT 1`,
-    [dedupKey]
+    [dedupKey],
   );
-  return r[0] ?? null;
+  return rows[0] ?? null;
 }
 
-function startLevelFor(sev: Severity): number {
-  const cfg = getRecipients();
-  return cfg.severity_start_level[sev] ?? 1;
+function startLevelFor(severity: Severity): number {
+  const config = getRecipients();
+  return config.severity_start_level[severity] ?? 1;
 }
+
 function nextEscalationDelayMin(level: number): number | null {
-  const cfg = getRecipients();
-  const next = cfg.levels.find((l) => l.level === level + 1);
-  return next ? next.delay_minutes : null;
+  const config = getRecipients();
+  return config.levels.find((item) => item.level === level + 1)?.delay_minutes ?? null;
 }
 
-async function insertAlert(v: Violation): Promise<Alert> {
+function mergeDispatch(result: TickResult, dispatch: DispatchResult): void {
+  result.notified += dispatch.sent;
+  result.notification_failed += dispatch.failed;
+  result.notification_skipped += dispatch.skipped;
+}
+
+async function insertAlert(violation: Violation): Promise<Alert> {
   const id = uid("alr-");
-  const level = startLevelFor(v.severity);
+  const level = startLevelFor(violation.severity);
   const delay = nextEscalationDelayMin(level);
   await stateExec(
     `INSERT INTO alerts VALUES (
@@ -73,215 +89,190 @@ async function insertAlert(v: Violation): Promise<Alert> {
        NULL, NULL, NULL, NULL, NULL, ?, ${delay === null ? "NULL" : `now() + INTERVAL ${delay} MINUTE`}
      )`,
     [
-      id, v.rule_id, v.rule_name, v.severity, v.warehouse_code, v.zone,
-      v.sloc_code, v.sku, v.title, v.detail, v.dedup_key, level,
-    ]
+      id,
+      violation.rule_id,
+      violation.rule_name,
+      violation.severity,
+      violation.warehouse_code,
+      violation.zone,
+      violation.sloc_code,
+      violation.sku,
+      violation.title,
+      violation.detail,
+      violation.dedup_key,
+      level,
+    ],
   );
   await stateExec(
     "INSERT INTO alert_events VALUES (?, ?, now(), 'system', 'CREATED', ?)",
-    [uid("evt-"), id, v.title]
+    [uid("evt-"), id, violation.title],
   );
   const rows = await stateQuery<Alert>("SELECT * FROM alerts WHERE alert_id = ?", [id]);
   return rows[0];
 }
 
-async function bumpAlert(existing: Alert, v: Violation): Promise<void> {
-  // Naikkan severity bila violation baru lebih tinggi; jangan pernah turunkan.
-  const order = ["INFO", "WARNING", "HIGH", "CRITICAL", "EMERGENCY"];
-  const sev =
-    order.indexOf(v.severity) > order.indexOf(existing.severity)
-      ? v.severity
-      : existing.severity;
+async function bumpAlert(existing: Alert, violation: Violation): Promise<Alert> {
   await stateExec(
     `UPDATE alerts SET occurrences = occurrences + 1, updated_at = now(),
         severity = ?, title = ?, detail = ? WHERE alert_id = ?`,
-    [sev, v.title, v.detail, existing.alert_id]
+    [violation.severity, violation.title, violation.detail, existing.alert_id],
   );
+  return {
+    ...existing,
+    severity: violation.severity,
+    title: violation.title,
+    detail: violation.detail,
+    occurrences: existing.occurrences + 1,
+  };
 }
 
 async function systemResolve(alertId: string, note: string): Promise<void> {
   await stateExec(
     `UPDATE alerts SET status = 'RESOLVED', resolved_by = 'system',
-        resolved_at = now(), resolution_note = ?, updated_at = now()
+        resolved_at = now(), resolution_note = ?, next_escalation_at = NULL, updated_at = now()
      WHERE alert_id = ?`,
-    [note, alertId]
+    [note, alertId],
   );
   await stateExec(
     "INSERT INTO alert_events VALUES (?, ?, now(), 'system', 'AUTO_RESOLVED', ?)",
-    [uid("evt-"), alertId, note]
+    [uid("evt-"), alertId, note],
   );
 }
 
-// ---- 1) occupancy ladder with hysteresis -----------------------------------
-const LADDER: { key: "monitor" | "warning" | "critical" | "breach"; sev: Severity }[] = [
-  { key: "monitor", sev: "INFO" },
-  { key: "warning", sev: "WARNING" },
-  { key: "critical", sev: "HIGH" },
-  { key: "breach", sev: "CRITICAL" },
-];
+function zoneViolation(zone: ZoneSummary): Violation {
+  const threshold = thresholdsFor(zone.wh).breach;
+  const capacity = zone.basis === "qty"
+    ? `${Math.round(zone.occ_qty).toLocaleString("id-ID")} / ${Math.round(zone.cap_qty).toLocaleString("id-ID")} unit`
+    : `${zone.occ_cbm.toLocaleString("id-ID")} / ${zone.cap_cbm.toLocaleString("id-ID")} m³`;
+  return {
+    rule_id: ZONE_BREACH_RULE,
+    rule_name: "Breach Okupansi Zona",
+    severity: "CRITICAL",
+    warehouse_code: zone.wh,
+    zone: zone.zone,
+    sloc_code: null,
+    sku: null,
+    title: `Zona ${zone.zone} di ${zone.wh} mencapai ${zone.pct}%`,
+    detail: `Okupansi zona melewati ambang breach ${threshold}% pada basis ${zone.basis.toUpperCase()}. Terisi ${capacity}; ${zone.sloc_occupied.toLocaleString("id-ID")} lokasi terisi dan ${zone.sloc_empty.toLocaleString("id-ID")} lokasi kosong. Tahan atau alihkan inbound zona ini dan prioritaskan outbound.`,
+    dedup_key: `${ZONE_BREACH_RULE}:${zone.wh}:${zone.zone}`,
+  };
+}
 
-async function evaluateOccupancy(res: TickResult): Promise<void> {
-  const summaries = await getWarehouseSummaries();
-  for (const s of summaries) {
-    const t = thresholdsFor(s.code);
-    const pct = s.pct;
+async function resolveTriggersDisabledForCurrentPhase(result: TickResult): Promise<void> {
+  const rows = await stateQuery<{ count: number }>(
+    `SELECT count(*)::INT AS count FROM alerts WHERE status IN ${OPEN} AND rule_id <> ?`,
+    [ZONE_BREACH_RULE],
+  );
+  const count = rows[0]?.count ?? 0;
+  if (!count) return;
+  // One bulk write avoids tens of thousands of DuckDB round-trips when an
+  // existing installation switches from legacy stock rules to zone-only mode.
+  await stateExec(
+    `UPDATE alerts SET status = 'RESOLVED', resolved_by = 'system', resolved_at = now(),
+        resolution_note = 'Trigger dinonaktifkan pada fase saat ini; hanya breach okupansi per zona yang aktif.',
+        next_escalation_at = NULL, updated_at = now()
+     WHERE status IN ${OPEN} AND rule_id <> ?`,
+    [ZONE_BREACH_RULE],
+  );
+  result.auto_resolved += count;
+}
 
-    // level saat ini menurut ambang naik
-    let level = 0;
-    for (let i = 0; i < LADDER.length; i++) {
-      if (pct >= t[LADDER[i].key]) level = i + 1;
-    }
-    const stateKey = `occ:${s.code}`;
-    const armed = Number((await getState(stateKey)) ?? "0");
-    const dedupKey = `OCC:${s.code}`;
+async function evaluateZoneBreaches(result: TickResult): Promise<void> {
+  const zones = await getZoneSummary();
+  result.evaluated_rules.push(ZONE_BREACH_RULE);
 
-    if (level > armed) {
-      // menembus ambang baru → alert (buat baru atau upgrade yang terbuka)
-      const lad = LADDER[level - 1];
-      const horizon =
-        s.hours_to_95 !== null ? ` Estimasi ≈ ${Math.round(s.hours_to_95)} jam menuju 95%.` : "";
-      const v: Violation = {
-        rule_id: `OCC-${lad.key.toUpperCase()}`,
-        rule_name: "Occupancy Threshold",
-        severity: lad.sev,
-        warehouse_code: s.code,
-        zone: null, sloc_code: null, sku: null,
-        title: `Okupansi ${s.code} mencapai ${pct}% (ambang ${t[lad.key]}%)`,
-        detail: `Okupansi gudang ${s.name} (${s.code}) kini ${pct}% — melewati ambang ${lad.key} ${t[lad.key]}%. Terisi ${s.basis === "qty" ? `${Math.round(s.occ_qty)}/${Math.round(s.cap_qty)} unit` : `${s.occ_cbm}/${s.cap_cbm} m³`}; SLOC kosong ${s.sloc_empty}.${horizon} Tindak lanjut sesuai SOP-001/002.`,
-        dedup_key: dedupKey,
-      };
+  for (const zone of zones) {
+    const threshold = thresholdsFor(zone.wh);
+    const stateKey = `occ-zone-breach:${zone.wh}:${zone.zone}`;
+    const armed = (await getState(stateKey)) === "1";
+    const breaching = zone.pct >= threshold.breach;
+    const dedupKey = `${ZONE_BREACH_RULE}:${zone.wh}:${zone.zone}`;
+
+    if (breaching && !armed) {
+      const violation = zoneViolation(zone);
       const existing = await openAlertByKey(dedupKey);
-      let alertRow: Alert;
-      if (existing) {
-        await bumpAlert(existing, v);
-        alertRow = { ...existing, severity: v.severity, title: v.title, detail: v.detail, occurrences: existing.occurrences + 1 };
-        res.updated++;
-      } else {
-        alertRow = await insertAlert(v);
-        res.created++;
+      const alert = existing
+        ? await bumpAlert(existing, violation)
+        : await insertAlert(violation);
+      if (existing) result.updated++; else result.created++;
+      mergeDispatch(result, await dispatchToLevel(alert, alert.escalation_level));
+      await setState(stateKey, "1");
+      continue;
+    }
+
+    if (armed && zone.pct < threshold.breach - threshold.hysteresis_buffer) {
+      await setState(stateKey, "0");
+      const open = await openAlertByKey(dedupKey);
+      if (open) {
+        await systemResolve(
+          open.alert_id,
+          `Okupansi zona ${zone.wh}/${zone.zone} turun ke ${zone.pct}% (di bawah ${threshold.breach}% - buffer ${threshold.hysteresis_buffer}%).`,
+        );
+        result.auto_resolved++;
       }
-      res.notified += await dispatchToLevel(alertRow, alertRow.escalation_level);
-      await setState(stateKey, String(level));
-    } else if (level < armed) {
-      // turun: re-arm hanya setelah melewati (ambang level ter-arm − buffer)
-      const armedThreshold = t[LADDER[armed - 1].key];
-      if (pct < armedThreshold - t.hysteresis_buffer) {
-        await setState(stateKey, String(level));
-        if (level === 0) {
-          const open = await openAlertByKey(dedupKey);
-          if (open) {
-            await systemResolve(
-              open.alert_id,
-              `Okupansi ${s.code} turun ke ${pct}% (di bawah ${t.monitor}% − buffer ${t.hysteresis_buffer}).`
-            );
-            res.auto_resolved++;
-          }
-        }
-      }
-      // di dalam zona buffer: diam — inilah anti-flapping.
     }
   }
 }
 
-// ---- 2+3) rule evaluation ---------------------------------------------------
-async function evaluateRules(res: TickResult): Promise<void> {
-  const cfg = getRules();
-  const activeStateKeys = new Map<string, Set<string>>(); // rule_id -> dedup keys still violating
-
-  for (const rule of cfg.rules) {
-    const evaluator = RULE_EVALUATORS[rule.id];
-    if (!evaluator || !rule.enabled) continue;
-    res.evaluated_rules.push(rule.id);
-    const violations = await evaluator({
-      params: rule.params,
-      severity: rule.severity,
-    });
-
-    if (STATE_RULES.has(rule.id)) {
-      activeStateKeys.set(rule.id, new Set(violations.map((v) => v.dedup_key)));
-    }
-
-    for (const v of violations) {
-      const existing = await openAlertByKey(v.dedup_key);
-      if (existing) {
-        await bumpAlert(existing, v);
-        res.updated++;
-      } else {
-        const a = await insertAlert(v);
-        res.created++;
-        res.notified += await dispatchToLevel(a, a.escalation_level);
-      }
-    }
-  }
-
-  // auto-resolve state rules yang sudah pulih
-  for (const [ruleId, keys] of activeStateKeys) {
-    const open = await stateQuery<Alert>(
-      `SELECT * FROM alerts WHERE rule_id = ? AND status IN ${OPEN}`,
-      [ruleId]
-    );
-    for (const a of open) {
-      if (!keys.has(a.dedup_key)) {
-        await systemResolve(a.alert_id, "Kondisi sudah tidak terdeteksi pada evaluasi terakhir.");
-        res.auto_resolved++;
-      }
-    }
-  }
-
-}
-
-// ---- 4) escalation ----------------------------------------------------------
-async function evaluateEscalation(res: TickResult): Promise<void> {
+async function evaluateEscalation(result: TickResult): Promise<void> {
   const due = await stateQuery<Alert>(
     `SELECT * FROM alerts
      WHERE status IN ('NEW','NOTIFIED')
-       AND next_escalation_at IS NOT NULL AND next_escalation_at <= now()`
+       AND next_escalation_at IS NOT NULL AND next_escalation_at <= now()`,
   );
-  const cfg = getRecipients();
-  const maxLevel = Math.max(...cfg.levels.map((l) => l.level));
-  for (const a of due) {
-    if (a.escalation_level >= maxLevel) {
-      await stateExec("UPDATE alerts SET next_escalation_at = NULL WHERE alert_id = ?", [a.alert_id]);
+  const config = getRecipients();
+  const maxLevel = Math.max(...config.levels.map((level) => level.level));
+
+  for (const alert of due) {
+    if (alert.escalation_level >= maxLevel) {
+      await stateExec("UPDATE alerts SET next_escalation_at = NULL WHERE alert_id = ?", [alert.alert_id]);
       continue;
     }
-    const newLevel = a.escalation_level + 1;
+    const newLevel = alert.escalation_level + 1;
     const delay = nextEscalationDelayMin(newLevel);
     await stateExec(
-      `UPDATE alerts SET escalation_level = ?, updated_at = now(),
-          status = 'NOTIFIED',
+      `UPDATE alerts SET escalation_level = ?, updated_at = now(), status = 'NOTIFIED',
           next_escalation_at = ${delay === null ? "NULL" : `now() + INTERVAL ${delay} MINUTE`}
        WHERE alert_id = ?`,
-      [newLevel, a.alert_id]
+      [newLevel, alert.alert_id],
     );
-    const lvName = cfg.levels.find((l) => l.level === newLevel)?.name ?? `L${newLevel}`;
+    const levelName = config.levels.find((level) => level.level === newLevel)?.name ?? `L${newLevel}`;
     await stateExec(
       "INSERT INTO alert_events VALUES (?, ?, now(), 'system', 'ESCALATED', ?)",
-      [uid("evt-"), a.alert_id, `Naik ke ${lvName} (tanpa acknowledgement)`]
+      [uid("evt-"), alert.alert_id, `Naik ke ${levelName} (tanpa acknowledgement)`],
     );
-    res.notified += await dispatchToLevel(
-      { ...a, escalation_level: newLevel },
-      newLevel,
-      `ESKALASI ${lvName}`
+    mergeDispatch(
+      result,
+      await dispatchToLevel(
+        { ...alert, escalation_level: newLevel, status: "NOTIFIED" },
+        newLevel,
+        `ESKALASI ${levelName}`,
+      ),
     );
-    res.escalated++;
+    result.escalated++;
   }
 }
 
-// ---- entry ------------------------------------------------------------------
 async function runTickInternal(actor: string): Promise<TickResult> {
-  const res: TickResult = {
-    created: 0, updated: 0, auto_resolved: 0, escalated: 0, notified: 0, evaluated_rules: [],
+  const result: TickResult = {
+    created: 0,
+    updated: 0,
+    auto_resolved: 0,
+    escalated: 0,
+    notified: 0,
+    notification_failed: 0,
+    notification_skipped: 0,
+    evaluated_rules: [],
   };
-  await evaluateOccupancy(res);
-  await evaluateRules(res);
-  await evaluateEscalation(res);
-  await audit(actor, "TICK", "alert_engine", undefined, res);
-  return res;
+  await resolveTriggersDisabledForCurrentPhase(result);
+  await evaluateZoneBreaches(result);
+  await evaluateEscalation(result);
+  await audit(actor, "TICK", "alert_engine", undefined, result);
+  return result;
 }
 
-// A manual click and a scheduler request can arrive at the same time. Serialise
-// them in this web process so the read-then-insert dedup flow cannot emit two
-// alerts/notifications for the same breach.
+// A manual click and scheduler request can arrive together. Serialise them in
+// this process so the read-then-insert dedup flow never emits duplicate alerts.
 let activeTick: Promise<TickResult> | null = null;
 
 export async function runTick(actor: string): Promise<TickResult> {

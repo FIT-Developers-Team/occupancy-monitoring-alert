@@ -144,16 +144,17 @@ Switch **Kebijakan/Qty/CBM/Bin** di topbar mengubah metrik, bar, dan warna yang 
 
 ## 5. Fitur
 
-Ringkasan Eksekutif (KPI Qty & CBM, tren operasional 48 jam, Top Risiko) · Okupansi per gudang/zona · Heatmap SLOC + drawer isi produk & movement · Forecast time-to-full (laju %, Qty & SKU/jam) + What-If Inbound/Outbound · Pelanggaran + CSV · Alert Center (dedup, hysteresis, auto-resolve, eskalasi L1–L4, notifikasi real-time Google Chat) · Integritas (phantom/ghost) · Audit Trail · Pengaturan 5 tab termasuk Superset Sync · Panduan · sidebar ⇄ icon-rail smooth + drawer mobile · ⌘K.
+Ringkasan Eksekutif (KPI Qty & CBM, tren operasional 48 jam, Top Risiko) · Okupansi per gudang/zona · Heatmap SLOC + drawer isi produk & movement · Forecast time-to-full (laju %, Qty & SKU/jam) + What-If Inbound/Outbound · Pelanggaran + CSV · Alert Center (dedup, hysteresis, auto-resolve, eskalasi dinamis, notifikasi real-time Google Chat per WH) · Integritas (phantom/ghost) · Audit Trail · Pengaturan 4 tab termasuk Superset Sync · Panduan · sidebar ⇄ icon-rail smooth + drawer mobile · ⌘K.
 
-Rule aktif: **R03** Over-Capacity (basis kebijakan) · **R11** Stok Negatif · **R13** Bad di luar BADSTOCK · **R14** Lost (→ ILSIM). Tangga okupansi OCC-70/85/95/100 per gudang. Rule movement (wrong putaway/FEFO dsb.) menyusul saat dataset movement disinkron (job placeholder sudah ada, `enabled:false`).
+Trigger aktif saat ini hanya **OCC-ZONE-BREACH**: satu alert per kombinasi warehouse/zona ketika okupansi berbasis kebijakan mencapai ambang `breach`. Alert memakai hysteresis, auto-resolve, dedup thread, dan eskalasi sampai di-ack. Rule stok dan movement dinonaktifkan sampai dataset movement tersedia dan tervalidasi.
 
 ---
 
 ## 6. Operasional
 
 - **Cron**: `deploy/crontab.example` (sync → tick → ringkasan harian 08:00 WIB `POST /api/cron/daily-summary`).
-- **Google Chat (real-time)**: buat *incoming webhook* di Space (Space → Apps & integrations → Webhooks → Add), tempel URL-nya di **Pengaturan → Eskalasi** pada level yang diinginkan (boleh banyak, pisah koma). Alert terkirim sebagai kartu saat tercipta & tiap eskalasi; update alert yang sama tergabung satu thread (`threadKey = dedup_key`). Set `APP_BASE_URL` agar kartu punya tombol "Buka FIT Occupancy Alert and Monitoring". Catatan jujur: webhook Chat tidak mendukung tombol callback interaktif — Ack/Resolve tetap dilakukan di Alert Center (butuh Chat App + service account bila mau tombol interaktif; bisa jadi fase berikutnya).
+- **Google Chat (real-time)**: buat *incoming webhook* di Space (Space → Apps & integrations → Webhooks → Add), lalu buat rute di **Pengaturan → Eskalasi**. Setiap rute memiliki nama, level, cakupan satu/beberapa WH, URL webhook, status aktif, serta daftar user ID untuk auto-tag. Masukkan `all` hanya bila seluruh Space harus ditag. Gunakan **Uji koneksi** sebelum menyimpan. Alert terkirim saat breach zona tercipta dan tiap eskalasi; alert yang sama tergabung satu thread (`threadKey = dedup_key`). Set `APP_BASE_URL` agar kartu membuka detail alert. Referensi format mention: `<users/USER_ID>` pada [dokumentasi Google Chat](https://developers.google.com/workspace/chat/format-messages).
+- **Penyimpanan rahasia**: perubahan eskalasi dari UI ditulis ke `db/runtime-config/recipients.json` (volume runtime yang diabaikan Git), bukan ke template `config/recipients.json`. Lokasinya dapat dipindah dengan `WIOM_RUNTIME_CONFIG_DIR`.
 - **Penerima lain**: kolom *Webhook Lain* per level menerima URL apa pun yang mau di-POST JSON alert (n8n, Apps Script, sistem tiket).
 - **Email**: `SMTP_*` di `.env` (kosong = dilewati).
 - **Docker**: `docker compose up -d --build` = dua service: web Node-only + managed sync. Scheduler tick/summary sudah menyatu di supervisor web, jadi tidak memerlukan container ketiga.
@@ -309,6 +310,6 @@ Tiap job membawa blok `dataset`: `id` (angka `datasource_id` di URL explore), `c
 
 **Dwibahasa (poin 14).** Bahasa Indonesia & English (UK) lewat pemilih ID/EN di topbar; kamus di `lib/i18n-dict.ts`, helper server `lib/i18n.ts`, hook klien `lib/i18n-client.ts`.
 
-**Eskalasi fleksibel (poin 15).** Level bisa ditambah/dihapus, tiap level menerima banyak Google Chat webhook / email / webhook lain (pisah koma), dan severity menentukan level awal agar notifikasi tepat sasaran.
+**Eskalasi fleksibel (poin 15).** Level dapat ditambah, dihapus, dan diurutkan ulang. Setiap level menerima banyak rute Google Chat yang dibatasi per WH dan memiliki auto-tag sendiri; rute tumpang-tindih ke URL yang sama digabung agar tidak menghasilkan pesan ganda. Email/webhook lain tetap tersedia sebagai kanal opsional. Karena trigger aktif hanya breach zona, level awal memakai pemetaan severity `CRITICAL`.
 
 **Forecast yang jujur.** Horizon dan What-if baru aktif setelah sedikitnya empat snapshot yang terbentang 15 menit. Saat data belum cukup, UI menunjukkan *Awaiting history* dan tidak menampilkan proyeksi nol yang menyesatkan.

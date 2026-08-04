@@ -2,8 +2,19 @@
 import fs from "fs";
 import path from "path";
 import { z } from "zod";
+import { isGoogleChatWebhookUrl, normalizeGoogleChatMentionId } from "@/lib/notify/gchat-url";
 
 const CONFIG_DIR = path.join(process.cwd(), "config");
+const RUNTIME_CONFIG_DIR = process.env.WIOM_RUNTIME_CONFIG_DIR?.trim()
+  ? path.resolve(process.env.WIOM_RUNTIME_CONFIG_DIR.trim())
+  : path.join(process.cwd(), "db", "runtime-config");
+
+function sectionFile(section: ConfigSection, forWrite = false): string {
+  if (section !== "recipients") return path.join(CONFIG_DIR, `${section}.json`);
+  const runtimeFile = path.join(RUNTIME_CONFIG_DIR, "recipients.json");
+  if (forWrite || fs.existsSync(runtimeFile)) return runtimeFile;
+  return path.join(CONFIG_DIR, "recipients.json");
+}
 
 const ThresholdSchema = z.object({
   default: z.object({
@@ -37,9 +48,37 @@ const RulesSchema = z.object({
   })),
 });
 
+const GoogleChatRouteSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  label: z.string().trim().min(1).max(80),
+  enabled: z.boolean().default(true),
+  warehouse_codes: z.array(z.string().trim().min(1).max(20)).min(1).default(["*"]),
+  webhook_url: z.string().url().refine(isGoogleChatWebhookUrl, {
+    message: "Webhook Google Chat harus memakai URL incoming webhook chat.googleapis.com yang lengkap.",
+  }),
+  mention_user_ids: z.array(z.string()).default([]).transform((values, ctx) => {
+    const normalized: string[] = [];
+    for (const [index, value] of values.entries()) {
+      const mention = normalizeGoogleChatMentionId(value);
+      if (!mention) {
+        ctx.addIssue({
+          code: "custom", path: [index],
+          message: "Tag Google Chat harus berupa user ID numerik atau 'all'.",
+        });
+      } else if (!normalized.includes(mention)) {
+        normalized.push(mention);
+      }
+    }
+    return normalized;
+  }),
+});
+
 const RecipientsSchema = z.object({
   levels: z.array(z.object({
     level: z.number().int().positive(), name: z.string().trim().min(1), delay_minutes: z.number().min(0),
+    gchat_routes: z.array(GoogleChatRouteSchema).default([]),
+    // Kept only so existing installations can load and migrate their previous
+    // global webhook list through the new settings UI without losing data.
     gchat_webhooks: z.array(z.string().url()).default([]),
     webhooks: z.array(z.string().url()).default([]),
     emails: z.array(z.string().email()).default([]),
@@ -50,6 +89,20 @@ const RecipientsSchema = z.object({
   for (const [i, level] of value.levels.entries()) {
     if (levels.has(level.level)) ctx.addIssue({ code: "custom", path: ["levels", i, "level"], message: "Nomor level harus unik." });
     levels.add(level.level);
+    if (level.level === 1 && level.delay_minutes !== 0) {
+      ctx.addIssue({ code: "custom", path: ["levels", i, "delay_minutes"], message: "Level 1 harus dimulai tanpa jeda." });
+    }
+    const routeIds = new Set<string>();
+    for (const [routeIndex, route] of level.gchat_routes.entries()) {
+      if (routeIds.has(route.id)) {
+        ctx.addIssue({ code: "custom", path: ["levels", i, "gchat_routes", routeIndex, "id"], message: "ID rute Google Chat harus unik dalam satu level." });
+      }
+      routeIds.add(route.id);
+    }
+  }
+  const ordered = [...levels].sort((a, b) => a - b);
+  if (ordered.some((level, index) => level !== index + 1)) {
+    ctx.addIssue({ code: "custom", path: ["levels"], message: "Level eskalasi harus berurutan mulai dari 1." });
   }
   for (const [severity, level] of Object.entries(value.severity_start_level)) {
     if (!levels.has(level)) ctx.addIssue({ code: "custom", path: ["severity_start_level", severity], message: "Level awal harus ada pada daftar eskalasi." });
@@ -120,6 +173,7 @@ const CapacitySchema = z.object({
 export type ThresholdConfig = z.infer<typeof ThresholdSchema>;
 export type RulesConfig = z.infer<typeof RulesSchema>;
 export type RecipientsConfig = z.infer<typeof RecipientsSchema>;
+export type GoogleChatRouteConfig = z.infer<typeof GoogleChatRouteSchema>;
 export type WarehousesConfig = z.infer<typeof WarehousesSchema>;
 export type CapacityConfig = z.infer<typeof CapacitySchema>;
 export type CapacityRuleT = z.infer<typeof CapacityRule>;
@@ -136,7 +190,7 @@ export type ConfigSection = keyof typeof schemas;
 const cache = new Map<string, { mtime: number; data: unknown }>();
 
 function readSection<T>(section: ConfigSection): T {
-  const file = path.join(CONFIG_DIR, `${section}.json`);
+  const file = sectionFile(section);
   const stat = fs.statSync(file);
   const hit = cache.get(section);
   if (hit && hit.mtime === stat.mtimeMs) return hit.data as T;
@@ -154,7 +208,18 @@ export const getCapacity = () => readSection<CapacityConfig>("capacity");
 
 export function writeSection(section: ConfigSection, data: unknown): unknown {
   const parsed = schemas[section].parse(data);
-  const file = path.join(CONFIG_DIR, `${section}.json`);
+  if (section === "recipients") {
+    const knownWarehouses = new Set(getWarehouses().warehouses.map((warehouse) => warehouse.code));
+    const recipients = parsed as RecipientsConfig;
+    for (const level of recipients.levels) {
+      for (const route of level.gchat_routes) {
+        const unknown = route.warehouse_codes.filter((code) => code !== "*" && !knownWarehouses.has(code));
+        if (unknown.length) throw new Error(`Warehouse pada rute Google Chat tidak dikenal: ${unknown.join(", ")}.`);
+      }
+    }
+  }
+  const file = sectionFile(section, true);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(parsed, null, 2));
   cache.delete(section);
   return parsed;

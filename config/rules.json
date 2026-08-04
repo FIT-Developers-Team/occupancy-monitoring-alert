@@ -5,7 +5,7 @@
       "name": "Over-Capacity SLOC",
       "category": "Capacity",
       "severity": "HIGH",
-      "enabled": true,
+      "enabled": false,
       "params": {
         "exclude_zones": [
           "STG"
@@ -18,7 +18,7 @@
       "name": "Stok Negatif",
       "category": "Inventory",
       "severity": "EMERGENCY",
-      "enabled": true,
+      "enabled": false,
       "params": {},
       "description": "Qty negatif — indikasi transaksi ganda/urutan salah."
     },
@@ -27,7 +27,7 @@
       "name": "Bad Stock di Luar Area",
       "category": "Quality",
       "severity": "WARNING",
-      "enabled": true,
+      "enabled": false,
       "params": {
         "min_qty": 1
       },
@@ -38,7 +38,7 @@
       "name": "Stok Lost Terdeteksi",
       "category": "Inventory",
       "severity": "HIGH",
-      "enabled": true,
+      "enabled": false,
       "params": {},
       "description": "Ada stok berstatus Lost — kandidat investigasi ILSIM."
     }
