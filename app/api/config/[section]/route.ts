@@ -67,7 +67,7 @@ function auditSafeConfig(section: ConfigSection, value: unknown): unknown {
         label: route.label,
         enabled: route.enabled,
         warehouse_codes: route.warehouse_codes,
-        mention_count: route.mention_user_ids.length,
+        mention_count: route.mention_targets.length,
         webhook_configured: Boolean(route.webhook_url),
       })),
       legacy_gchat_webhook_count: level.gchat_webhooks.length,

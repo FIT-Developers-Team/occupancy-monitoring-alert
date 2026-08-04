@@ -3,6 +3,7 @@
 import type { Alert } from "@/types";
 import {
   isGoogleChatWebhookUrl,
+  mentionEmailsOf,
   normalizeGoogleChatMentionIds,
 } from "@/lib/notify/gchat-url";
 
@@ -42,12 +43,13 @@ export function googleChatMentionText(values: string[]): string {
   return normalizeGoogleChatMentionIds(values).map((id) => `<users/${id}>`).join(" ");
 }
 
-function addMentions(text: string, mentionUserIds: string[], mentionEmails: string[] = []): string {
-  const mentions = googleChatMentionText(mentionUserIds);
-  // Incoming webhooks cannot resolve an address into a real @mention, so the
-  // PIC line is informational: it names who owns the warehouse without
-  // pretending Chat will notify them.
-  const pic = mentionEmails.length ? `PIC: ${mentionEmails.join(", ")}` : "";
+function addMentions(text: string, mentionTargets: string[]): string {
+  const mentions = googleChatMentionText(mentionTargets);
+  // The PIC line repeats the addresses as plain text. If Chat resolves the
+  // mention the reader sees both the ping and who owns the warehouse; if it
+  // does not resolve, ownership is still legible instead of silently lost.
+  const emails = mentionEmailsOf(mentionTargets);
+  const pic = emails.length ? `PIC: ${emails.join(", ")}` : "";
   return [mentions, pic, text].filter(Boolean).join("\n");
 }
 
@@ -100,10 +102,10 @@ export async function sendGChatAlert(
   webhookUrl: string,
   alert: Alert,
   escalationPrefix?: string,
-  mentionUserIds: string[] = [],
-  mentionEmails: string[] = [],
+  mentionTargets: string[] = [],
 ): Promise<GChatSendResult> {
   const base = process.env.APP_BASE_URL?.replace(/\/$/, "");
+  const mentionEmails = mentionEmailsOf(mentionTargets);
   const location = [
     alert.warehouse_code,
     alert.zone ? `Zona ${alert.zone}` : null,
@@ -113,8 +115,7 @@ export async function sendGChatAlert(
   const prefix = escalationPrefix ? ` — ${escalationPrefix}` : "";
   const fallback = addMentions(
     `${SEV_ICON[alert.severity] ?? ""} [${alert.severity}] ${alert.rule_name}${prefix} — ${location}\n${alert.title}`,
-    mentionUserIds,
-    mentionEmails,
+    mentionTargets,
   );
   const card = {
     text: fallback,

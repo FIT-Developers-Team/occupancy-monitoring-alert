@@ -48,7 +48,7 @@ async function handle(req: NextRequest) {
       if (!route.enabled || !route.warehouse_codes.includes("*")) continue;
       chatTargets.set(route.webhook_url, normalizeGoogleChatMentionIds([
         ...(chatTargets.get(route.webhook_url) ?? []),
-        ...route.mention_user_ids,
+        ...route.mention_targets,
       ]));
     }
     for (const webhookUrl of lv.gchat_webhooks) {

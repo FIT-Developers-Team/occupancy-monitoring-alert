@@ -56,14 +56,16 @@ const GoogleChatRouteSchema = z.object({
   webhook_url: z.string().url().refine(isGoogleChatWebhookUrl, {
     message: "Webhook Google Chat harus memakai URL incoming webhook chat.googleapis.com yang lengkap.",
   }),
-  mention_user_ids: z.array(z.string()).default([]).transform((values, ctx) => {
+  // Who to tag for these warehouses. Work email is the expected form; numeric
+  // Chat user IDs and `all` still parse so older routes keep working.
+  mention_targets: z.array(z.string()).default([]).transform((values, ctx) => {
     const normalized: string[] = [];
     for (const [index, value] of values.entries()) {
       const mention = normalizeGoogleChatMentionId(value);
       if (!mention) {
         ctx.addIssue({
           code: "custom", path: [index],
-          message: "Tag Google Chat harus berupa user ID numerik atau 'all'.",
+          message: "Tag harus berupa email kerja, user ID Google Chat, atau 'all'.",
         });
       } else if (!normalized.includes(mention)) {
         normalized.push(mention);
@@ -71,20 +73,23 @@ const GoogleChatRouteSchema = z.object({
     }
     return normalized;
   }),
-  // Emails of the team owning these warehouses. An incoming webhook cannot turn
-  // an address into a real Chat @mention — only a numeric user id can do that —
-  // so these are rendered as a visible "PIC" line on the card instead of being
-  // silently dropped, which is what happened when admins typed an address into
-  // the user-id field.
-  mention_emails: z.array(z.string().trim().toLowerCase().email({
-    message: "Tag email harus berupa alamat email yang valid.",
-  })).default([]).transform((values) => [...new Set(values)]),
 });
+
+/** Routes saved before tagging moved to email still carry `mention_user_ids`. */
+const GoogleChatRoute = z.preprocess((value) => {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const route = value as Record<string, unknown>;
+    if (route.mention_targets === undefined && route.mention_user_ids !== undefined) {
+      return { ...route, mention_targets: route.mention_user_ids };
+    }
+  }
+  return value;
+}, GoogleChatRouteSchema);
 
 const RecipientsSchema = z.object({
   levels: z.array(z.object({
     level: z.number().int().positive(), name: z.string().trim().min(1), delay_minutes: z.number().min(0),
-    gchat_routes: z.array(GoogleChatRouteSchema).default([]),
+    gchat_routes: z.array(GoogleChatRoute).default([]),
     // Kept only so existing installations can load and migrate their previous
     // global webhook list through the new settings UI without losing data.
     gchat_webhooks: z.array(z.string().url()).default([]),

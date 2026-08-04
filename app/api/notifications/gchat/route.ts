@@ -59,6 +59,8 @@ export async function POST(request: NextRequest) {
   if (!user) return NextResponse.json({ error: "Khusus admin." }, { status: 403 });
   const body = await request.json().catch(() => null) as {
     webhook_url?: unknown;
+    mention_targets?: unknown;
+    /** Older clients still post the pre-email key. */
     mention_user_ids?: unknown;
     label?: unknown;
     warehouse_code?: unknown;
@@ -68,12 +70,16 @@ export async function POST(request: NextRequest) {
   if (!isGoogleChatWebhookUrl(webhookUrl)) {
     return NextResponse.json({ error: "URL incoming webhook Google Chat tidak valid." }, { status: 400 });
   }
-  const rawMentions = Array.isArray(body?.mention_user_ids)
-    ? body.mention_user_ids.filter((value): value is string => typeof value === "string")
-    : [];
+  const mentionInput = Array.isArray(body?.mention_targets)
+    ? body.mention_targets
+    : Array.isArray(body?.mention_user_ids) ? body.mention_user_ids : [];
+  const rawMentions = mentionInput.filter((value): value is string => typeof value === "string");
   const mentions = normalizeGoogleChatMentionIds(rawMentions);
-  if (mentions.length !== new Set(rawMentions.map((value) => value.trim().replace(/^users\//i, ""))).size) {
-    return NextResponse.json({ error: "Tag harus berupa Google Chat user ID numerik atau 'all'." }, { status: 400 });
+  if (mentions.length !== new Set(rawMentions.map((value) => value.trim().replace(/^users\//i, "").toLowerCase())).size) {
+    return NextResponse.json(
+      { error: "Tag harus berupa email kerja, Google Chat user ID, atau 'all'." },
+      { status: 400 },
+    );
   }
   const label = typeof body?.label === "string" ? body.label.trim().slice(0, 80) : "Rute Google Chat";
   const warehouse = typeof body?.warehouse_code === "string" ? body.warehouse_code.trim().slice(0, 20) : "Semua WH";

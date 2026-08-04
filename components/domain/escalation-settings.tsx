@@ -10,9 +10,8 @@ interface GoogleChatRoute {
   enabled: boolean;
   warehouse_codes: string[];
   webhook_url: string;
-  mention_user_ids: string[];
-  /** Warehouse PIC addresses; shown on the card, cannot become a Chat ping. */
-  mention_emails: string[];
+  /** Work email (preferred), Chat user ID, or "all". */
+  mention_targets: string[];
 }
 
 interface EscalationLevel {
@@ -69,8 +68,7 @@ function migrateLegacy(config: RecipientsConfig): RecipientsConfig {
           enabled: true,
           warehouse_codes: ["*"],
           webhook_url: webhookUrl,
-          mention_user_ids: [],
-          mention_emails: [],
+          mention_targets: [],
         })),
       ],
       gchat_webhooks: [],
@@ -197,8 +195,7 @@ export default function EscalationSettings() {
         enabled: true,
         warehouse_codes: ["*"],
         webhook_url: "",
-        mention_user_ids: [],
-        mention_emails: [],
+        mention_targets: [],
       }],
     });
   }
@@ -222,8 +219,7 @@ export default function EscalationSettings() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           webhook_url: route.webhook_url,
-          mention_user_ids: route.mention_user_ids,
-          mention_emails: route.mention_emails,
+          mention_targets: route.mention_targets,
           label: route.label,
           warehouse_code: route.warehouse_codes.includes("*")
             ? t("set.ui.recipients.allWarehouses")
@@ -433,24 +429,13 @@ export default function EscalationSettings() {
                       <label>
                         <span>{t("set.ui.recipients.mentionIds")}</span>
                         <textarea
-                          className="input num escalation-mentions"
-                          rows={2}
-                          placeholder="12345678901234567890, all"
-                          value={route.mention_user_ids.join(", ")}
-                          onChange={(event) => updateRoute(levelIndex, routeIndex, { mention_user_ids: splitValues(event.target.value) })}
-                        />
-                        <small>{t("set.ui.recipients.mentionHint")}</small>
-                      </label>
-                      <label>
-                        <span>{t("set.ui.recipients.mentionEmails")}</span>
-                        <textarea
                           className="input escalation-mentions"
                           rows={2}
                           placeholder="ops.cbt@astronauts.id, spv.cbt@astronauts.id"
-                          value={route.mention_emails.join(", ")}
-                          onChange={(event) => updateRoute(levelIndex, routeIndex, { mention_emails: splitValues(event.target.value) })}
+                          value={route.mention_targets.join(", ")}
+                          onChange={(event) => updateRoute(levelIndex, routeIndex, { mention_targets: splitValues(event.target.value) })}
                         />
-                        <small>{t("set.ui.recipients.mentionEmailsHint")}</small>
+                        <small>{t("set.ui.recipients.mentionHint")}</small>
                       </label>
                     </div>
                     <div className="escalation-route-footer">

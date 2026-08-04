@@ -15,15 +15,33 @@ export function isGoogleChatWebhookUrl(value: string): boolean {
   }
 }
 
-/** Accept either a bare numeric Chat user ID, users/<id>, or the all alias. */
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Normalise one mention target.
+ *
+ * Work email is the primary form because that is what warehouse admins know —
+ * nobody can look up a numeric Chat user ID for their supervisor. Numeric IDs
+ * and the `all` alias stay accepted so existing routes keep working.
+ *
+ * Whether `<users/{email}>` resolves into a real ping is decided by Google Chat
+ * against the sending Workspace; use the route's test-send to confirm it.
+ */
 export function normalizeGoogleChatMentionId(value: string): string | null {
   const cleaned = value.trim().replace(/^users\//i, "");
+  if (!cleaned) return null;
   if (cleaned.toLowerCase() === "all") return "all";
+  if (EMAIL.test(cleaned)) return cleaned.toLowerCase();
   return /^\d{6,30}$/.test(cleaned) ? cleaned : null;
 }
 
 export function normalizeGoogleChatMentionIds(values: string[]): string[] {
   return [...new Set(values.map(normalizeGoogleChatMentionId).filter((v): v is string => Boolean(v)))];
+}
+
+/** Mention targets that are addresses, for the human-readable PIC line. */
+export function mentionEmailsOf(values: string[]): string[] {
+  return normalizeGoogleChatMentionIds(values).filter((value) => EMAIL.test(value));
 }
 
 /** Never persist or show the webhook key/token in notification logs. */
