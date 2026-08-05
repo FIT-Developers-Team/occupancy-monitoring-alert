@@ -5,8 +5,10 @@ import { getRecipients, getWarehouses } from "@/lib/config";
 import { stateQuery } from "@/lib/db";
 import { sendGChatText } from "@/lib/notify/gchat";
 import {
+  googleChatSpaceOf,
   isGoogleChatWebhookUrl,
   normalizeGoogleChatMentionIds,
+  normalizeGoogleChatThreadName,
   redactGoogleChatWebhook,
 } from "@/lib/notify/gchat-url";
 
@@ -62,6 +64,9 @@ export async function POST(request: NextRequest) {
     mention_targets?: unknown;
     /** Older clients still post the pre-email key. */
     mention_user_ids?: unknown;
+    thread_mode?: unknown;
+    thread_key?: unknown;
+    thread_name?: unknown;
     label?: unknown;
     warehouse_code?: unknown;
     level?: unknown;
@@ -84,13 +89,47 @@ export async function POST(request: NextRequest) {
   const label = typeof body?.label === "string" ? body.label.trim().slice(0, 80) : "Rute Google Chat";
   const warehouse = typeof body?.warehouse_code === "string" ? body.warehouse_code.trim().slice(0, 20) : "Semua WH";
   const level = Number.isFinite(Number(body?.level)) ? Number(body?.level) : 1;
+  // Send the probe into the very thread real alerts will use, so the test
+  // proves the routing and not just that the webhook accepts a POST.
+  const threadMode = body?.thread_mode === "single" || body?.thread_mode === "existing"
+    ? body.thread_mode
+    : "per_alert";
+  const threadName = typeof body?.thread_name === "string"
+    ? normalizeGoogleChatThreadName(body.thread_name)
+    : null;
+  if (threadMode === "existing" && !threadName) {
+    return NextResponse.json(
+      { error: "Nama thread harus berformat spaces/<space>/threads/<thread>." },
+      { status: 400 },
+    );
+  }
+  const space = googleChatSpaceOf(webhookUrl);
+  if (threadMode === "existing" && space && !threadName!.startsWith(`spaces/${space}/`)) {
+    return NextResponse.json(
+      { error: `Thread ini bukan milik Space webhook (spaces/${space}).` },
+      { status: 400 },
+    );
+  }
+  const threadKey = typeof body?.thread_key === "string" ? body.thread_key.trim() : "";
+  if (threadMode === "single" && !threadKey) {
+    return NextResponse.json({ error: "Mode satu thread membutuhkan kunci thread." }, { status: 400 });
+  }
+  const threadLabel = threadMode === "existing"
+    ? `thread ${threadName}`
+    : threadMode === "single" ? `thread "${threadKey}"` : "thread uji";
+
   const text = [
     "*Uji koneksi FIT Occupancy Alert and Monitoring*",
     `Rute: ${label || "Google Chat"}`,
     `Cakupan: ${warehouse || "Semua WH"} · Level L${level}`,
+    `Tujuan: ${threadLabel}`,
     "Koneksi berhasil. Pesan ini bukan alert breach.",
   ].join("\n");
-  const result = await sendGChatText(webhookUrl, text, undefined, mentions);
+  const result = await sendGChatText(webhookUrl, text, "wiom-test", mentions, {
+    mode: threadMode,
+    key: threadKey,
+    name: threadName ?? undefined,
+  });
   await audit(
     user.username,
     "GCHAT_TEST",

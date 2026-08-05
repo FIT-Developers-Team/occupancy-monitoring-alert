@@ -1,7 +1,7 @@
 // Routing notifikasi per level eskalasi + per-warehouse Google Chat routes.
 import { getRecipients } from "@/lib/config";
 import { stateExec, uid } from "@/lib/db";
-import { sendGChatAlert, sendGenericWebhook } from "@/lib/notify/gchat";
+import { sendGChatAlert, sendGenericWebhook, type ThreadTarget } from "@/lib/notify/gchat";
 import { normalizeGoogleChatMentionIds, redactGoogleChatWebhook } from "@/lib/notify/gchat-url";
 import { sendEmail } from "@/lib/notify/email";
 import type { Alert } from "@/types";
@@ -70,7 +70,7 @@ export async function dispatchToLevel(
 
   // Merge overlapping matches by URL, so one Space receives one post per
   // alert/level even when an admin created overlapping warehouse scopes.
-  const googleChatTargets = new Map<string, { label: string; mentions: string[] }>();
+  const googleChatTargets = new Map<string, { label: string; mentions: string[]; thread: ThreadTarget }>();
   for (const route of tier.gchat_routes) {
     if (!route.enabled) continue;
     if (!route.warehouse_codes.includes("*") && !route.warehouse_codes.includes(alert.warehouse_code)) continue;
@@ -81,6 +81,13 @@ export async function dispatchToLevel(
         ...(existing?.mentions ?? []),
         ...route.mention_targets,
       ]),
+      // First route wins the thread: two routes sharing one webhook already
+      // merge into a single post, so they cannot target two threads.
+      thread: existing?.thread ?? {
+        mode: route.thread_mode,
+        key: route.thread_key,
+        name: route.thread_name,
+      },
     });
   }
 
@@ -88,12 +95,12 @@ export async function dispatchToLevel(
   // until an admin saves them as explicit routes in the new editor.
   for (const webhookUrl of tier.gchat_webhooks) {
     if (!googleChatTargets.has(webhookUrl)) {
-      googleChatTargets.set(webhookUrl, { label: "Rute lama (semua WH)", mentions: [] });
+      googleChatTargets.set(webhookUrl, { label: "Rute lama (semua WH)", mentions: [], thread: { mode: "per_alert" } });
     }
   }
 
   for (const [webhookUrl, target] of googleChatTargets) {
-    const result = await sendGChatAlert(webhookUrl, alert, escalationPrefix, target.mentions);
+    const result = await sendGChatAlert(webhookUrl, alert, escalationPrefix, target.mentions, target.thread);
     await log(
       alert.alert_id,
       "gchat",

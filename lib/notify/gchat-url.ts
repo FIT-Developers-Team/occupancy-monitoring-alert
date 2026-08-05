@@ -44,6 +44,29 @@ export function mentionEmailsOf(values: string[]): string[] {
   return normalizeGoogleChatMentionIds(values).filter((value) => EMAIL.test(value));
 }
 
+const THREAD_NAME = /^spaces\/[A-Za-z0-9_-]+\/threads\/[A-Za-z0-9_-]+$/;
+
+/** Space id a webhook posts into, used to check a thread belongs to it. */
+export function googleChatSpaceOf(webhookUrl: string): string | null {
+  try {
+    return new URL(webhookUrl).pathname.match(/\/spaces\/([^/]+)\/messages$/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resource name of an existing thread: `spaces/<space>/threads/<thread>`.
+ *
+ * Copy it from the thread URL in Google Chat. Posting into a thread that lives
+ * in a different Space than the webhook silently fails, so callers should also
+ * compare against googleChatSpaceOf().
+ */
+export function normalizeGoogleChatThreadName(value: string): string | null {
+  const cleaned = value.trim();
+  return THREAD_NAME.test(cleaned) ? cleaned : null;
+}
+
 /** Never persist or show the webhook key/token in notification logs. */
 export function redactGoogleChatWebhook(value: string): string {
   try {

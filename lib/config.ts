@@ -2,7 +2,12 @@
 import fs from "fs";
 import path from "path";
 import { z } from "zod";
-import { isGoogleChatWebhookUrl, normalizeGoogleChatMentionId } from "@/lib/notify/gchat-url";
+import {
+  googleChatSpaceOf,
+  isGoogleChatWebhookUrl,
+  normalizeGoogleChatMentionId,
+  normalizeGoogleChatThreadName,
+} from "@/lib/notify/gchat-url";
 
 const CONFIG_DIR = path.join(process.cwd(), "config");
 const RUNTIME_CONFIG_DIR = process.env.WIOM_RUNTIME_CONFIG_DIR?.trim()
@@ -73,6 +78,38 @@ const GoogleChatRouteSchema = z.object({
     }
     return normalized;
   }),
+  // Where inside the Space this route posts. Defaults to the previous
+  // behaviour: one thread per alert, keyed by dedup_key.
+  thread_mode: z.enum(["per_alert", "single", "existing"]).default("per_alert"),
+  /** Fixed thread key for thread_mode = "single". */
+  thread_key: z.string().trim().max(512).default(""),
+  /** `spaces/<space>/threads/<thread>` for thread_mode = "existing". */
+  thread_name: z.string().trim().max(200).default(""),
+}).superRefine((route, ctx) => {
+  if (route.thread_mode === "single" && !route.thread_key) {
+    ctx.addIssue({
+      code: "custom", path: ["thread_key"],
+      message: "Mode satu thread membutuhkan kunci thread.",
+    });
+  }
+  if (route.thread_mode !== "existing") return;
+  const name = normalizeGoogleChatThreadName(route.thread_name);
+  if (!name) {
+    ctx.addIssue({
+      code: "custom", path: ["thread_name"],
+      message: "Nama thread harus berformat spaces/<space>/threads/<thread>.",
+    });
+    return;
+  }
+  // Posting into a thread of another Space fails silently at Google's end, so
+  // catch the mismatch while the admin is still looking at the form.
+  const space = googleChatSpaceOf(route.webhook_url);
+  if (space && !name.startsWith(`spaces/${space}/`)) {
+    ctx.addIssue({
+      code: "custom", path: ["thread_name"],
+      message: `Thread ini bukan milik Space webhook (spaces/${space}).`,
+    });
+  }
 });
 
 /** Routes saved before tagging moved to email still carry `mention_user_ids`. */

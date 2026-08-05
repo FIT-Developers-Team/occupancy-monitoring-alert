@@ -23,11 +23,55 @@ export interface GChatSendResult {
   retryable?: boolean;
 }
 
+/**
+ * Where a route posts inside the Space.
+ *
+ * - `per_alert`  one thread per alert, keyed by dedup_key, so repeats and
+ *                escalations of the same breach stay together (default).
+ * - `single`     every alert joins one fixed thread key — a single running
+ *                feed for the whole Space.
+ * - `existing`   reply into a thread that already exists, addressed by its
+ *                resource name `spaces/<space>/threads/<thread>`.
+ */
+export type ThreadMode = "per_alert" | "single" | "existing";
+
+export interface ThreadTarget {
+  mode?: ThreadMode;
+  /** Fixed key for `single`. */
+  key?: string;
+  /** Resource name for `existing`. */
+  name?: string;
+}
+
 function withThread(url: string, threadKey: string): string {
   const target = new URL(url);
   target.searchParams.set("threadKey", threadKey.slice(0, 512));
   target.searchParams.set("messageReplyOption", "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD");
   return target.toString();
+}
+
+function replyInExistingThread(url: string): string {
+  const target = new URL(url);
+  // The thread is addressed in the body; the query only states that this
+  // message is a reply rather than a new conversation.
+  target.searchParams.delete("threadKey");
+  target.searchParams.set("messageReplyOption", "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD");
+  return target.toString();
+}
+
+/** Resolve a route's thread setting into the URL and body fields to send. */
+function applyThread(
+  webhookUrl: string,
+  body: Record<string, unknown>,
+  thread: ThreadTarget | undefined,
+  dedupKey: string,
+): { url: string; body: Record<string, unknown> } {
+  const mode = thread?.mode ?? "per_alert";
+  if (mode === "existing" && thread?.name) {
+    return { url: replyInExistingThread(webhookUrl), body: { ...body, thread: { name: thread.name } } };
+  }
+  const key = mode === "single" && thread?.key ? thread.key : dedupKey;
+  return { url: withThread(webhookUrl, key), body };
 }
 
 function escapeHtml(value: string): string {
@@ -103,6 +147,7 @@ export async function sendGChatAlert(
   alert: Alert,
   escalationPrefix?: string,
   mentionTargets: string[] = [],
+  thread?: ThreadTarget,
 ): Promise<GChatSendResult> {
   const base = process.env.APP_BASE_URL?.replace(/\/$/, "");
   const mentionEmails = mentionEmailsOf(mentionTargets);
@@ -145,7 +190,8 @@ export async function sendGChatAlert(
       },
     }],
   };
-  return post(withThread(webhookUrl, alert.dedup_key), card);
+  const target = applyThread(webhookUrl, card, thread, alert.dedup_key);
+  return post(target.url, target.body);
 }
 
 /** Pesan teks polos untuk uji koneksi dan ringkasan. */
@@ -154,9 +200,16 @@ export async function sendGChatText(
   text: string,
   threadKey?: string,
   mentionUserIds: string[] = [],
+  thread?: ThreadTarget,
 ): Promise<GChatSendResult> {
-  const url = threadKey ? withThread(webhookUrl, threadKey) : webhookUrl;
-  return post(url, { text: addMentions(text, mentionUserIds) });
+  const body = { text: addMentions(text, mentionUserIds) };
+  // A test send has to land exactly where real alerts will, otherwise it proves
+  // the webhook works but not that the thread routing does.
+  if (thread?.mode === "existing" && thread.name) {
+    return post(replyInExistingThread(webhookUrl), { ...body, thread: { name: thread.name } });
+  }
+  const key = thread?.mode === "single" && thread.key ? thread.key : threadKey;
+  return post(key ? withThread(webhookUrl, key) : webhookUrl, body);
 }
 
 /** Webhook generik: POST JSON alert apa adanya (n8n / Apps Script / tiket internal). */

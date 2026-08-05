@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "@/lib/i18n-client";
-import { isGoogleChatWebhookUrl } from "@/lib/notify/gchat-url";
+import { googleChatSpaceOf, isGoogleChatWebhookUrl, normalizeGoogleChatThreadName } from "@/lib/notify/gchat-url";
 
 interface GoogleChatRoute {
   id: string;
@@ -12,6 +12,9 @@ interface GoogleChatRoute {
   webhook_url: string;
   /** Work email (preferred), Chat user ID, or "all". */
   mention_targets: string[];
+  thread_mode: "per_alert" | "single" | "existing";
+  thread_key: string;
+  thread_name: string;
 }
 
 interface EscalationLevel {
@@ -45,6 +48,15 @@ function routeId(): string {
   return `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Mirrors the server rule so the admin sees the problem before saving. */
+function threadNameLooksValid(route: GoogleChatRoute): boolean {
+  if (route.thread_mode !== "existing") return true;
+  const name = normalizeGoogleChatThreadName(route.thread_name);
+  if (!name) return false;
+  const space = googleChatSpaceOf(route.webhook_url);
+  return !space || name.startsWith(`spaces/${space}/`);
+}
+
 function splitValues(value: string): string[] {
   return [...new Set(value.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean))];
 }
@@ -69,6 +81,9 @@ function migrateLegacy(config: RecipientsConfig): RecipientsConfig {
           warehouse_codes: ["*"],
           webhook_url: webhookUrl,
           mention_targets: [],
+          thread_mode: "per_alert" as const,
+          thread_key: "",
+          thread_name: "",
         })),
       ],
       gchat_webhooks: [],
@@ -196,6 +211,9 @@ export default function EscalationSettings() {
         warehouse_codes: ["*"],
         webhook_url: "",
         mention_targets: [],
+        thread_mode: "per_alert" as const,
+        thread_key: "",
+        thread_name: "",
       }],
     });
   }
@@ -220,6 +238,9 @@ export default function EscalationSettings() {
         body: JSON.stringify({
           webhook_url: route.webhook_url,
           mention_targets: route.mention_targets,
+          thread_mode: route.thread_mode,
+          thread_key: route.thread_key,
+          thread_name: route.thread_name,
           label: route.label,
           warehouse_code: route.warehouse_codes.includes("*")
             ? t("set.ui.recipients.allWarehouses")
@@ -437,6 +458,50 @@ export default function EscalationSettings() {
                         />
                         <small>{t("set.ui.recipients.mentionHint")}</small>
                       </label>
+                      <label>
+                        <span>{t("set.ui.recipients.threadMode")}</span>
+                        <select
+                          className="input"
+                          value={route.thread_mode}
+                          onChange={(event) => updateRoute(levelIndex, routeIndex, {
+                            thread_mode: event.target.value as GoogleChatRoute["thread_mode"],
+                          })}
+                        >
+                          <option value="per_alert">{t("set.ui.recipients.threadPerAlert")}</option>
+                          <option value="single">{t("set.ui.recipients.threadSingle")}</option>
+                          <option value="existing">{t("set.ui.recipients.threadExisting")}</option>
+                        </select>
+                        <small>{t(`set.ui.recipients.threadHint.${route.thread_mode}`)}</small>
+                      </label>
+                      {route.thread_mode === "single" && (
+                        <label>
+                          <span>{t("set.ui.recipients.threadKey")}</span>
+                          <input
+                            className="input"
+                            placeholder="wiom-alerts"
+                            value={route.thread_key}
+                            onChange={(event) => updateRoute(levelIndex, routeIndex, { thread_key: event.target.value })}
+                          />
+                          {attemptedSave && !route.thread_key.trim() && (
+                            <small className="escalation-field-error">{t("set.ui.recipients.threadKeyRequired")}</small>
+                          )}
+                        </label>
+                      )}
+                      {route.thread_mode === "existing" && (
+                        <label>
+                          <span>{t("set.ui.recipients.threadName")}</span>
+                          <input
+                            className="input num"
+                            placeholder="spaces/AAQA1b2C3d4/threads/XYZ123"
+                            value={route.thread_name}
+                            onChange={(event) => updateRoute(levelIndex, routeIndex, { thread_name: event.target.value })}
+                          />
+                          <small>{t("set.ui.recipients.threadNameHint")}</small>
+                          {attemptedSave && !threadNameLooksValid(route) && (
+                            <small className="escalation-field-error">{t("set.ui.recipients.threadNameInvalid")}</small>
+                          )}
+                        </label>
+                      )}
                     </div>
                     <div className="escalation-route-footer">
                       <span>{route.warehouse_codes.includes("*") ? t("set.ui.recipients.allWarehouses") : route.warehouse_codes.join(" · ")}</span>
