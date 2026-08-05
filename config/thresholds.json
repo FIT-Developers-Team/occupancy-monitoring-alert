@@ -7,7 +7,17 @@
     "hysteresis_buffer": 3
   },
   "overrides": {
-    "PGS": { "warning": 82, "critical": 92 },
-    "BIT": { "hysteresis_buffer": 4 }
+    "PGS": {
+      "warning": 82,
+      "critical": 92
+    },
+    "BIT": {
+      "hysteresis_buffer": 4
+    }
+  },
+  "sloc_alerts": {
+    "enabled": true,
+    "min_pct": 110,
+    "max_alerts": 20
   }
 }

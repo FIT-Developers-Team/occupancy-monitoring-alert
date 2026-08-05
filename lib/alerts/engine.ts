@@ -5,14 +5,15 @@
 //   4. Alert tanpa acknowledgement naik mengikuti level dinamis.
 // Rule berbasis movement/stok sengaja tidak dijalankan sampai datanya tersedia.
 import { stateExec, stateQuery, uid } from "@/lib/db";
-import { getRecipients, thresholdsFor } from "@/lib/config";
-import { getZoneSummary } from "@/lib/queries";
+import { getRecipients, getThresholds, thresholdsFor } from "@/lib/config";
+import { getDenseSlocs, getZoneSummary, type DenseSloc } from "@/lib/queries";
 import { dispatchThroughLevel, dispatchToLevel, type DispatchResult } from "@/lib/notify/dispatch";
 import { audit } from "@/lib/audit";
 import type { Alert, Severity, ZoneSummary } from "@/types";
 
 const OPEN = "('NEW','NOTIFIED','ACKNOWLEDGED')";
 const ZONE_BREACH_RULE = "OCC-ZONE-BREACH";
+const SLOC_BREACH_RULE = "OCC-SLOC-BREACH";
 
 export interface TickResult {
   created: number;
@@ -181,8 +182,8 @@ function zoneViolation(zone: ZoneSummary): Violation {
 
 async function resolveTriggersDisabledForCurrentPhase(result: TickResult): Promise<void> {
   const rows = await stateQuery<{ count: number }>(
-    `SELECT count(*)::INT AS count FROM alerts WHERE status IN ${OPEN} AND rule_id <> ?`,
-    [ZONE_BREACH_RULE],
+    `SELECT count(*)::INT AS count FROM alerts WHERE status IN ${OPEN} AND rule_id NOT IN (?, ?)`,
+    [ZONE_BREACH_RULE, SLOC_BREACH_RULE],
   );
   const count = rows[0]?.count ?? 0;
   if (!count) return;
@@ -192,8 +193,8 @@ async function resolveTriggersDisabledForCurrentPhase(result: TickResult): Promi
     `UPDATE alerts SET status = 'RESOLVED', resolved_by = 'system', resolved_at = now(),
         resolution_note = 'Trigger dinonaktifkan pada fase saat ini; hanya breach okupansi per zona yang aktif.',
         next_escalation_at = NULL, updated_at = now()
-     WHERE status IN ${OPEN} AND rule_id <> ?`,
-    [ZONE_BREACH_RULE],
+     WHERE status IN ${OPEN} AND rule_id NOT IN (?, ?)`,
+    [ZONE_BREACH_RULE, SLOC_BREACH_RULE],
   );
   result.auto_resolved += count;
 }
@@ -234,6 +235,63 @@ async function evaluateZoneBreaches(result: TickResult): Promise<void> {
         result.auto_resolved++;
       }
     }
+  }
+}
+
+function slocViolation(sloc: DenseSloc, minPct: number): Violation {
+  const filled = sloc.basis === "qty"
+    ? `${Math.round(sloc.occ_qty).toLocaleString("id-ID")} / ${Math.round(sloc.cap_qty).toLocaleString("id-ID")} unit`
+    : `${sloc.occ_cbm.toLocaleString("id-ID")} / ${sloc.cap_cbm.toLocaleString("id-ID")} m³`;
+  return {
+    rule_id: SLOC_BREACH_RULE,
+    rule_name: "Lokasi Melebihi Kapasitas",
+    // Below a zone breach: one overfilled location is a housekeeping job, not a
+    // reason to wake the operations manager.
+    severity: "HIGH",
+    warehouse_code: sloc.wh,
+    zone: sloc.zone || null,
+    sloc_code: sloc.sloc_code,
+    sku: null,
+    title: `${sloc.sloc_code} terisi ${sloc.pct}% dari kapasitas`,
+    detail: `Lokasi ${sloc.sloc_code} (zona ${sloc.zone || "—"}, ${sloc.storage || "penyimpanan umum"}) melewati ambang ${minPct}% pada basis ${sloc.basis.toUpperCase()}. Terisi ${filled} dari ${sloc.sku_count.toLocaleString("id-ID")} SKU. Periksa penempatan, pindahkan kelebihan ke lokasi kosong terdekat, atau perbarui kapasitas master bila memang salah.`,
+    dedup_key: `${SLOC_BREACH_RULE}:${sloc.wh}:${sloc.sloc_code}`,
+  };
+}
+
+async function evaluateSlocBreaches(result: TickResult): Promise<void> {
+  const policy = getThresholds().sloc_alerts;
+  if (!policy.enabled) return;
+  result.evaluated_rules.push(SLOC_BREACH_RULE);
+
+  const slocs = await getDenseSlocs(undefined, policy.min_pct, policy.max_alerts, "policy");
+  const stillBreaching = new Set<string>();
+
+  for (const sloc of slocs) {
+    const violation = slocViolation(sloc, policy.min_pct);
+    stillBreaching.add(violation.dedup_key);
+    const existing = await openAlertByKey(violation.dedup_key);
+    if (existing) {
+      await bumpAlert(existing, violation);
+      result.updated++;
+      continue;
+    }
+    const alert = await insertAlert(violation);
+    result.created++;
+    mergeDispatch(result, await dispatchThroughLevel(alert, alert.escalation_level));
+  }
+
+  // The query is capped, so a location can be missing simply because it ranked
+  // below the cap. Only auto-resolve when the result is complete, otherwise a
+  // still-overfilled location would be closed as recovered.
+  if (slocs.length >= policy.max_alerts) return;
+  const open = await stateQuery<Alert>(
+    `SELECT * FROM alerts WHERE rule_id = ? AND status IN ${OPEN}`,
+    [SLOC_BREACH_RULE],
+  );
+  for (const alert of open) {
+    if (stillBreaching.has(alert.dedup_key)) continue;
+    await systemResolve(alert.alert_id, `Lokasi ${alert.sloc_code ?? ""} kembali di bawah ${policy.min_pct}%.`.trim());
+    result.auto_resolved++;
   }
 }
 
@@ -289,6 +347,7 @@ async function runTickInternal(actor: string): Promise<TickResult> {
   };
   await resolveTriggersDisabledForCurrentPhase(result);
   await evaluateZoneBreaches(result);
+  await evaluateSlocBreaches(result);
   await evaluateEscalation(result);
   await audit(actor, "TICK", "alert_engine", undefined, result);
   return result;

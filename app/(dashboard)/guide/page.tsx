@@ -1,4 +1,5 @@
 import Section from "@/components/ui/section";
+import GuideTasks from "@/components/domain/guide-tasks";
 import PageHeader from "@/components/ui/page-header";
 import { getT, type TFn } from "@/lib/i18n";
 
@@ -301,6 +302,10 @@ export default async function GuidePage() {
         description={t("guide.header.description")}
       />
 
+      <Section eyebrow={t("guide.tasks.eyebrow")} title={t("guide.tasks.title")}>
+        <GuideTasks />
+      </Section>
+
       <Section eyebrow={t("guide.section.overview.eyebrow")} title={t("guide.section.overview.title")}>
         <FlowDiagram t={t} />
         <div className="mt-3 grid gap-3 md:grid-cols-3">
@@ -370,14 +375,6 @@ export default async function GuidePage() {
         </div>
       </Section>
 
-      <Section eyebrow={t("guide.section.live.eyebrow")} title={t("guide.section.live.title")}>
-        <div className="card card-pad text-[12.5px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
-          {t("guide.live.directSetup")} <span className="kbd">{t("guide.live.settingsPath")}</span>.{" "}
-          {t("guide.live.publicConfig")} <span className="kbd">config/superset-sync.json</span>,{" "}
-          {t("guide.live.secretConfig")} <span className="kbd">config/.superset-sync.secrets.json</span>.{" "}
-          {t("guide.live.daemon")}
-        </div>
-      </Section>
     </div>
   );
 }

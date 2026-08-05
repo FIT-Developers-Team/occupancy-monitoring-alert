@@ -1315,3 +1315,41 @@
   .anim-in, .stagger > *, .anim-fade { animation: none !important; }
   * { transition-duration: .01ms !important; }
 }
+
+/* User guide — task-oriented accordion. Replaces the reference-card wall that
+   named internal config files; each entry is one procedure with a success test. */
+.guide-tasks { display: grid; gap: 12px; }
+.guide-filter { display: flex; flex-wrap: wrap; gap: 6px; }
+.guide-filter .chip { cursor: pointer; }
+.guide-task-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.guide-task {
+  overflow: hidden; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--surface-raised); transition: border-color 120ms ease;
+}
+.guide-task.is-open { border-color: var(--accent); }
+.guide-task-head {
+  display: flex; width: 100%; align-items: flex-start; gap: 10px;
+  padding: 11px 13px; border: 0; background: transparent; cursor: pointer; text-align: left;
+}
+.guide-task-head:hover { background: var(--surface-sunken); }
+.guide-task-index {
+  display: grid; width: 21px; height: 21px; flex: none; place-content: center;
+  border-radius: 50%; background: var(--surface-sunken); color: var(--text-muted); font-size: 10px;
+}
+.guide-task.is-open .guide-task-index { background: var(--accent); color: #fff; }
+.guide-task-title { display: grid; min-width: 0; gap: 2px; }
+.guide-task-title strong { color: var(--text); font-size: 12.5px; }
+.guide-task-title small { color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+.guide-task-chevron { flex: none; color: var(--text-muted); font-size: 15px; line-height: 1; }
+.guide-task-body { padding: 0 13px 12px 44px; }
+.guide-steps { display: grid; gap: 9px; margin: 0; padding-left: 16px; }
+.guide-steps li { color: var(--text); font-size: 12px; line-height: 1.55; }
+.guide-step-link { margin-top: 5px; }
+.guide-done {
+  margin-top: 11px; padding: 8px 10px; border-radius: 7px;
+  background: var(--surface-sunken); color: var(--text-muted); font-size: 11.5px; line-height: 1.5;
+}
+.guide-done b { color: var(--st-normal-fg); }
+@media (max-width: 640px) {
+  .guide-task-body { padding-left: 13px; }
+}

@@ -31,6 +31,17 @@ const ThresholdSchema = z.object({
     critical: z.number().optional(), breach: z.number().optional(),
     hysteresis_buffer: z.number().optional(),
   })).default({}),
+  /**
+   * Per-location alerts. A warehouse has ~144k active SLOCs and roughly 700 sit
+   * over their qty capacity at any moment, so this is deliberately capped: only
+   * the worst `max_alerts` locations above `min_pct` raise an alert per pass.
+   * Without the cap one tick would post hundreds of cards into the Space.
+   */
+  sloc_alerts: z.object({
+    enabled: z.boolean().default(true),
+    min_pct: z.number().min(100).max(1000).default(110),
+    max_alerts: z.number().int().min(1).max(200).default(20),
+  }).default({}),
 }).superRefine((value, ctx) => {
   const check = (v: { monitor?: number; warning?: number; critical?: number; breach?: number }, path: (string | number)[]) => {
     const values = [v.monitor, v.warning, v.critical, v.breach];
@@ -83,14 +94,24 @@ const GoogleChatRouteSchema = z.object({
   thread_mode: z.enum(["per_alert", "single", "existing"]).default("per_alert"),
   /** Fixed thread key for thread_mode = "single". */
   thread_key: z.string().trim().max(512).default(""),
-  /** `spaces/<space>/threads/<thread>` for thread_mode = "existing". */
-  thread_name: z.string().trim().max(200).default(""),
+  /**
+   * `spaces/<space>/threads/<thread>` for thread_mode = "existing".
+   *
+   * Stored canonical. Admins paste the room link, and Google rejects a message
+   * whose thread.name is a URL — which is why alerts failed to reach the thread
+   * while Test send (which normalised separately) worked.
+   */
+  thread_name: z.string().trim().max(200).default("")
+    .transform((value) => normalizeGoogleChatThreadName(value) ?? value),
   /**
    * Per-warehouse thread override, e.g. `{ "CBT": "spaces/…/threads/…" }`.
    * Lets one route fan a Space out into a thread per warehouse instead of
    * forcing the admin to repeat the same webhook URL once per site.
    */
-  thread_names: z.record(z.string().trim().min(1).max(20), z.string().trim().max(200)).default({}),
+  thread_names: z.record(
+    z.string().trim().min(1).max(20),
+    z.string().trim().max(200).transform((value) => normalizeGoogleChatThreadName(value) ?? value),
+  ).default({}),
 }).superRefine((route, ctx) => {
   if (route.thread_mode === "single" && !route.thread_key) {
     ctx.addIssue({

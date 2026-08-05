@@ -6,6 +6,7 @@ import {
   mentionEmailsOf,
   mentionPingIdOf,
   normalizeGoogleChatMentionIds,
+  normalizeGoogleChatThreadName,
 } from "@/lib/notify/gchat-url";
 
 const SEV_ICON: Record<string, string> = {
@@ -69,7 +70,12 @@ function applyThread(
 ): { url: string; body: Record<string, unknown> } {
   const mode = thread?.mode ?? "per_alert";
   if (mode === "existing" && thread?.name) {
-    return { url: replyInExistingThread(webhookUrl), body: { ...body, thread: { name: thread.name } } };
+    // Normalise again here: a config saved before thread links were canonical
+    // still holds the pasted URL, and Google rejects that outright.
+    const name = normalizeGoogleChatThreadName(thread.name);
+    if (name) {
+      return { url: replyInExistingThread(webhookUrl), body: { ...body, thread: { name } } };
+    }
   }
   const key = mode === "single" && thread?.key ? thread.key : dedupKey;
   return { url: withThread(webhookUrl, key), body };

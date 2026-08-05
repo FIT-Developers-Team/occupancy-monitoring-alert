@@ -184,6 +184,8 @@ const ID: Dict = {
   // guide
   "guide.header.eyebrow": "Panduan operasional",
   "guide.header.title": "Panduan FIT Occupancy Alert and Monitoring",
+  "guide.tasks.eyebrow": "Panduan langkah demi langkah",
+  "guide.tasks.title": "Apa yang ingin Anda lakukan?",
   "guide.header.description": "Ringkasan cara membaca dashboard, menangani alert, dan mengelola konfigurasi.",
   "guide.flow.aria": "Alur data dari Superset ke sinkronisasi, DuckDB, FIT Occupancy Alert and Monitoring, evaluasi, alert, lalu kanal notifikasi.",
   "guide.flow.source.label": "Superset", "guide.flow.source.detail": "Dataset API",
@@ -640,6 +642,8 @@ const EN: Dict = {
   "int.ghost": "Ghost", "int.counted": "Counted", "int.lastCount": "Last count",
   "guide.header.eyebrow": "Operational guide",
   "guide.header.title": "FIT Occupancy Alert and Monitoring guide",
+  "guide.tasks.eyebrow": "Step-by-step guide",
+  "guide.tasks.title": "What do you want to do?",
   "guide.header.description": "A concise guide to reading the dashboard, handling alerts, and managing configuration.",
   "guide.flow.aria": "Data flows from Superset to synchronisation, DuckDB, FIT Occupancy Alert and Monitoring, evaluation, alerts, and notification channels.",
   "guide.flow.source.label": "Superset", "guide.flow.source.detail": "Dataset API",
