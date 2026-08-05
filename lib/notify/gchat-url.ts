@@ -68,16 +68,37 @@ export function googleChatSpaceOf(webhookUrl: string): string | null {
   }
 }
 
+// What an operator actually has: the link copied from a message in the room.
+//   https://chat.google.com/room/<space>/<thread>/<message>?cls=10
+//   https://mail.google.com/chat/u/0/#chat/space/<space>/<thread>
+const CHAT_LINK = new RegExp(
+  "^https?://(?:chat\\.google\\.com/room|mail\\.google\\.com/chat/u/\\d+/#chat/space)"
+  + "/([A-Za-z0-9_-]+)(?:/([A-Za-z0-9_-]+))?",
+);
+
 /**
  * Resource name of an existing thread: `spaces/<space>/threads/<thread>`.
  *
- * Copy it from the thread URL in Google Chat. Posting into a thread that lives
- * in a different Space than the webhook silently fails, so callers should also
- * compare against googleChatSpaceOf().
+ * Accepts the room link straight from Google Chat as well, because nobody has
+ * the resource name to hand — they have the "Copy link" URL. Posting into a
+ * thread that lives in a different Space than the webhook silently fails, so
+ * callers should also compare against googleChatSpaceOf().
  */
 export function normalizeGoogleChatThreadName(value: string): string | null {
   const cleaned = value.trim();
-  return THREAD_NAME.test(cleaned) ? cleaned : null;
+  if (!cleaned) return null;
+  if (THREAD_NAME.test(cleaned)) return cleaned;
+  const link = cleaned.match(CHAT_LINK);
+  return link?.[2] ? `spaces/${link[1]}/threads/${link[2]}` : null;
+}
+
+/**
+ * True when the pasted link points at the room itself rather than a message
+ * inside it — the most likely mistake, and one worth its own message.
+ */
+export function isGoogleChatSpaceOnlyLink(value: string): boolean {
+  const link = value.trim().match(CHAT_LINK);
+  return Boolean(link && !link[2]);
 }
 
 /** Never persist or show the webhook key/token in notification logs. */

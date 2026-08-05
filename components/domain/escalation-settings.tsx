@@ -2,7 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "@/lib/i18n-client";
-import { googleChatSpaceOf, isGoogleChatWebhookUrl, normalizeGoogleChatThreadName } from "@/lib/notify/gchat-url";
+import {
+  googleChatSpaceOf,
+  isGoogleChatSpaceOnlyLink,
+  isGoogleChatWebhookUrl,
+  normalizeGoogleChatThreadName,
+} from "@/lib/notify/gchat-url";
 
 interface GoogleChatRoute {
   id: string;
@@ -47,6 +52,26 @@ type Feedback = { tone: "ok" | "error" | "info"; text: string } | null;
 
 function routeId(): string {
   return `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** What to show under a thread field: the resolved name, or why it is wrong. */
+function threadFeedback(route: GoogleChatRoute, value: string, t: (key: string) => string): { ok: boolean; text: string } | null {
+  const raw = value.trim();
+  if (!raw) return null;
+  const name = normalizeGoogleChatThreadName(raw);
+  if (!name) {
+    return {
+      ok: false,
+      text: isGoogleChatSpaceOnlyLink(raw)
+        ? t("set.ui.recipients.threadLinkRoomOnly")
+        : t("set.ui.recipients.threadNameInvalid"),
+    };
+  }
+  const space = googleChatSpaceOf(route.webhook_url);
+  if (space && !name.startsWith(`spaces/${space}/`)) {
+    return { ok: false, text: t("set.ui.recipients.threadNameInvalid") };
+  }
+  return { ok: true, text: name };
 }
 
 /** Mirrors the server rule so the admin sees the problem before saving. */
@@ -501,29 +526,41 @@ export default function EscalationSettings() {
                               <label key={warehouse}>
                                 <span>{t("set.ui.recipients.threadName")} · {warehouse}</span>
                                 <input
-                                  className="input num"
-                                  placeholder="spaces/AAQA1b2C3d4/threads/XYZ123"
+                                  className="input"
+                                  placeholder="https://chat.google.com/room/AAQA_6AHe44/om5H9v4GxMs/…"
                                   value={route.thread_names[warehouse] ?? ""}
                                   onChange={(event) => updateRoute(levelIndex, routeIndex, {
                                     thread_names: { ...route.thread_names, [warehouse]: event.target.value },
                                   })}
                                 />
-                                {attemptedSave && !threadValueValid(route, route.thread_names[warehouse] ?? "") && (
-                                  <small className="escalation-field-error">{t("set.ui.recipients.threadNameInvalid")}</small>
-                                )}
+                                {(() => {
+                                  const info = threadFeedback(route, route.thread_names[warehouse] ?? "", t);
+                                  if (info) {
+                                    return <small className={info.ok ? "escalation-field-ok" : "escalation-field-error"}>{info.text}</small>;
+                                  }
+                                  return attemptedSave && !threadValueValid(route, route.thread_names[warehouse] ?? "")
+                                    ? <small className="escalation-field-error">{t("set.ui.recipients.threadNameInvalid")}</small>
+                                    : null;
+                                })()}
                               </label>
                             )) : (
                               <label>
                                 <span>{t("set.ui.recipients.threadName")}</span>
                                 <input
-                                  className="input num"
-                                  placeholder="spaces/AAQA1b2C3d4/threads/XYZ123"
+                                  className="input"
+                                  placeholder="https://chat.google.com/room/AAQA_6AHe44/om5H9v4GxMs/…"
                                   value={route.thread_name}
                                   onChange={(event) => updateRoute(levelIndex, routeIndex, { thread_name: event.target.value })}
                                 />
-                                {attemptedSave && !threadValueValid(route, route.thread_name) && (
-                                  <small className="escalation-field-error">{t("set.ui.recipients.threadNameInvalid")}</small>
-                                )}
+                                {(() => {
+                                  const info = threadFeedback(route, route.thread_name, t);
+                                  if (info) {
+                                    return <small className={info.ok ? "escalation-field-ok" : "escalation-field-error"}>{info.text}</small>;
+                                  }
+                                  return attemptedSave && !threadValueValid(route, route.thread_name)
+                                    ? <small className="escalation-field-error">{t("set.ui.recipients.threadNameInvalid")}</small>
+                                    : null;
+                                })()}
                               </label>
                             )}
                             <small>{t("set.ui.recipients.threadNameHint")}</small>

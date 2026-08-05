@@ -1026,6 +1026,9 @@
 /* Loading popup — one indicator for route transitions and lazy components.
    Nothing paints during the grace period; see components/ui/loading-popup.tsx. */
 /* Full-width add affordance under the override rules table. */
+/* Resolved thread resource name, shown once a pasted Chat link parses. */
+.escalation-field-ok { color: var(--st-normal-fg); font-family: var(--font-mono); font-size: 9.5px; word-break: break-all; }
+
 .rules-add {
   display: flex; width: 100%; min-height: 36px; align-items: center; justify-content: center;
   gap: 6px; border: 1px dashed var(--border-strong); border-radius: 7px;
