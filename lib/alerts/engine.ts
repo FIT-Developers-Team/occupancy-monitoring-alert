@@ -7,7 +7,7 @@
 import { stateExec, stateQuery, uid } from "@/lib/db";
 import { getRecipients, thresholdsFor } from "@/lib/config";
 import { getZoneSummary } from "@/lib/queries";
-import { dispatchToLevel, type DispatchResult } from "@/lib/notify/dispatch";
+import { dispatchThroughLevel, dispatchToLevel, type DispatchResult } from "@/lib/notify/dispatch";
 import { audit } from "@/lib/audit";
 import type { Alert, Severity, ZoneSummary } from "@/types";
 
@@ -216,7 +216,9 @@ async function evaluateZoneBreaches(result: TickResult): Promise<void> {
         ? await bumpAlert(existing, violation)
         : await insertAlert(violation);
       if (existing) result.updated++; else result.created++;
-      mergeDispatch(result, await dispatchToLevel(alert, alert.escalation_level));
+      // Creation engages every tier up to the severity start level; escalation
+      // later notifies only the newly engaged tier.
+      mergeDispatch(result, await dispatchThroughLevel(alert, alert.escalation_level));
       await setState(stateKey, "1");
       continue;
     }

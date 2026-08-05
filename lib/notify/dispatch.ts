@@ -54,15 +54,56 @@ export interface DispatchResult {
   skipped: number;
 }
 
+/**
+ * Notify every tier from 1 up to `level`.
+ *
+ * severity_start_level decides how high an alert reaches immediately — a
+ * CRITICAL zone breach enters at tier 3. Sending only to that tier meant the
+ * warehouse supervisor on tier 1, the person who actually acts, never heard
+ * about it, and an admin who configured a tier-1 route saw "Notified" while
+ * nothing left the building. Destinations are merged by webhook URL so a Space
+ * listed on several tiers still receives exactly one message.
+ */
+export async function dispatchThroughLevel(
+  alert: Alert,
+  level: number,
+  escalationPrefix?: string,
+): Promise<DispatchResult> {
+  const levels = getRecipients().levels
+    .filter((tier) => tier.level <= level)
+    .map((tier) => tier.level)
+    .sort((a, b) => a - b);
+  return dispatchToLevels(alert, levels.length ? levels : [level], escalationPrefix);
+}
+
 /** Kirim alert ke semua penerima yang cocok pada satu level eskalasi. */
 export async function dispatchToLevel(
   alert: Alert,
   level: number,
   escalationPrefix?: string,
 ): Promise<DispatchResult> {
+  return dispatchToLevels(alert, [level], escalationPrefix);
+}
+
+async function dispatchToLevels(
+  alert: Alert,
+  levelNumbers: number[],
+  escalationPrefix?: string,
+): Promise<DispatchResult> {
   const config = getRecipients();
-  const tier = config.levels.find((item) => item.level === level);
-  if (!tier) return { sent: 0, failed: 0, skipped: 1 };
+  const tiers = levelNumbers
+    .map((level) => config.levels.find((item) => item.level === level))
+    .filter((tier): tier is NonNullable<typeof tier> => Boolean(tier));
+  if (!tiers.length) return { sent: 0, failed: 0, skipped: 1 };
+  const tier = {
+    // The lowest tier names the delivery; the rest only contribute recipients.
+    name: tiers[0].name,
+    gchat_routes: tiers.flatMap((item) => item.gchat_routes),
+    gchat_webhooks: [...new Set(tiers.flatMap((item) => item.gchat_webhooks))],
+    emails: [...new Set(tiers.flatMap((item) => item.emails))],
+    webhooks: [...new Set(tiers.flatMap((item) => item.webhooks))],
+  };
+  const level = levelNumbers[levelNumbers.length - 1];
 
   let sent = 0;
   let failed = 0;
@@ -130,11 +171,14 @@ export async function dispatchToLevel(
   }
 
   if (googleChatTargets.size + tier.emails.length + tier.webhooks.length === 0) {
+    const scope = `L1-L${level}`;
     const routeExistsForAnotherWarehouse = tier.gchat_routes.some((route) => route.enabled);
     const reason = routeExistsForAnotherWarehouse
-      ? `Tidak ada rute Google Chat L${level} untuk ${alert.warehouse_code}; alert hanya tersedia di aplikasi.`
-      : "Belum ada penerima eksternal; alert hanya tersedia di aplikasi.";
-    await log(alert.alert_id, "dashboard", tier.name, "SENT", reason);
+      ? `Tidak ada rute Google Chat ${scope} untuk ${alert.warehouse_code}; alert hanya tersedia di aplikasi.`
+      : `Belum ada penerima eksternal pada ${scope}; alert hanya tersedia di aplikasi.`;
+    // SKIPPED, not SENT: nothing left the building, and an operator reading the
+    // log has to be able to tell those apart.
+    await log(alert.alert_id, "dashboard", tier.name, "SKIPPED", reason);
     skipped++;
   }
 
