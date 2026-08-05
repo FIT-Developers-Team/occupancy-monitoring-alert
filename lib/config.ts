@@ -85,6 +85,12 @@ const GoogleChatRouteSchema = z.object({
   thread_key: z.string().trim().max(512).default(""),
   /** `spaces/<space>/threads/<thread>` for thread_mode = "existing". */
   thread_name: z.string().trim().max(200).default(""),
+  /**
+   * Per-warehouse thread override, e.g. `{ "CBT": "spaces/…/threads/…" }`.
+   * Lets one route fan a Space out into a thread per warehouse instead of
+   * forcing the admin to repeat the same webhook URL once per site.
+   */
+  thread_names: z.record(z.string().trim().min(1).max(20), z.string().trim().max(200)).default({}),
 }).superRefine((route, ctx) => {
   if (route.thread_mode === "single" && !route.thread_key) {
     ctx.addIssue({
@@ -93,23 +99,35 @@ const GoogleChatRouteSchema = z.object({
     });
   }
   if (route.thread_mode !== "existing") return;
-  const name = normalizeGoogleChatThreadName(route.thread_name);
-  if (!name) {
-    ctx.addIssue({
-      code: "custom", path: ["thread_name"],
-      message: "Nama thread harus berformat spaces/<space>/threads/<thread>.",
-    });
-    return;
-  }
+  const space = googleChatSpaceOf(route.webhook_url);
+
   // Posting into a thread of another Space fails silently at Google's end, so
   // catch the mismatch while the admin is still looking at the form.
-  const space = googleChatSpaceOf(route.webhook_url);
-  if (space && !name.startsWith(`spaces/${space}/`)) {
-    ctx.addIssue({
-      code: "custom", path: ["thread_name"],
-      message: `Thread ini bukan milik Space webhook (spaces/${space}).`,
-    });
-  }
+  const checkThread = (raw: string, path: (string | number)[]) => {
+    const name = normalizeGoogleChatThreadName(raw);
+    if (!name) {
+      ctx.addIssue({
+        code: "custom", path,
+        message: "Nama thread harus berformat spaces/<space>/threads/<thread>.",
+      });
+      return;
+    }
+    if (space && !name.startsWith(`spaces/${space}/`)) {
+      ctx.addIssue({
+        code: "custom", path,
+        message: `Thread ini bukan milik Space webhook (spaces/${space}).`,
+      });
+    }
+  };
+
+  const perWarehouse = Object.entries(route.thread_names).filter(([, value]) => value.trim());
+  for (const [warehouse, value] of perWarehouse) checkThread(value, ["thread_names", warehouse]);
+
+  // A blanket thread is only required when some scoped warehouse lacks its own.
+  const scoped = route.warehouse_codes.filter((code) => code !== "*");
+  const covered = new Set(perWarehouse.map(([warehouse]) => warehouse));
+  const everyScopedHasThread = scoped.length > 0 && scoped.every((code) => covered.has(code));
+  if (!everyScopedHasThread) checkThread(route.thread_name, ["thread_name"]);
 });
 
 /** Routes saved before tagging moved to email still carry `mention_user_ids`. */

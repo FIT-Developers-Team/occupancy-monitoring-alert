@@ -83,10 +83,12 @@ export async function dispatchToLevel(
       ]),
       // First route wins the thread: two routes sharing one webhook already
       // merge into a single post, so they cannot target two threads.
+      // Per-warehouse thread wins over the route-wide one, so a single Space
+      // can hold one thread per site.
       thread: existing?.thread ?? {
         mode: route.thread_mode,
         key: route.thread_key,
-        name: route.thread_name,
+        name: route.thread_names[alert.warehouse_code]?.trim() || route.thread_name,
       },
     });
   }

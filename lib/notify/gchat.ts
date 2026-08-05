@@ -4,6 +4,7 @@ import type { Alert } from "@/types";
 import {
   isGoogleChatWebhookUrl,
   mentionEmailsOf,
+  mentionPingIdOf,
   normalizeGoogleChatMentionIds,
 } from "@/lib/notify/gchat-url";
 
@@ -84,7 +85,9 @@ function escapeHtml(value: string): string {
 }
 
 export function googleChatMentionText(values: string[]): string {
-  return normalizeGoogleChatMentionIds(values).map((id) => `<users/${id}>`).join(" ");
+  return normalizeGoogleChatMentionIds(values)
+    .map((value) => `<users/${mentionPingIdOf(value)}>`)
+    .join(" ");
 }
 
 function addMentions(text: string, mentionTargets: string[]): string {

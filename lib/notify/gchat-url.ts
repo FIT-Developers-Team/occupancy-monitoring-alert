@@ -31,6 +31,11 @@ export function normalizeGoogleChatMentionId(value: string): string | null {
   const cleaned = value.trim().replace(/^users\//i, "");
   if (!cleaned) return null;
   if (cleaned.toLowerCase() === "all") return "all";
+  // `email=123456789012` pins the address to a Chat user ID. Chat only turns a
+  // numeric ID into a real ping, so this is the form that reliably notifies
+  // while the address stays visible to whoever reads the card.
+  const paired = cleaned.match(/^(.+?)\s*=\s*(\d{6,30})$/);
+  if (paired && EMAIL.test(paired[1].trim())) return `${paired[1].trim().toLowerCase()}=${paired[2]}`;
   if (EMAIL.test(cleaned)) return cleaned.toLowerCase();
   return /^\d{6,30}$/.test(cleaned) ? cleaned : null;
 }
@@ -39,9 +44,17 @@ export function normalizeGoogleChatMentionIds(values: string[]): string[] {
   return [...new Set(values.map(normalizeGoogleChatMentionId).filter((v): v is string => Boolean(v)))];
 }
 
-/** Mention targets that are addresses, for the human-readable PIC line. */
+/** What Chat should receive inside `<users/…>` for one normalised target. */
+export function mentionPingIdOf(value: string): string {
+  const paired = value.match(/^(.+?)=(\d{6,30})$/);
+  return paired ? paired[2] : value;
+}
+
+/** Mention targets that carry an address, for the human-readable PIC line. */
 export function mentionEmailsOf(values: string[]): string[] {
-  return normalizeGoogleChatMentionIds(values).filter((value) => EMAIL.test(value));
+  return normalizeGoogleChatMentionIds(values)
+    .map((value) => value.match(/^(.+?)=\d{6,30}$/)?.[1] ?? value)
+    .filter((value) => EMAIL.test(value));
 }
 
 const THREAD_NAME = /^spaces\/[A-Za-z0-9_-]+\/threads\/[A-Za-z0-9_-]+$/;

@@ -67,6 +67,7 @@ export async function POST(request: NextRequest) {
     thread_mode?: unknown;
     thread_key?: unknown;
     thread_name?: unknown;
+    thread_names?: unknown;
     label?: unknown;
     warehouse_code?: unknown;
     level?: unknown;
@@ -94,9 +95,18 @@ export async function POST(request: NextRequest) {
   const threadMode = body?.thread_mode === "single" || body?.thread_mode === "existing"
     ? body.thread_mode
     : "per_alert";
-  const threadName = typeof body?.thread_name === "string"
-    ? normalizeGoogleChatThreadName(body.thread_name)
-    : null;
+  // Test the thread the scoped warehouse will really use, not just the
+  // route-wide fallback.
+  const perWarehouse = body?.thread_names && typeof body.thread_names === "object"
+    ? body.thread_names as Record<string, unknown>
+    : {};
+  const scopedWarehouse = typeof body?.warehouse_code === "string"
+    ? body.warehouse_code.split(",")[0].trim()
+    : "";
+  const rawThread = typeof perWarehouse[scopedWarehouse] === "string" && perWarehouse[scopedWarehouse]
+    ? perWarehouse[scopedWarehouse] as string
+    : typeof body?.thread_name === "string" ? body.thread_name : "";
+  const threadName = normalizeGoogleChatThreadName(rawThread);
   if (threadMode === "existing" && !threadName) {
     return NextResponse.json(
       { error: "Nama thread harus berformat spaces/<space>/threads/<thread>." },

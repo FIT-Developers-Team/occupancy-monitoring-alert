@@ -15,6 +15,7 @@ interface GoogleChatRoute {
   thread_mode: "per_alert" | "single" | "existing";
   thread_key: string;
   thread_name: string;
+  thread_names: Record<string, string>;
 }
 
 interface EscalationLevel {
@@ -49,9 +50,9 @@ function routeId(): string {
 }
 
 /** Mirrors the server rule so the admin sees the problem before saving. */
-function threadNameLooksValid(route: GoogleChatRoute): boolean {
+function threadValueValid(route: GoogleChatRoute, value: string): boolean {
   if (route.thread_mode !== "existing") return true;
-  const name = normalizeGoogleChatThreadName(route.thread_name);
+  const name = normalizeGoogleChatThreadName(value);
   if (!name) return false;
   const space = googleChatSpaceOf(route.webhook_url);
   return !space || name.startsWith(`spaces/${space}/`);
@@ -84,6 +85,7 @@ function migrateLegacy(config: RecipientsConfig): RecipientsConfig {
           thread_mode: "per_alert" as const,
           thread_key: "",
           thread_name: "",
+          thread_names: {},
         })),
       ],
       gchat_webhooks: [],
@@ -214,6 +216,7 @@ export default function EscalationSettings() {
         thread_mode: "per_alert" as const,
         thread_key: "",
         thread_name: "",
+        thread_names: {},
       }],
     });
   }
@@ -241,6 +244,7 @@ export default function EscalationSettings() {
           thread_mode: route.thread_mode,
           thread_key: route.thread_key,
           thread_name: route.thread_name,
+          thread_names: route.thread_names,
           label: route.label,
           warehouse_code: route.warehouse_codes.includes("*")
             ? t("set.ui.recipients.allWarehouses")
@@ -487,21 +491,45 @@ export default function EscalationSettings() {
                           )}
                         </label>
                       )}
-                      {route.thread_mode === "existing" && (
-                        <label>
-                          <span>{t("set.ui.recipients.threadName")}</span>
-                          <input
-                            className="input num"
-                            placeholder="spaces/AAQA1b2C3d4/threads/XYZ123"
-                            value={route.thread_name}
-                            onChange={(event) => updateRoute(levelIndex, routeIndex, { thread_name: event.target.value })}
-                          />
-                          <small>{t("set.ui.recipients.threadNameHint")}</small>
-                          {attemptedSave && !threadNameLooksValid(route) && (
-                            <small className="escalation-field-error">{t("set.ui.recipients.threadNameInvalid")}</small>
-                          )}
-                        </label>
-                      )}
+                      {route.thread_mode === "existing" && (() => {
+                        const scoped = route.warehouse_codes.filter((code) => code !== "*");
+                        return (
+                          <div className="escalation-thread-map">
+                            {/* One thread per warehouse when the route is scoped;
+                                otherwise a single thread for everything it covers. */}
+                            {scoped.length > 0 ? scoped.map((warehouse) => (
+                              <label key={warehouse}>
+                                <span>{t("set.ui.recipients.threadName")} · {warehouse}</span>
+                                <input
+                                  className="input num"
+                                  placeholder="spaces/AAQA1b2C3d4/threads/XYZ123"
+                                  value={route.thread_names[warehouse] ?? ""}
+                                  onChange={(event) => updateRoute(levelIndex, routeIndex, {
+                                    thread_names: { ...route.thread_names, [warehouse]: event.target.value },
+                                  })}
+                                />
+                                {attemptedSave && !threadValueValid(route, route.thread_names[warehouse] ?? "") && (
+                                  <small className="escalation-field-error">{t("set.ui.recipients.threadNameInvalid")}</small>
+                                )}
+                              </label>
+                            )) : (
+                              <label>
+                                <span>{t("set.ui.recipients.threadName")}</span>
+                                <input
+                                  className="input num"
+                                  placeholder="spaces/AAQA1b2C3d4/threads/XYZ123"
+                                  value={route.thread_name}
+                                  onChange={(event) => updateRoute(levelIndex, routeIndex, { thread_name: event.target.value })}
+                                />
+                                {attemptedSave && !threadValueValid(route, route.thread_name) && (
+                                  <small className="escalation-field-error">{t("set.ui.recipients.threadNameInvalid")}</small>
+                                )}
+                              </label>
+                            )}
+                            <small>{t("set.ui.recipients.threadNameHint")}</small>
+                          </div>
+                        );
+                      })()}
                     </div>
                     <div className="escalation-route-footer">
                       <span>{route.warehouse_codes.includes("*") ? t("set.ui.recipients.allWarehouses") : route.warehouse_codes.join(" · ")}</span>
