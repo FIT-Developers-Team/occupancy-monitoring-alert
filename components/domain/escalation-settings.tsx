@@ -298,6 +298,25 @@ export default function EscalationSettings() {
       setFeedback({ tone: "error", text: t("set.ui.recipients.incompleteRoute") });
       return;
     }
+    // The server rejects an unusable thread target too, but only after a round
+    // trip; naming the route here is what stops a save from failing quietly.
+    const badThread = config.levels.flatMap((level) => level.gchat_routes)
+      .find((route) => {
+        if (route.thread_mode !== "existing") return false;
+        const scoped = route.warehouse_codes.filter((code) => code !== "*");
+        const values = scoped.length
+          ? scoped.map((code) => route.thread_names[code] ?? "")
+          : [route.thread_name];
+        return values.some((value) => !threadValueValid(route, value));
+      });
+    if (badThread) {
+      setAttemptedSave(true);
+      setFeedback({
+        tone: "error",
+        text: `${badThread.label}: ${t("set.ui.recipients.threadNameInvalid")}`,
+      });
+      return;
+    }
     setBusy(true);
     setFeedback({ tone: "info", text: t("set.ui.saving") });
     try {
@@ -369,8 +388,11 @@ export default function EscalationSettings() {
         </div>
         <div className="escalation-coverage-chips">
           {warehouses.map((warehouse) => {
-            const count = config.levels.reduce((total, level) => total + level.gchat_routes.filter((route) =>
-              route.enabled && (route.warehouse_codes.includes("*") || route.warehouse_codes.includes(warehouse))).length, 0);
+            // Saved coverage only. Counting the form instead made an unsaved
+            // route look live: the chip said "1", Test connection worked
+            // (it posts the form directly), yet Evaluate found nothing because
+            // it reads the stored config.
+            const count = delivery?.summary.coverage?.[warehouse] ?? 0;
             return (
               <span key={warehouse} className={`chip ${count ? "chip-accent" : "escalation-chip-missing"}`}>
                 <b>{warehouse}</b> · {count || t("set.ui.recipients.noRoute")}
@@ -379,6 +401,16 @@ export default function EscalationSettings() {
           })}
         </div>
       </section>
+
+      {dirty && (
+        <div className="escalation-unsaved" role="alert">
+          <strong>{t("set.ui.recipients.unsavedTitle")}</strong>
+          <span>{t("set.ui.recipients.unsavedBody")}</span>
+          <button className="btn btn-primary btn-sm" disabled={busy} onClick={save}>
+            {busy ? t("set.ui.saving") : t("set.ui.save")}
+          </button>
+        </div>
+      )}
 
       <div className="escalation-levels">
         {config.levels.map((level, levelIndex) => (
