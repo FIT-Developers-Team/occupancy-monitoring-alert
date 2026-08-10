@@ -320,68 +320,6 @@ export default function SettingsTabs() {
                 </div>
               </div>
 
-              <div className="zone-toggle-block">
-                <div className="zone-toggle-head">
-                  <div className="min-w-0">
-                    <span className="eyebrow">{t("set.ui.capacity.zonesTitle")}</span>
-                    <p className="zone-toggle-hint">{t("set.ui.capacity.zonesHint")}</p>
-                  </div>
-                  <span className="chip num">
-                    {disabledZones.length
-                      ? `${disabledZones.length} ${t("set.ui.capacity.zonesDisabledCount")}`
-                      : t("set.ui.capacity.zonesAllActive")}
-                  </span>
-                </div>
-
-                {(capMeta?.warehouses ?? []).length === 0 ? (
-                  <p className="zone-toggle-empty">{t("set.ui.capacity.zonesEmpty")}</p>
-                ) : (
-                  <div className="zone-toggle-list">
-                    {(capMeta?.warehouses ?? []).map((wh) => {
-                      const zones = zonesFor(wh);
-                      const activeCount = zones.filter((z) => !isZoneOff(wh, z.zone)).length;
-                      return (
-                        <div key={wh} className="zone-toggle-row">
-                          <div className="zone-toggle-wh">
-                            <strong className="num">{wh}</strong>
-                            <span className="num">
-                              {zones.length
-                                ? `${activeCount} ${t("set.ui.capacity.zonesActiveOf")} ${zones.length}`
-                                : "—"}
-                            </span>
-                          </div>
-                          <div className="zone-toggle-chips">
-                            {zones.length === 0 && (
-                              <span className="zone-toggle-none">{t("set.ui.capacity.zonesEmpty")}</span>
-                            )}
-                            {zones.map(({ zone, orphan }) => {
-                              const off = isZoneOff(wh, zone);
-                              return (
-                                <button
-                                  key={zone}
-                                  type="button"
-                                  role="switch"
-                                  aria-checked={!off}
-                                  onClick={() => toggleZone(wh, zone)}
-                                  title={orphan
-                                    ? t("set.ui.capacity.zonesOrphan")
-                                    : off
-                                      ? t("set.ui.capacity.zoneEnable")
-                                      : t("set.ui.capacity.zoneDisable")}
-                                  className={`zone-chip${off ? " is-off" : ""}${orphan ? " is-orphan" : ""}`}
-                                >
-                                  <i aria-hidden />
-                                  <span className="num">{zone}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
             </div>
 
             <div className="min-w-0 space-y-2">
@@ -523,6 +461,96 @@ export default function SettingsTabs() {
               </p>
             </div>
           </div>
+
+          {/* Zone scope. Full width on purpose: this decides which zones exist
+              for every occupancy figure, and the chips need room to be read at
+              a glance rather than hunted through a nested scroller. */}
+          <section className="card card-pad zone-scope">
+            <header className="zone-scope-head">
+              <div className="zone-scope-intro">
+                <div className="panel-title">{t("set.ui.capacity.zonesTitle")}</div>
+                <p>{t("set.ui.capacity.zonesHint")}</p>
+              </div>
+              <div className="zone-scope-status">
+                <span className={`chip num${disabledZones.length ? " zone-scope-count-off" : ""}`}>
+                  {disabledZones.length
+                    ? `${disabledZones.length} ${t("set.ui.capacity.zonesDisabledCount")}`
+                    : t("set.ui.capacity.zonesAllActive")}
+                </span>
+                <div className="zone-scope-legend">
+                  <span><i className="zone-dot-on" aria-hidden />{t("set.ui.capacity.legendOn")}</span>
+                  <span><i className="zone-dot-off" aria-hidden />{t("set.ui.capacity.legendOff")}</span>
+                  <span><i className="zone-dot-orphan" aria-hidden />{t("set.ui.capacity.legendOrphan")}</span>
+                </div>
+              </div>
+            </header>
+
+            {(capMeta?.warehouses ?? []).length === 0 ? (
+              <p className="zone-scope-empty">{t("set.ui.capacity.zonesEmpty")}</p>
+            ) : (
+              <div className="zone-scope-list">
+                {(capMeta?.warehouses ?? []).map((wh) => {
+                  const zones = zonesFor(wh);
+                  const offCount = zones.filter((z) => isZoneOff(wh, z.zone)).length;
+                  return (
+                    <div key={wh} className="zone-scope-row">
+                      <div className="zone-scope-wh">
+                        <strong className="num">{wh}</strong>
+                        {zones.length > 0 && (
+                          <span className="num">
+                            {zones.length - offCount} {t("set.ui.capacity.zonesActiveOf")} {zones.length}
+                          </span>
+                        )}
+                        {offCount > 0 && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm zone-scope-reset"
+                            onClick={() => capacity && setCapacity({
+                              ...capacity,
+                              disabled_zones: disabledZones.filter((entry) => entry.wh !== wh),
+                            })}
+                          >
+                            {t("set.ui.capacity.zonesEnableAll")}
+                          </button>
+                        )}
+                      </div>
+                      {zones.length === 0 ? (
+                        <p className="zone-scope-none">{t("set.ui.capacity.zonesNoneForWh")}</p>
+                      ) : (
+                        <div className="zone-scope-chips">
+                          {zones.map(({ zone, orphan }) => {
+                            const off = isZoneOff(wh, zone);
+                            return (
+                              <button
+                                key={zone}
+                                type="button"
+                                role="switch"
+                                aria-checked={!off}
+                                aria-label={`${wh} ${zone} — ${off
+                                  ? t("set.ui.capacity.legendOff")
+                                  : t("set.ui.capacity.legendOn")}`}
+                                onClick={() => toggleZone(wh, zone)}
+                                title={orphan
+                                  ? t("set.ui.capacity.zonesOrphan")
+                                  : off
+                                    ? t("set.ui.capacity.zoneEnable")
+                                    : t("set.ui.capacity.zoneDisable")}
+                                className={`zone-chip${off ? " is-off" : ""}${orphan ? " is-orphan" : ""}`}
+                              >
+                                <i aria-hidden />
+                                <span className="num">{zone}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
           <button className="btn btn-primary" disabled={busy}
             onClick={() => save("capacity", capacity)}>
             {t("set.ui.capacity.save")}
