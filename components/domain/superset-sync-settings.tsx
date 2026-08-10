@@ -49,6 +49,61 @@ const EMPTY_SECRET: Record<SupersetSyncSecretKey, string> = {
   access_token: "",
 };
 
+/**
+ * Read an API response that is expected to be JSON.
+ *
+ * These endpoints sit behind the auth proxy and, in production, a reverse
+ * proxy. Both answer with HTML, not JSON: the proxy redirects an expired
+ * session to /login, and a gateway timeout returns its own error page. Calling
+ * response.json() directly surfaced the raw parser message
+ * — `Unexpected token '<', "<!DOCTYPE "... is not valid JSON` —
+ * which tells an operator nothing about what actually went wrong. Read the body
+ * once as text and translate the failure into the real cause.
+ */
+async function readJsonResponse(
+  response: Response,
+  c: (id: string, en: string) => string,
+): Promise<Record<string, unknown>> {
+  const raw = await response.text().catch(() => "");
+  try {
+    return raw ? JSON.parse(raw) as Record<string, unknown> : {};
+  } catch {
+    // Not JSON. The status code identifies the layer that answered instead.
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(c(
+        "Sesi Anda berakhir. Muat ulang halaman lalu masuk kembali.",
+        "Your session has expired. Reload the page and sign in again.",
+      ));
+    }
+    if (response.status === 502 || response.status === 503 || response.status === 504) {
+      throw new Error(c(
+        `Gateway memutus permintaan (HTTP ${response.status}). Superset atau proxy belum merespons — coba lagi beberapa saat.`,
+        `The gateway ended the request (HTTP ${response.status}). Superset or the proxy did not respond — try again shortly.`,
+      ));
+    }
+    // An error page's <title> names the failure ("504 Gateway Time-out");
+    // its body is mostly inline script and styling, which would only add noise.
+    const title = raw.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
+    const snippet = (title || raw
+      .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ")
+      .replace(/<[^>]*>/g, " "))
+      .replace(/\s+/g, " ").trim().slice(0, 160);
+    throw new Error(c(
+      `Server membalas dengan format tak terduga (HTTP ${response.status})${snippet ? `: ${snippet}` : "."}`,
+      `The server replied in an unexpected format (HTTP ${response.status})${snippet ? `: ${snippet}` : "."}`,
+    ));
+  }
+}
+
+/** Message an API error body carries, falling back to a status-based line. */
+function errorMessageOf(
+  body: Record<string, unknown>,
+  response: Response,
+  fallback: string,
+): string {
+  return typeof body.error === "string" && body.error ? body.error : `${fallback} (HTTP ${response.status})`;
+}
+
 function formatDate(value?: string | null, lang: "id" | "en" = "id") {
   if (!value) return "—";
   const date = new Date(value);
@@ -79,13 +134,15 @@ export default function SupersetSyncSettings() {
 
   const loadStatus = useCallback(async () => {
     const response = await fetch("/api/superset-sync/status", { cache: "no-store" });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || c("Status sync gagal dimuat.", "Sync status could not be loaded."));
+    const body = await readJsonResponse(response, c);
+    if (!response.ok) {
+      throw new Error(errorMessageOf(body, response, c("Status sync gagal dimuat.", "Sync status could not be loaded.")));
+    }
     setStatus((current) => ({
-      ...body,
+      ...(body as unknown as StatusResponse),
       // During queued/running the API deliberately avoids opening DuckDB, so
       // retain the last safe history snapshot instead of making the UI blink.
-      history: body.history ?? current?.history ?? null,
+      history: (body.history as StatusResponse["history"]) ?? current?.history ?? null,
     }));
   }, [c]);
 
@@ -93,14 +150,18 @@ export default function SupersetSyncSettings() {
     let active = true;
     Promise.all([
       fetch("/api/superset-sync/config", { cache: "no-store" }).then(async (response) => {
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error);
-        return body as SettingsResponse;
+        const body = await readJsonResponse(response, c);
+        if (!response.ok) {
+          throw new Error(errorMessageOf(body, response, c("Konfigurasi gagal dimuat.", "Configuration could not be loaded.")));
+        }
+        return body as unknown as SettingsResponse;
       }),
       fetch("/api/superset-sync/status", { cache: "no-store" }).then(async (response) => {
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error);
-        return body as StatusResponse;
+        const body = await readJsonResponse(response, c);
+        if (!response.ok) {
+          throw new Error(errorMessageOf(body, response, c("Status sync gagal dimuat.", "Sync status could not be loaded.")));
+        }
+        return body as unknown as StatusResponse;
       }),
     ]).then(([config, currentStatus]) => {
       if (!active) return;
@@ -160,14 +221,28 @@ export default function SupersetSyncSettings() {
           clear_secrets: clearSecrets,
         }),
       });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error);
-      setSettings(body);
+      const body = await readJsonResponse(response, c);
+      if (!response.ok) {
+        throw new Error(errorMessageOf(body, response, c("Konfigurasi gagal disimpan.", "Configuration could not be saved.")));
+      }
+      setSettings(body as unknown as SettingsResponse);
       setSecrets(EMPTY_SECRET);
       setClearSecrets([]);
+      // Saving a credential now queues a pass by itself; say so, otherwise a
+      // plain "saved" leaves the admin wondering whether to press Sync now.
+      const queued = body.queued as { reused: boolean } | null | undefined;
+      const queueNote = body.queue_note as string | null | undefined;
+      if (queued) await loadStatus().catch(() => undefined);
       if (!quiet) setNotice({
-        tone: body.warning ? "info" : "ok",
-        text: body.warning || c("Konfigurasi Superset tersimpan.", "Superset configuration saved."),
+        tone: body.warning || queueNote ? "info" : "ok",
+        text: (body.warning as string)
+          || queueNote
+          || (queued
+            ? c(
+              "Kredensial tersimpan dan sinkronisasi langsung dijalankan — tidak perlu klik Sync now.",
+              "Credentials saved and a synchronisation started immediately — no need to press Sync now.",
+            )
+            : c("Konfigurasi Superset tersimpan.", "Superset configuration saved.")),
       });
       return true;
     } catch (error) {
@@ -186,9 +261,10 @@ export default function SupersetSyncSettings() {
     setBusy("test");
     try {
       const response = await fetch("/api/superset-sync/test", { method: "POST" });
-      const body = await response.json() as TestResult & { error?: string };
+      const parsed = await readJsonResponse(response, c);
+      const body = parsed as unknown as TestResult & { error?: string };
       if (!response.ok && !Array.isArray(body.datasets)) {
-        throw new Error(body.error || c("Koneksi belum valid.", "The connection is not valid yet."));
+        throw new Error(errorMessageOf(parsed, response, c("Koneksi belum valid.", "The connection is not valid yet.")));
       }
       setTestResult(body);
       setNotice({
@@ -211,8 +287,10 @@ export default function SupersetSyncSettings() {
     setNotice(null);
     try {
       const response = await fetch("/api/superset-sync/run", { method: "POST" });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error);
+      const body = await readJsonResponse(response, c);
+      if (!response.ok) {
+        throw new Error(errorMessageOf(body, response, c("Sinkronisasi gagal dijalankan.", "Synchronisation could not be started.")));
+      }
       setNotice({
         tone: "ok",
         text: body.worker_started
@@ -220,7 +298,7 @@ export default function SupersetSyncSettings() {
             "Worker berhasil dimulai dan sinkronisasi masuk antrean.",
             "The worker started and synchronisation has been queued.",
           )
-          : body.request?.reused
+          : (body.request as { reused?: boolean } | undefined)?.reused
             ? c(
               "Permintaan yang sudah ada sedang diproses.",
               "The existing request is being processed.",
@@ -282,6 +360,9 @@ export default function SupersetSyncSettings() {
   const syncActive = runtime?.state === "queued" || runtime?.state === "running";
   const databaseLockFailure = runtime?.error_category === "DATABASE_WRITE_ERROR"
     && /(used by another process|lock|cannot open file)/i.test(runtime.error ?? "");
+  // A missing secret is not a Superset outage: nothing was ever sent. Name it
+  // as configuration so nobody goes looking at the Superset instance first.
+  const authConfigFailure = runtime?.error_category === "AUTH_CONFIGURATION_ERROR";
 
   return (
     <div className="sync-settings">
@@ -386,13 +467,21 @@ export default function SupersetSyncSettings() {
           <div>
             <strong>{databaseLockFailure
               ? c("Sinkronisasi tertahan oleh pembaca database", "Synchronisation was held by a database reader")
-              : c("Sinkronisasi terakhir gagal", "Last synchronisation failed")}</strong>
+              : authConfigFailure
+                ? c("Kredensial Superset belum lengkap", "Superset credentials are incomplete")
+                : c("Sinkronisasi terakhir gagal", "Last synchronisation failed")}</strong>
             <span>{databaseLockFailure
               ? c(
                 "FIT Occupancy Alert and Monitoring akan menunggu pembaca selesai pada percobaan berikutnya. Database tidak perlu dihapus.",
                 "FIT Occupancy Alert and Monitoring will wait for readers to finish on the next attempt. The database does not need to be deleted.",
               )
               : failedJob ? `[${failedJob}] ${runtime.error}` : runtime.error}</span>
+            {authConfigFailure && (
+              <span>{c(
+                "Superset tidak pernah dihubungi — perbaikannya ada di environment deployment, bukan di Superset.",
+                "Superset was never contacted — the fix is in the deployment environment, not in Superset.",
+              )}</span>
+            )}
             {databaseLockFailure && (
               <details className="sync-error-details">
                 <summary>{c("Detail teknis", "Technical details")}</summary>

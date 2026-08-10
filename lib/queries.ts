@@ -74,7 +74,28 @@ function scopeWhere(scope: OccupancyScope, params: unknown[]): string {
 function scopeSlocPredicate(scope: OccupancyScope): string {
   // A selected zone is always operational. For warehouse totals, retain every
   // active SLOC so Qty/CBM/Bin agree with the source `active = true` filter.
-  return scope.operational || scope.zone ? OPERATIONAL_SLOC : ACTIVE_SLOC;
+  const base = scope.operational || scope.zone ? OPERATIONAL_SLOC : ACTIVE_SLOC;
+  return `${base} AND ${zoneEnabledSQL()}`;
+}
+
+/**
+ * Excludes zones an admin switched off in capacity.json.
+ *
+ * Applied inside the SQL WHERE clause rather than filtered in Node so the
+ * numerator and denominator of every ratio are drawn from the same population
+ * — a disabled zone cannot contribute stock while still contributing capacity.
+ *
+ * `coalesce` is not cosmetic here. Active SLOCs may legitimately have a NULL
+ * zone, and `NOT (wh = 'PGS' AND zone = 'X')` evaluates to NULL for those rows,
+ * which SQL treats as false in a WHERE clause. Without the coalesce this
+ * predicate would drop every unzoned location from the warehouse totals.
+ */
+function zoneEnabledSQL(slocAlias = "v", whAlias = "m"): string {
+  const disabled = getCapacity().disabled_zones;
+  if (!disabled.length) return "TRUE";
+  const pairs = disabled.map((entry) =>
+    `(${whAlias}.wh = ${sqlString(entry.wh)} AND coalesce(${slocAlias}.zone, '') = ${sqlString(entry.zone)})`);
+  return `NOT (${pairs.join(" OR ")})`;
 }
 
 function sqlList(vals: string[]): string {
@@ -318,7 +339,7 @@ async function getWarehouseBase(): Promise<WarehouseBase[]> {
                 ${cap.basis} AS basis, ${cap.capQty} AS cap_qty, ${cap.capCbm} AS cap_cbm,
                 ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
          FROM vw_sloc v ${JOIN_WH}
-         WHERE ${ACTIVE_SLOC}
+         WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()}
        ), capacities AS (
          SELECT wh,
                 sum(CASE WHEN qty_valid THEN cap_qty ELSE 0 END)::DOUBLE AS cap_qty,
@@ -437,15 +458,22 @@ export interface OccupancyScopeQuality {
   active_sloc: number;
   zoned_sloc: number;
   active_without_zone: number;
+  /** Active locations sitting in a zone an admin switched off for occupancy. */
+  disabled_zone_sloc: number;
   stock_without_operational_sloc: number;
 }
 export async function getOccupancyScopeQuality(): Promise<OccupancyScopeQuality[]> {
   return queryHistory<OccupancyScopeQuality>(
+    // active_sloc and zoned_sloc deliberately mirror the occupancy denominators,
+    // so a disabled zone leaves them. It is counted separately instead of
+    // disappearing: an operator comparing this against the master data has to be
+    // able to see where the difference went.
     `${WH_MAP()}, master AS (
        SELECT m.wh AS warehouse,
-              count(*) FILTER (WHERE ${ACTIVE_SLOC})::INT AS active_sloc,
-              count(*) FILTER (WHERE ${OPERATIONAL_SLOC})::INT AS zoned_sloc,
-              count(*) FILTER (WHERE ${ACTIVE_SLOC} AND nullif(trim(v.zone), '') IS NULL)::INT AS active_without_zone
+              count(*) FILTER (WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()})::INT AS active_sloc,
+              count(*) FILTER (WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()})::INT AS zoned_sloc,
+              count(*) FILTER (WHERE ${ACTIVE_SLOC} AND nullif(trim(v.zone), '') IS NULL)::INT AS active_without_zone,
+              count(*) FILTER (WHERE ${ACTIVE_SLOC} AND NOT (${zoneEnabledSQL()}))::INT AS disabled_zone_sloc
        FROM vw_sloc v ${JOIN_WH}
        GROUP BY 1
      ), stock_exception AS (
@@ -457,7 +485,7 @@ export async function getOccupancyScopeQuality(): Promise<OccupancyScopeQuality[
        GROUP BY 1
      )
      SELECT master.warehouse, master.active_sloc, master.zoned_sloc,
-            master.active_without_zone,
+            master.active_without_zone, master.disabled_zone_sloc,
             coalesce(stock_exception.stock_without_operational_sloc, 0)::INT AS stock_without_operational_sloc
      FROM master LEFT JOIN stock_exception USING (warehouse)
      ORDER BY 1`
@@ -624,7 +652,7 @@ export async function getHeatmapPreviews(
                 ORDER BY v.rack_zone, v.aisle, v.bay, v.level, v.bin, v.sloc_code
               )::INT AS rn
        FROM vw_sloc v ${JOIN_WH}
-       WHERE ${OPERATIONAL_SLOC} AND m.wh = ?
+       WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()} AND m.wh = ?
      ), sampled AS (
        SELECT * FROM ranked WHERE rn <= ?
      ), stock_agg AS (
@@ -724,7 +752,7 @@ export async function getHeatmapPage(
        SELECT v.sloc_id, v.sloc_code, m.wh, v.zone, v.rack_zone, v.aisle, v.bay, v.level, v.bin,
               v.storage_handling AS storage, v.max_quantity, v.max_volume, v.location_id
        FROM vw_sloc v ${JOIN_WH}
-       WHERE ${OPERATIONAL_SLOC} AND m.wh = ? AND v.zone = ?
+       WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()} AND m.wh = ? AND v.zone = ?
          ${normalizedRackZone ? "AND v.rack_zone = ?" : ""}
      ), paged AS (
        SELECT *, count(*) OVER ()::INT AS total
@@ -847,7 +875,7 @@ export async function getZoneDetail(
               ${cap.basis} AS basis, ${cap.capQty} AS cap_qty, ${cap.capCbm} AS cap_cbm,
               ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
        FROM vw_sloc v ${JOIN_WH}
-       WHERE ${OPERATIONAL_SLOC} AND m.wh = ? AND v.zone = ?
+       WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()} AND m.wh = ? AND v.zone = ?
      ), occupied AS (
        SELECT e.location_id, e.sloc_code,
               coalesce(sum(CASE
@@ -941,7 +969,7 @@ export async function getWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
               coalesce(v.storage_handling, '') AS storage_handling,
               ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
        FROM vw_sloc v ${JOIN_WH}
-       WHERE ${ACTIVE_SLOC}
+       WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()}
      )
      SELECT s._synced_at::VARCHAR AS t, e.wh,
             sum(CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END)::DOUBLE AS qty,
@@ -987,7 +1015,7 @@ export async function getFlowRates(): Promise<Map<string, FlowRate>> {
               coalesce(v.storage_handling, '') AS storage_handling,
               ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
        FROM vw_sloc v ${JOIN_WH}
-       WHERE ${ACTIVE_SLOC}
+       WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()}
      ), series AS (
        SELECT e.wh, s.location_id, s.sloc_code, s.product_id, s._synced_at AS t,
               CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END AS qty,
@@ -1246,7 +1274,7 @@ export async function getDenseSlocs(
               ${cap.basis} AS basis, ${cap.capQty} AS cap_qty, ${cap.capCbm} AS cap_cbm,
               ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
        FROM vw_sloc v ${JOIN_WH}
-       WHERE ${OPERATIONAL_SLOC}${scope.wh ? " AND m.wh = ?" : ""}
+       WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()}${scope.wh ? " AND m.wh = ?" : ""}
      ), stock_agg AS (
        SELECT e.location_id, e.sloc_code,
               coalesce(sum(s.stock_qty), 0)::DOUBLE AS occ_qty,

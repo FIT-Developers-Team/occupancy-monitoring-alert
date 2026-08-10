@@ -196,6 +196,12 @@ ruang sementara kira-kira sebesar database aktif sebelum pertukaran atomik.
 4. Di balik HTTPS set `COOKIE_SECURE=1`.
 5. Jangan commit `db/*.duckdb`, `.env`, atau `config/.superset-sync.secrets.json`
    (semuanya sudah di `.gitignore`).
+6. **Bila repo ini pernah dipakai sebelum Agustus 2026:** `config/.superset-sync.secrets.json`
+   sempat ter-commit (commit `3c64e0a`) berisi cookie sesi Superset yang aktif, dan
+   `config/users.json` berisi hash dari tiga password default yang tercetak di bagian 1.
+   Perlakukan keduanya sebagai bocor: cabut sesi Superset tersebut, ganti tiga password
+   aplikasi, lalu pertimbangkan membersihkan riwayat Git. File secrets kini sudah
+   di-`.gitignore` dan tidak lagi ter-track.
 
 ### Deployment dan login produksi
 

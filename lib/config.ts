@@ -242,8 +242,39 @@ const CapacitySchema = z.object({
   utilization_pct: z.number().min(10).max(100).default(85),
   count_statuses: z.array(z.string()).min(1).default(["Available"]),
   exclude_categories: z.array(z.string()).default([]),
+  /**
+   * Zones that must not take part in any occupancy figure.
+   *
+   * A warehouse carries zones that exist in the master data but hold no real
+   * storage — staging, virtual, or transit areas with no capacity. Counting
+   * them adds locations to the denominator that can never be filled, which
+   * quietly drags the warehouse percentage down and makes a full site look
+   * comfortable. Listing a zone here removes it from both the numerator and the
+   * denominator everywhere occupancy is computed, so the remaining percentage
+   * describes only space that can actually be used.
+   *
+   * Only the `zone` column is matched, never `rack_zone`: this is a decision
+   * about an area of the warehouse, and matching both would silently disable
+   * rack blocks that happen to share a name.
+   */
+  disabled_zones: z.array(z.object({
+    wh: z.string().trim().min(1).max(20),
+    zone: z.string().trim().min(1).max(40),
+    note: z.string().trim().max(200).default(""),
+  })).default([]),
   rules: z.array(CapacityRule).default([]),
 }).superRefine((v, ctx) => {
+  const seen = new Set<string>();
+  v.disabled_zones.forEach((entry, i) => {
+    const key = `${entry.wh}|${entry.zone}`;
+    if (seen.has(key)) {
+      ctx.addIssue({
+        code: "custom", path: ["disabled_zones", i],
+        message: `Zona ${entry.zone} pada ${entry.wh} tercatat lebih dari sekali.`,
+      });
+    }
+    seen.add(key);
+  });
   v.rules.forEach((r, i) => {
     const hasCat = !!r.scope.l1_category;
     const capKeys = [r.set.basis, r.set.max_qty, r.set.max_cbm, r.set.utilization_pct]
@@ -289,6 +320,21 @@ function readSection<T>(section: ConfigSection): T {
   return parsed as T;
 }
 
+/**
+ * Zones switched off for occupancy, keyed `WH|ZONE`.
+ *
+ * Shared by the SQL predicate in lib/queries.ts and the Node-side checks so a
+ * zone can never be excluded from one and counted by the other.
+ */
+export function disabledZoneKeys(): Set<string> {
+  return new Set(getCapacity().disabled_zones.map((entry) => `${entry.wh}|${entry.zone}`));
+}
+
+export function isZoneDisabled(warehouseCode: string, zone: string | null | undefined): boolean {
+  if (!zone) return false;
+  return disabledZoneKeys().has(`${warehouseCode}|${zone}`);
+}
+
 export const getThresholds = () => readSection<ThresholdConfig>("thresholds");
 export const getRules = () => readSection<RulesConfig>("rules");
 export const getRecipients = () => readSection<RecipientsConfig>("recipients");
@@ -306,6 +352,15 @@ export function writeSection(section: ConfigSection, data: unknown): unknown {
         if (unknown.length) throw new Error(`Warehouse pada rute Google Chat tidak dikenal: ${unknown.join(", ")}.`);
       }
     }
+  }
+  if (section === "capacity") {
+    // A typo in a warehouse code would silently disable nothing, leaving the
+    // admin convinced a zone was excluded while it still counts.
+    const knownWarehouses = new Set(getWarehouses().warehouses.map((warehouse) => warehouse.code));
+    const unknown = (parsed as CapacityConfig).disabled_zones
+      .filter((entry) => !knownWarehouses.has(entry.wh))
+      .map((entry) => `${entry.wh}/${entry.zone}`);
+    if (unknown.length) throw new Error(`Warehouse pada zona nonaktif tidak dikenal: ${unknown.join(", ")}.`);
   }
   const file = sectionFile(section, true);
   fs.mkdirSync(path.dirname(file), { recursive: true });

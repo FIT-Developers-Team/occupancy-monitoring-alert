@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { currentUser, isAdmin } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
+  assertSupersetSyncCredentials,
   getSupersetSyncSettings,
+  requestSupersetSync,
   writeSupersetSyncSettings,
 } from "@/lib/superset-sync";
 
@@ -29,12 +31,29 @@ export async function PUT(request: NextRequest) {
   const body = await request.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Body JSON tidak valid." }, { status: 400 });
   let before: ReturnType<typeof getSupersetSyncSettings>;
-  let after: ReturnType<typeof getSupersetSyncSettings>;
+  let after: ReturnType<typeof writeSupersetSyncSettings>;
   try {
     before = getSupersetSyncSettings();
     after = writeSupersetSyncSettings(body);
   } catch (error) {
     return NextResponse.json({ error: `Validasi gagal: ${(error as Error).message}` }, { status: 400 });
+  }
+
+  // Saving a credential is the admin saying "use this now". Queue a pass right
+  // away so a pasted cookie proves itself in seconds instead of sitting until
+  // the next scheduled run — the reason this screen used to need a second
+  // trip through "Sync now". Never let this fail the save: the credential is
+  // already stored and the scheduler will pick it up regardless.
+  let queued: { request_id: string; reused: boolean } | null = null;
+  let queueNote: string | null = null;
+  if (after.auth_changed) {
+    try {
+      assertSupersetSyncCredentials();
+      const requested = requestSupersetSync(user.username);
+      queued = { request_id: requested.request_id, reused: requested.reused };
+    } catch (error) {
+      queueNote = (error as Error).message;
+    }
   }
   try {
     await audit(
@@ -54,8 +73,10 @@ export async function PUT(request: NextRequest) {
     console.error("Audit konfigurasi Superset gagal:", error);
     return NextResponse.json({
       ...after,
+      queued,
+      queue_note: queueNote,
       warning: "Konfigurasi tersimpan, tetapi Audit Trail belum tercatat. Pastikan hanya satu instance FIT Occupancy Alert and Monitoring memakai database state.",
     });
   }
-  return NextResponse.json(after);
+  return NextResponse.json({ ...after, queued, queue_note: queueNote });
 }

@@ -34,11 +34,13 @@ interface CapRule {
   set: { basis?: "qty" | "cbm"; max_qty?: number; max_cbm?: number; utilization_pct?: number; count?: boolean };
   note: string;
 }
+interface DisabledZone { wh: string; zone: string; note: string }
 interface Capacity {
   basis_default: "qty" | "cbm";
   utilization_pct: number;
   count_statuses: string[];
   exclude_categories: string[];
+  disabled_zones: DisabledZone[];
   rules: CapRule[];
 }
 interface CapMeta {
@@ -106,6 +108,40 @@ export default function SettingsTabs() {
     { id: "capacity" as const, label: t("set.ui.tab.capacity") },
     { id: "recipients" as const, label: t("set.ui.tab.recipients") },
   ];
+
+  // ---- zona aktif/nonaktif ---------------------------------------------------
+  // Config written before this feature has no disabled_zones; the API defaults
+  // it, but read defensively so an older cached payload cannot crash the panel.
+  const disabledZones: DisabledZone[] = capacity?.disabled_zones ?? [];
+  const isZoneOff = (wh: string, zone: string) =>
+    disabledZones.some((entry) => entry.wh === wh && entry.zone === zone);
+
+  const toggleZone = (wh: string, zone: string) => {
+    if (!capacity) return;
+    const off = isZoneOff(wh, zone);
+    setCapacity({
+      ...capacity,
+      disabled_zones: off
+        ? disabledZones.filter((entry) => !(entry.wh === wh && entry.zone === zone))
+        : [...disabledZones, { wh, zone, note: "" }],
+    });
+  };
+
+  /**
+   * Zones to offer per warehouse: what the master data currently holds, plus
+   * anything already switched off. A zone that disappeared from the sync would
+   * otherwise stay disabled with no way to see or undo it.
+   */
+  const zonesFor = (wh: string): Array<{ zone: string; orphan: boolean }> => {
+    const known = capMeta?.zones?.[wh] ?? [];
+    const orphans = disabledZones
+      .filter((entry) => entry.wh === wh && !known.includes(entry.zone))
+      .map((entry) => entry.zone);
+    return [
+      ...known.map((zone) => ({ zone, orphan: false })),
+      ...orphans.map((zone) => ({ zone, orphan: true })),
+    ];
+  };
 
   // ---- helper kapasitas ------------------------------------------------------
   const addCapRule = () => {
@@ -282,6 +318,69 @@ export default function SettingsTabs() {
                     </label>
                   ))}
                 </div>
+              </div>
+
+              <div className="zone-toggle-block">
+                <div className="zone-toggle-head">
+                  <div className="min-w-0">
+                    <span className="eyebrow">{t("set.ui.capacity.zonesTitle")}</span>
+                    <p className="zone-toggle-hint">{t("set.ui.capacity.zonesHint")}</p>
+                  </div>
+                  <span className="chip num">
+                    {disabledZones.length
+                      ? `${disabledZones.length} ${t("set.ui.capacity.zonesDisabledCount")}`
+                      : t("set.ui.capacity.zonesAllActive")}
+                  </span>
+                </div>
+
+                {(capMeta?.warehouses ?? []).length === 0 ? (
+                  <p className="zone-toggle-empty">{t("set.ui.capacity.zonesEmpty")}</p>
+                ) : (
+                  <div className="zone-toggle-list">
+                    {(capMeta?.warehouses ?? []).map((wh) => {
+                      const zones = zonesFor(wh);
+                      const activeCount = zones.filter((z) => !isZoneOff(wh, z.zone)).length;
+                      return (
+                        <div key={wh} className="zone-toggle-row">
+                          <div className="zone-toggle-wh">
+                            <strong className="num">{wh}</strong>
+                            <span className="num">
+                              {zones.length
+                                ? `${activeCount} ${t("set.ui.capacity.zonesActiveOf")} ${zones.length}`
+                                : "—"}
+                            </span>
+                          </div>
+                          <div className="zone-toggle-chips">
+                            {zones.length === 0 && (
+                              <span className="zone-toggle-none">{t("set.ui.capacity.zonesEmpty")}</span>
+                            )}
+                            {zones.map(({ zone, orphan }) => {
+                              const off = isZoneOff(wh, zone);
+                              return (
+                                <button
+                                  key={zone}
+                                  type="button"
+                                  role="switch"
+                                  aria-checked={!off}
+                                  onClick={() => toggleZone(wh, zone)}
+                                  title={orphan
+                                    ? t("set.ui.capacity.zonesOrphan")
+                                    : off
+                                      ? t("set.ui.capacity.zoneEnable")
+                                      : t("set.ui.capacity.zoneDisable")}
+                                  className={`zone-chip${off ? " is-off" : ""}${orphan ? " is-orphan" : ""}`}
+                                >
+                                  <i aria-hidden />
+                                  <span className="num">{zone}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 

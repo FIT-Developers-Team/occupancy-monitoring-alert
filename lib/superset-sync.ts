@@ -8,7 +8,31 @@ const ROOT = process.cwd();
 const CONFIG_DIR = path.join(ROOT, "config");
 const DB_DIR = path.join(ROOT, "db");
 const CONFIG_FILE = path.join(CONFIG_DIR, "superset-sync.json");
-const SECRETS_FILE = path.join(CONFIG_DIR, ".superset-sync.secrets.json");
+/**
+ * Where the Superset credential actually lives at runtime.
+ *
+ * It used to be written into `config/`, which does not survive a container
+ * rebuild: `.dockerignore` keeps the secrets file out of the image on purpose,
+ * so `/app/config` starts empty and an admin had to paste the cookie again
+ * after every deploy. `db/` is the volume that demonstrably persists — the
+ * DuckDB history lives there — so the credential belongs beside it, exactly as
+ * `lib/config.ts` already does for recipients.
+ *
+ * Reads still fall back to the old path so existing installations keep working
+ * until their next save migrates them.
+ */
+const RUNTIME_CONFIG_DIR = process.env.WIOM_RUNTIME_CONFIG_DIR?.trim()
+  ? path.resolve(process.env.WIOM_RUNTIME_CONFIG_DIR.trim())
+  : path.join(DB_DIR, "runtime-config");
+const SECRETS_BASENAME = ".superset-sync.secrets.json";
+const LEGACY_SECRETS_FILE = path.join(CONFIG_DIR, SECRETS_BASENAME);
+const RUNTIME_SECRETS_FILE = path.join(RUNTIME_CONFIG_DIR, SECRETS_BASENAME);
+
+/** Runtime location for writes; whichever exists for reads (runtime wins). */
+function secretsFile(forWrite = false): string {
+  if (forWrite || fs.existsSync(RUNTIME_SECRETS_FILE)) return RUNTIME_SECRETS_FILE;
+  return LEGACY_SECRETS_FILE;
+}
 const STATUS_FILE = path.join(DB_DIR, ".superset-sync-status.json");
 const REQUEST_FILE = path.join(DB_DIR, ".superset-sync-request.json");
 const HEARTBEAT_FILE = path.join(DB_DIR, ".superset-sync-heartbeat.json");
@@ -278,7 +302,7 @@ export function getSupersetSyncConfig(): SupersetSyncConfig {
 }
 
 function getStoredSecrets(): z.infer<typeof SecretSchema> {
-  const parsed = SecretSchema.safeParse(readJson(SECRETS_FILE) ?? {});
+  const parsed = SecretSchema.safeParse(readJson(secretsFile()) ?? {});
   return parsed.success ? parsed.data : { auth: {} };
 }
 
@@ -345,14 +369,24 @@ export function writeSupersetSyncSettings(input: unknown) {
   const validated = SupersetSyncConfigSchema.parse(config);
 
   const stored = getStoredSecrets();
+  const authBefore = JSON.stringify(stored.auth);
+  const modeBefore = getSupersetSyncConfig().superset.auth.mode;
   for (const key of parsed.clear_secrets) delete stored.auth[key];
   for (const [key, value] of Object.entries(parsed.secrets) as Array<[SupersetSyncSecretKey, string | undefined]>) {
     if (value?.trim()) stored.auth[key] = value.trim();
   }
 
   writeJsonAtomic(CONFIG_FILE, validated);
-  writeJsonAtomic(SECRETS_FILE, stored, 0o600);
-  return getSupersetSyncSettings();
+  writeJsonAtomic(secretsFile(true), stored, 0o600);
+  return {
+    ...getSupersetSyncSettings(),
+    // The daemon reloads secrets every pass, so a freshly pasted cookie is
+    // already live — but the next pass can be up to interval_seconds away.
+    // Callers use this to start one immediately instead of making the admin
+    // paste a credential and then hunt for a second button.
+    auth_changed: JSON.stringify(stored.auth) !== authBefore
+      || validated.superset.auth.mode !== modeBefore,
+  };
 }
 
 export function getSupersetSyncStatus(): SupersetSyncStatus {
@@ -433,17 +467,31 @@ export function assertSupersetSyncCredentials(): void {
   const cookie = secretValue("cookie_header");
   const bearer = secretValue("access_token");
   const hasLogin = Boolean(auth.username && password);
+  // Wording mirrors AuthConfigurationError in scripts/superset_to_duckdb.py so a
+  // manual run and a scheduled pass explain the same fault the same way.
   if (auth.mode === "login" && !hasLogin) {
-    throw new Error("Mode login membutuhkan nama pengguna dan kata sandi Superset.");
+    throw new Error(
+      "Mode login membutuhkan nama pengguna dan kata sandi Superset "
+      + "(SUPERSET_USERNAME + SUPERSET_PASSWORD).",
+    );
   }
   if (auth.mode === "cookie" && !cookie) {
-    throw new Error("Cookie Superset belum dikonfigurasi.");
+    throw new Error(
+      "Cookie Superset belum dikonfigurasi. Pada deployment container file "
+      + "config/.superset-sync.secrets.json sengaja tidak ikut ke image, jadi isi "
+      + "SUPERSET_COOKIE_HEADER atau SUPERSET_SESSION_COOKIE pada environment. "
+      + "Cookie juga kedaluwarsa — mode 'auto' dengan SUPERSET_USERNAME/SUPERSET_PASSWORD "
+      + "lebih tahan lama untuk deployment tanpa penjagaan.",
+    );
   }
   if (auth.mode === "bearer" && !bearer) {
-    throw new Error("Access token Superset belum dikonfigurasi.");
+    throw new Error("Access token Superset belum dikonfigurasi (SUPERSET_ACCESS_TOKEN).");
   }
   if (auth.mode === "auto" && !hasLogin && !cookie && !bearer) {
-    throw new Error("Kredensial Superset belum dikonfigurasi.");
+    throw new Error(
+      "Kredensial Superset belum dikonfigurasi. Isi SUPERSET_USERNAME + SUPERSET_PASSWORD, "
+      + "atau SUPERSET_COOKIE_HEADER, pada environment deployment.",
+    );
   }
 }
 

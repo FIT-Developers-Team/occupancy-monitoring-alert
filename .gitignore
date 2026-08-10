@@ -9,6 +9,13 @@
 !.env.example
 !.env.*.example
 
+# Superset credentials (session cookie / password / bearer token). Written by
+# Settings -> Superset Sync at runtime and read by scripts/superset_to_duckdb.py.
+# Never commit: a live session cookie is a working credential for the Superset
+# account. The .example file next to it documents the shape.
+config/.superset-sync.secrets.json
+!config/.superset-sync.secrets.json.example
+
 
 # =========================================================
 # NEXT.JS / NODE.JS

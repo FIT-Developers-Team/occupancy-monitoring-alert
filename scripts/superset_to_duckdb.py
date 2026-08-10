@@ -283,13 +283,29 @@ def load_runtime_config(config_path: str) -> Dict[str, Any]:
     if not config:
         raise ValueError(f"Konfigurasi sync tidak valid atau tidak ditemukan: {config_path}")
 
+    # The web app writes credentials to the persistent db/ volume (see
+    # RUNTIME_CONFIG_DIR in lib/superset-sync.ts); older installs still have
+    # them beside the config file. Read the runtime copy first and fall back,
+    # so a cookie saved in Settings is picked up without touching this config.
     secret_ref = config.get("secret_file")
     secret_data: Dict[str, Any] = {}
     if secret_ref:
-        secret_path = str(secret_ref)
-        if not os.path.isabs(secret_path):
-            secret_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), secret_path)
-        secret_data = _read_json(secret_path) or {}
+        config_dir = os.path.dirname(os.path.abspath(config_path))
+        secret_ref = str(secret_ref)
+        runtime_dir = (os.getenv("WIOM_RUNTIME_CONFIG_DIR") or "").strip()
+        if not runtime_dir:
+            runtime_dir = os.path.join(os.path.dirname(config_dir), "db", "runtime-config")
+        candidates = []
+        if os.path.isabs(secret_ref):
+            candidates.append(secret_ref)
+        else:
+            candidates.append(os.path.join(runtime_dir, os.path.basename(secret_ref)))
+            candidates.append(os.path.join(config_dir, secret_ref))
+        for candidate in candidates:
+            secret_data = _read_json(candidate) or {}
+            if secret_data:
+                log.info("Kredensial Superset dibaca dari %s", candidate)
+                break
 
     superset = config.setdefault("superset", {})
     auth = superset.setdefault("auth", {})
@@ -319,6 +335,17 @@ def load_runtime_config(config_path: str) -> Dict[str, Any]:
 
 def _iso_after(seconds: float) -> str:
     return datetime.fromtimestamp(time.time() + max(0, seconds), tz=timezone.utc).isoformat()
+
+
+class AuthConfigurationError(ValueError):
+    """
+    The configured auth mode cannot be satisfied by the secrets available.
+
+    This is a deployment/configuration fault, not a Superset fault: nothing was
+    ever sent to the server. Kept as its own type so classify_error() can label
+    it exactly instead of inferring from message text, which previously let it
+    fall through to UNKNOWN_ERROR and told the operator nothing.
+    """
 
 
 # ----------------------------------------------------------------------------- #
@@ -366,14 +393,30 @@ class SupersetClient:
         has_creds = bool(auth.get("username") and auth.get("password"))
         mode = auth.get("mode", "auto")
         if mode == "bearer":
+            if not str(auth.get("access_token") or "").strip():
+                raise AuthConfigurationError(
+                    "auth.mode='bearer' tetapi access token kosong. "
+                    "Isi SUPERSET_ACCESS_TOKEN pada environment deployment, atau "
+                    "simpan lewat Pengaturan → Superset Sync.")
             self.s.headers["Authorization"] = f"Bearer {auth['access_token']}"
         elif mode == "cookie":
             if not has_cookies:
-                raise ValueError("auth.mode='cookie' tetapi cookies/cookie_header kosong")
+                # The secrets file is excluded from the deployment image on
+                # purpose (.dockerignore), so in a container this mode only
+                # works when the cookie arrives through the environment.
+                raise AuthConfigurationError(
+                    "auth.mode='cookie' tetapi cookie kosong. Pada deployment container "
+                    "file config/.superset-sync.secrets.json sengaja tidak ikut ke image, "
+                    "jadi cookie harus datang dari environment: isi SUPERSET_COOKIE_HEADER "
+                    "(seluruh nilai header Cookie dari DevTools) atau SUPERSET_SESSION_COOKIE. "
+                    "Untuk deployment yang tidak dijaga, auth.mode='auto' + "
+                    "SUPERSET_USERNAME/SUPERSET_PASSWORD lebih tahan lama karena cookie kedaluwarsa.")
         elif mode in ("login", "auto"):
             if mode == "auto" and not has_creds:
                 if not has_cookies:
-                    raise ValueError("auth: isi username+password ATAU cookie_header/cookies")
+                    raise AuthConfigurationError(
+                        "Kredensial Superset kosong. Isi SUPERSET_USERNAME + SUPERSET_PASSWORD, "
+                        "atau SUPERSET_COOKIE_HEADER, pada environment deployment.")
                 log.info("Auth: memakai cookie (tanpa kredensial login)")
             else:
                 try:
@@ -386,7 +429,7 @@ class SupersetClient:
                     else:
                         raise
         else:
-            raise ValueError(f"Unknown auth mode: {mode}")
+            raise AuthConfigurationError(f"Unknown auth mode: {mode}")
         self.csrf = self._fetch_csrf() if auth.get("csrf", True) else None
         if self.csrf:
             self.s.headers["X-CSRFToken"] = self.csrf
@@ -426,6 +469,11 @@ class SupersetClient:
     def classify_error(error: Exception) -> str:
         """Classify an exception into a structured error category."""
         msg = str(error)
+        # Checked by type, before any message sniffing: a missing secret is a
+        # configuration fault the operator can fix, and it must never be
+        # reported as UNKNOWN_ERROR or confused with a rejected login.
+        if isinstance(error, AuthConfigurationError):
+            return "AUTH_CONFIGURATION_ERROR"
         if "HTTP 401" in msg or "login" in msg.lower():
             return "SUPERSET_AUTH_ERROR"
         if "HTTP 403" in msg or "CSRF" in msg.upper():
@@ -2441,14 +2489,24 @@ def run_runtime_check(config: Dict[str, Any], require_auth: bool = False) -> Non
                      and str(auth.get("password") or "").strip())
     has_cookie = bool(str(auth.get("cookie_header") or "").strip())
     has_bearer = bool(str(auth.get("access_token") or "").strip())
+    # Same fault class as the client constructor, so the bootstrap preflight and
+    # a real pass report an identical, actionable category.
     if require_auth and mode == "login" and not has_login:
-        raise ValueError("Mode login membutuhkan username dan password Superset.")
+        raise AuthConfigurationError(
+            "Mode login membutuhkan username dan password Superset "
+            "(SUPERSET_USERNAME + SUPERSET_PASSWORD).")
     if require_auth and mode == "cookie" and not has_cookie:
-        raise ValueError("Mode cookie membutuhkan cookie Superset.")
+        raise AuthConfigurationError(
+            "Mode cookie membutuhkan cookie Superset. Pada deployment container isi "
+            "SUPERSET_COOKIE_HEADER atau SUPERSET_SESSION_COOKIE — file secrets lokal "
+            "sengaja tidak ikut ke image.")
     if require_auth and mode == "bearer" and not has_bearer:
-        raise ValueError("Mode bearer membutuhkan access token Superset.")
+        raise AuthConfigurationError(
+            "Mode bearer membutuhkan access token Superset (SUPERSET_ACCESS_TOKEN).")
     if require_auth and mode == "auto" and not (has_login or has_cookie or has_bearer):
-        raise ValueError("Kredensial Superset belum dikonfigurasi.")
+        raise AuthConfigurationError(
+            "Kredensial Superset belum dikonfigurasi. Isi SUPERSET_USERNAME + "
+            "SUPERSET_PASSWORD, atau SUPERSET_COOKIE_HEADER, pada environment deployment.")
 
     jobs = [job for job in (config.get("jobs") or []) if job.get("enabled", True)]
     if not jobs:
