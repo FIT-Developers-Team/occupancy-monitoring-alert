@@ -97,13 +97,19 @@ DROP INDEX IF EXISTS idx_count_sloc;
 -- Turunan
 -- Dataset master di produksi ber-grain rack×product (planogram) — dedupe ke 1 baris per rak.
 -- Prioritas baris: active=true dulu, lalu sloc_id terkecil (deterministik).
+-- Dedupe key is (location_id, sloc_code), not sloc_code alone. Rack codes are
+-- only unique inside a warehouse: 31 codes are reused across sites, so
+-- partitioning by the code by itself kept one rack and silently discarded its
+-- namesakes in every other warehouse. That removed 30 active racks from the
+-- occupancy denominators, heatmaps and alerts — BGO alone lost 26 of its 1,640.
+-- Every query joins on (location_id, sloc_code); the view now matches.
 CREATE OR REPLACE VIEW vw_sloc AS
 SELECT *,
        regexp_replace(rack_zone, '[0-9]+$', '') AS zone,   -- SRA1 -> SRA
        coalesce(nullif(area, ''), split_part(sloc_code, '-', 1)) AS wh
 FROM master_sloc
 QUALIFY row_number() OVER (
-    PARTITION BY sloc_code
+    PARTITION BY location_id, sloc_code
     ORDER BY (CASE WHEN active THEN 0 ELSE 1 END), sloc_id
 ) = 1;
 

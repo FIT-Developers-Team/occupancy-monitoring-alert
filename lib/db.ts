@@ -159,6 +159,9 @@ async function ensureHistoryReplica(): Promise<string> {
             await fs.promises.unlink(staging).catch(() => undefined);
             continue;
           }
+          // Prepare the snapshot while it is still staging, so a file named
+          // `history-<version>.duckdb` is only ever a fully ready replica.
+          await materialiseReplicaViews(staging);
           await fs.promises.rename(staging, target).catch(async (error: NodeJS.ErrnoException) => {
             await fs.promises.unlink(staging).catch(() => undefined);
             if (error.code !== "EEXIST") throw error;
@@ -170,6 +173,7 @@ async function ensureHistoryReplica(): Promise<string> {
       }
       replicaVersion = nextVersion;
       replicaPath = target;
+      void pruneSupersededReplicas(target);
       return target;
     }
     throw new Error("Database sedang disinkronkan; snapshot baca belum stabil.");
@@ -178,6 +182,88 @@ async function ensureHistoryReplica(): Promise<string> {
   });
   return replicaOpening;
 }
+
+/**
+ * Turn the two dashboard views into real tables inside the private replica.
+ *
+ * `vw_sloc` deduplicates 358k planogram rows with a window function and
+ * `vw_stock_latest` re-scans 1.7M history rows for the newest snapshot — on
+ * every query. Measured against this database, paying that once per snapshot
+ * instead cuts the warehouse scope query by 70% and the trend and zone queries
+ * by about a fifth, for ~1.4s of one-off work per sync.
+ *
+ * The replica is a disposable process-local copy, so writing to it cannot
+ * affect the source database or the sync worker. Failure is non-fatal: the
+ * original views are still there and queries simply run at the old speed.
+ */
+async function materialiseReplicaViews(file: string): Promise<void> {
+  let db: duckdb.Database | null = null;
+  try {
+    db = await openAsync(file);
+    await execAsync(
+      db,
+      `SET threads = ${HISTORY_THREADS}; SET memory_limit = '${HISTORY_MEMORY}';
+       SET preserve_insertion_order = false; SET temp_directory = '${HISTORY_TEMP}';
+       CREATE OR REPLACE TABLE _sloc_current AS SELECT * FROM vw_sloc;
+       CREATE OR REPLACE VIEW vw_sloc AS SELECT * FROM _sloc_current;
+       CREATE OR REPLACE TABLE _stock_current AS SELECT * FROM vw_stock_latest;
+       CREATE OR REPLACE VIEW vw_stock_latest AS SELECT * FROM _stock_current;
+       CHECKPOINT;`,
+    );
+  } catch (error) {
+    console.warn(
+      `[WIOM] Materialisasi replika dilewati (${(error as Error).message.slice(0, 160)}) — dashboard tetap jalan dengan view asli.`,
+    );
+  } finally {
+    if (db) await closeAsync(db);
+  }
+}
+
+/**
+ * Delete replicas of older snapshots left in this process's directory.
+ *
+ * disposeReader only unlinks a file that is no longer the current replica, so
+ * the previous snapshot survived every sync and the directory grew by another
+ * full copy of the database each time.
+ */
+async function pruneSupersededReplicas(keep: string): Promise<void> {
+  try {
+    const entries = await fs.promises.readdir(HISTORY_REPLICA_DIR);
+    await Promise.all(entries.map(async (entry) => {
+      const full = path.join(HISTORY_REPLICA_DIR, entry);
+      if (full === keep || (reader && reader.file === full)) return;
+      if (!/^history-.*\.duckdb(\.\d+\.tmp)?$/.test(entry)) return;
+      await fs.promises.unlink(full).catch(() => undefined);
+    }));
+  } catch {
+    // Best effort: a replica left behind costs disk, never correctness.
+  }
+}
+
+/**
+ * Remove replica directories belonging to processes that no longer exist.
+ *
+ * The exit hook only runs on a clean shutdown; a crash, a container restart or
+ * a dev-server reload leaves a full copy of the database behind. Measured on
+ * this machine: seven abandoned directories holding 884 MB.
+ */
+function sweepAbandonedReplicaDirs(): void {
+  const root = path.dirname(HISTORY_REPLICA_DIR);
+  let entries: string[];
+  try { entries = fs.readdirSync(root); } catch { return; }
+  for (const entry of entries) {
+    const pid = Number.parseInt(entry, 10);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    try {
+      // Signal 0 tests for existence without touching the process.
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue;
+      fs.rmSync(path.join(root, entry), { recursive: true, force: true });
+    }
+  }
+}
+sweepAbandonedReplicaDirs();
 
 function disposeReader(target: SharedReader): void {
   if (reader === target) reader = null;

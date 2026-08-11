@@ -1051,6 +1051,24 @@
 }
 .rules-add span { font-size: 13px; line-height: 1; }
 
+/* Route transition bar. Sits above the sticky topbar (z 30) but below dialogs
+   (z 50+), so it never competes with something the operator opened. */
+.route-progress {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+  height: 2px; pointer-events: none; background: transparent;
+}
+.route-progress span {
+  display: block; height: 100%;
+  background: linear-gradient(90deg,
+    color-mix(in oklab, var(--accent) 55%, transparent), var(--accent));
+  box-shadow: 0 0 8px color-mix(in oklab, var(--accent) 45%, transparent);
+  border-radius: 0 2px 2px 0;
+  transition: width 260ms cubic-bezier(.22, .61, .36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .route-progress span { transition: none; }
+}
+
 .loading-hold { height: 100%; width: 100%; }
 .loading-popup { display: grid; place-items: center; pointer-events: none; }
 .loading-popup-overlay { position: fixed; inset: 0; z-index: 80; }
