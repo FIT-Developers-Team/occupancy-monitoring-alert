@@ -76,7 +76,11 @@ function closeAsync(db: duckdb.Database): Promise<void> {
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const isRetryableHistoryError = (error: unknown) =>
-  /(lock|locked|busy|conflict|another process|cannot open file)/i.test(
+  // A sync write window is transient by construction, so it is retryable no
+  // matter what its wording is. Checked by type first: relying on the message
+  // alone is what let this failure reach the page as a dead end.
+  error instanceof HistoryWriterBusyError
+  || /(lock|locked|busy|conflict|another process|cannot open file)/i.test(
     error instanceof Error ? error.message : String(error),
   );
 
@@ -96,12 +100,33 @@ function historyWriterPending(): boolean {
   }
 }
 
-async function waitForHistoryWriter(): Promise<void> {
-  const deadline = Date.now() + 45_000;
-  while (historyWriterPending() && Date.now() < deadline) await sleep(150);
-  if (historyWriterPending()) {
-    throw new Error("Sinkronisasi sedang memperbarui database. Coba lagi setelah proses tulis selesai.");
+/**
+ * Raised while the sync worker holds its write window.
+ *
+ * Marked as its own type because it is always transient — the worker releases
+ * the marker within seconds. It used to surface as a plain Error whose text
+ * matched none of the retry patterns, so a page opened during a sync went
+ * straight to the error boundary and the operator saw "Coba lagi" on a
+ * dashboard whose data was perfectly readable a moment earlier.
+ */
+class HistoryWriterBusyError extends Error {
+  constructor() {
+    super("Sinkronisasi sedang memperbarui database. Coba lagi setelah proses tulis selesai.");
+    this.name = "HistoryWriterBusyError";
   }
+}
+
+/**
+ * Wait for the sync worker's write window to close.
+ *
+ * The wait is deliberately short: callers either fall back to the snapshot
+ * already on disk or retry, both of which serve the operator better than
+ * blocking a page render for the better part of a minute.
+ */
+async function waitForHistoryWriter(timeoutMs = 6_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (historyWriterPending() && Date.now() < deadline) await sleep(120);
+  if (historyWriterPending()) throw new HistoryWriterBusyError();
 }
 
 // ---- history DB: shared, short-lived replica reader ------------------------
@@ -146,7 +171,19 @@ async function ensureHistoryReplica(): Promise<string> {
     // appears while copying, discard the partial snapshot and retry after the
     // writer closes so readers never observe a torn database file.
     for (let attempt = 0; attempt < 4; attempt++) {
-      await waitForHistoryWriter();
+      try {
+        await waitForHistoryWriter();
+      } catch (error) {
+        // A sync is mid-write. The replica already on disk is a complete,
+        // internally consistent snapshot from the previous pass, so serve that
+        // rather than failing the page: one cycle of staleness is a far better
+        // answer than an error boundary, and the next request picks up the new
+        // version as soon as the writer releases.
+        if (error instanceof HistoryWriterBusyError && replicaPath && fs.existsSync(replicaPath)) {
+          return replicaPath;
+        }
+        throw error;
+      }
       const before = await fs.promises.stat(HISTORY_PATH);
       const nextVersion = historyVersionFromStat(before);
       const target = path.join(HISTORY_REPLICA_DIR, `history-${nextVersion}.duckdb`);
@@ -176,7 +213,10 @@ async function ensureHistoryReplica(): Promise<string> {
       void pruneSupersededReplicas(target);
       return target;
     }
-    throw new Error("Database sedang disinkronkan; snapshot baca belum stabil.");
+    // Four attempts and the file kept moving underneath us. Same reasoning as
+    // the busy-writer path: an older complete snapshot beats no dashboard.
+    if (replicaPath && fs.existsSync(replicaPath)) return replicaPath;
+    throw new HistoryWriterBusyError();
   })().finally(() => {
     replicaOpening = null;
   });
@@ -353,7 +393,13 @@ async function runHistoryQuery<T = Record<string, unknown>>(
     let active: SharedReader | null = null;
     let failed = false;
     try {
-      await waitForHistoryWriter();
+      // No writer wait here on purpose. Queries run against a private replica,
+      // which shares nothing with the file the sync worker writes — the only
+      // step that touches the source is the copy inside ensureHistoryReplica(),
+      // and that coordinates with the writer itself and falls back to the
+      // previous snapshot when one is in progress. Waiting here instead meant
+      // every page render blocked on the sync and then failed outright, even
+      // though a perfectly readable replica was sitting on disk.
       active = await acquireReader();
       const rows = await allAsync(active.db, sql, params);
       return rows.map(norm) as T[];
