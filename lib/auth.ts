@@ -1,32 +1,29 @@
 // Session auth: HMAC-signed cookie via Web Crypto (works in Node routes AND
 // edge middleware), users + scrypt hashes from config/users.json.
-import fs from "fs";
-import path from "path";
 import { scryptSync, timingSafeEqual } from "crypto";
 import { cookies } from "next/headers";
 import type { Role, SessionUser } from "@/types";
 import { configuredSessionSecret } from "@/lib/session-secret";
+import { findActiveAccount } from "@/lib/account-store";
 
 const SECRET = configuredSessionSecret()
   || (process.env.NODE_ENV !== "production" ? "dev-only-secret-change-me" : undefined);
 export const SESSION_COOKIE = "wiom_session";
 const MAX_AGE_S = 60 * 60 * 12; // 12 jam shift-friendly
 
-interface UserRecord { username: string; name: string; role: Role; scrypt: string; salt: string }
-
-function loadUsers(): UserRecord[] {
-  const file = path.join(process.cwd(), "config", "users.json");
-  return JSON.parse(fs.readFileSync(file, "utf-8")).users as UserRecord[];
-}
-
 export function verifyPassword(username: string, password: string): SessionUser | null {
-  const u = loadUsers().find((x) => x.username === username);
+  const u = findActiveAccount(username);
   if (!u) return null;
   const calc = scryptSync(password, u.salt, 32).toString("hex");
   const ok =
     calc.length === u.scrypt.length &&
     timingSafeEqual(Buffer.from(calc, "hex"), Buffer.from(u.scrypt, "hex"));
-  return ok ? { username: u.username, role: u.role, name: u.name } : null;
+  return ok ? {
+    username: u.username,
+    role: u.role,
+    name: u.name,
+    sessionVersion: u.session_version,
+  } : null;
 }
 
 const enc = new TextEncoder();
@@ -54,7 +51,18 @@ export async function verifySessionToken(token: string | undefined): Promise<Ses
   try {
     const data = JSON.parse(Buffer.from(payload, "base64url").toString());
     if (data.exp < Date.now()) return null;
-    return { username: data.username, role: data.role, name: data.name };
+    if (
+      typeof data.username !== "string"
+      || (data.role !== "admin" && data.role !== "supervisor")
+      || typeof data.name !== "string"
+      || typeof data.sessionVersion !== "number"
+    ) return null;
+    return {
+      username: data.username,
+      role: data.role,
+      name: data.name,
+      sessionVersion: data.sessionVersion,
+    };
   } catch {
     return null;
   }
@@ -62,7 +70,16 @@ export async function verifySessionToken(token: string | undefined): Promise<Ses
 
 export async function currentUser(): Promise<SessionUser | null> {
   const jar = await cookies();
-  return verifySessionToken(jar.get(SESSION_COOKIE)?.value);
+  const session = await verifySessionToken(jar.get(SESSION_COOKIE)?.value);
+  if (!session) return null;
+  const account = findActiveAccount(session.username);
+  if (!account || account.session_version !== session.sessionVersion) return null;
+  return {
+    username: account.username,
+    role: account.role,
+    name: account.name,
+    sessionVersion: account.session_version,
+  };
 }
 
 export async function requireUser(): Promise<SessionUser> {

@@ -1,21 +1,10 @@
-import LoadingPopup from "@/components/ui/loading-popup";
 import RouteProgress from "@/components/ui/route-progress";
 
 /**
- * Route-level fallback. This used to paint a full skeleton (heading bars, five
- * metric tiles, a panel block) the moment a navigation began, so every click
- * flashed a layout that was replaced milliseconds later.
- *
- * Two layers now, both silent for the first 180 ms: a progress bar that shows
- * the transition is moving without covering the page, and — only once a load
- * passes 900 ms, which on this dashboard means an uncached DuckDB scan — the
- * popup that names what is being waited for.
+ * Keep the current screen readable while the next route streams. Expensive
+ * read models return their last valid synced data while refreshing in the
+ * background, so a slim non-blocking bar is the only transition signal.
  */
 export default function Loading() {
-  return (
-    <>
-      <RouteProgress />
-      <LoadingPopup delayMs={900} />
-    </>
-  );
+  return <RouteProgress delayMs={240} />;
 }

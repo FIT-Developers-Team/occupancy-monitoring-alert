@@ -4,6 +4,7 @@ import { getSyncHealth } from "@/lib/queries";
 import { getThresholds, getRules, getRecipients, getWarehouses, getCapacity } from "@/lib/config";
 import { sessionSecretStatus } from "@/lib/session-secret";
 import { getSupersetSyncConfig, getSupersetSyncStatus } from "@/lib/superset-sync";
+import { accountStoreStatus } from "@/lib/account-store";
 
 export async function GET() {
   const checks: Record<string, unknown> = { history_db: historyDbExists() };
@@ -15,6 +16,10 @@ export async function GET() {
         origin: process.env.WIOM_SESSION_SECRET_ORIGIN || "environment",
       }
     : { status: "error", reason: session.reason, required: "SESSION_SECRET or AUTH_SECRET" };
+  const accounts = accountStoreStatus();
+  checks.accounts = accounts.error
+    ? { status: "error", error: accounts.error }
+    : { status: accounts.ready ? "ok" : "error", active_admins: accounts.activeAdmins };
   try {
     getThresholds(); getRules(); getRecipients(); getWarehouses(); getCapacity();
     checks.config = "ok";
@@ -59,6 +64,7 @@ export async function GET() {
   }
   const healthy = checks.history_db === true
     && session.configured
+    && accounts.ready
     && checks.config === "ok"
     && checks.state_db === "ok"
     && checks.snapshot_fresh === true;

@@ -2,6 +2,8 @@ import { auditLog, notificationLog } from "@/lib/alerts/store";
 import { getLang, getT, localeOf } from "@/lib/i18n";
 import Section from "@/components/ui/section";
 import PageHeader from "@/components/ui/page-header";
+import { redirect } from "next/navigation";
+import { currentUser, isAdmin } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -19,12 +21,14 @@ function formatDateTime(value: string, locale: string) {
 }
 
 export default async function AuditPage() {
-  const [audits, notifications, t, lang] = await Promise.all([
+  const [user, audits, notifications, t, lang] = await Promise.all([
+    currentUser(),
     auditLog(100),
     notificationLog(50),
     getT(),
     getLang(),
   ]);
+  if (!user || !isAdmin(user.role)) redirect("/");
   const locale = localeOf(lang);
 
   return (

@@ -5,6 +5,7 @@ import {
   SESSION_SECRET_ENV_NAMES,
   sessionSecretStatus,
 } from "@/lib/session-secret";
+import { clearRateLimit, consumeRateLimit, requestKey } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
   const secret = sessionSecretStatus();
@@ -23,10 +24,19 @@ export async function POST(req: NextRequest) {
   if (!username || !password) {
     return NextResponse.json({ error: "Username dan password wajib diisi." }, { status: 400 });
   }
+  const rateKey = requestKey(req.headers, "login", String(username));
+  const rate = consumeRateLimit(rateKey, { limit: 10, windowMs: 15 * 60_000 });
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Terlalu banyak percobaan login. Coba lagi beberapa saat." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } },
+    );
+  }
   const user = verifyPassword(String(username), String(password));
   if (!user) {
     return NextResponse.json({ error: "Username atau password salah." }, { status: 401 });
   }
+  clearRateLimit(rateKey);
   const token = await createSessionToken(user);
   const res = NextResponse.json({ ok: true, user });
   res.cookies.set(SESSION_COOKIE, token, {

@@ -36,8 +36,8 @@ const Logo = ({ withText }: { withText: boolean }) => (
 );
 
 export default function Sidebar({
-  mode, mobileOpen, onNavigate, onToggle,
-}: { mode: NavMode; mobileOpen: boolean; onNavigate: () => void; onToggle: () => void }) {
+  mode, mobileOpen, onNavigate, onToggle, role,
+}: { mode: NavMode; mobileOpen: boolean; onNavigate: () => void; onToggle: () => void; role: string }) {
   const pathname = usePathname();
   const { t } = useT();
   const rail = mode === "rail";
@@ -79,7 +79,7 @@ export default function Sidebar({
         </div>
 
         <nav className="flex flex-col gap-0.5">
-          {NAV.map((n) => {
+          {NAV.filter((item) => role === "admin" || (item.href !== "/audit" && item.href !== "/settings")).map((n) => {
             const active = n.href === "/" ? pathname === "/" : pathname.startsWith(n.href);
             return (
               <Link key={n.href} href={n.href} prefetch={false} onClick={onNavigate} title={t(n.key)}

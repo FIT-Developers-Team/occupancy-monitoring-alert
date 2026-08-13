@@ -14,7 +14,7 @@ interface Item {
   href?: string; action?: () => void | Promise<void>;
 }
 
-export default function CommandPalette() {
+export default function CommandPalette({ role }: { role: string }) {
   const router = useRouter();
   const { t } = useT();
   const [open, setOpen] = useState(false);
@@ -31,7 +31,7 @@ export default function CommandPalette() {
     router.refresh();
   }, [router]);
 
-  const pages = useMemo<Item[]>(() => [
+  const pages = useMemo<Item[]>(() => ([
     { id: "p-exec", group: "pages", label: t("nav.exec"), hint: t("palette.networkKpi"), href: "/" },
     { id: "p-occ", group: "pages", label: t("nav.occupancy"), hint: t("palette.warehouseZones"), href: "/occupancy" },
     { id: "p-heat", group: "pages", label: t("nav.heatmap"), hint: t("palette.locationGrid"), href: "/heatmap" },
@@ -42,7 +42,7 @@ export default function CommandPalette() {
     { id: "p-aud", group: "pages", label: t("nav.audit"), hint: t("palette.auditLog"), href: "/audit" },
     { id: "p-gd", group: "pages", label: t("nav.guide"), hint: t("palette.guide"), href: "/guide" },
     { id: "p-set", group: "pages", label: t("nav.settings"), hint: t("palette.configuration"), href: "/settings" },
-  ], [t]);
+  ] satisfies Item[]).filter((item) => role === "admin" || (item.href !== "/audit" && item.href !== "/settings")), [role, t]);
 
   const actions: Item[] = useMemo(() => [
     { id: "a-tick", group: "actions", label: t("palette.evaluateAlerts"), hint: t("palette.runTick"),

@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { currentUser, isAdmin } from "@/lib/auth";
 import Section from "@/components/ui/section";
 import SettingsTabs from "@/components/domain/settings-tabs";
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const [user, t] = await Promise.all([currentUser(), getT()]);
   const admin = user ? isAdmin(user.role) : false;
+  if (!admin) redirect("/");
   return (
     <div className="dashboard-page">
       {/* One heading, then the controls. The tab strip already names each
@@ -16,13 +18,7 @@ export default async function SettingsPage() {
           used to stack above it only pushed the form further down. */}
       <PageHeader title={t("set.ui.page.title")} />
       <Section title={t("set.ui.page.sectionTitle")}>
-      {admin ? (
-        <SettingsTabs />
-      ) : (
-        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          {t("set.ui.page.adminOnly")}
-        </p>
-      )}
+      <SettingsTabs />
       </Section>
     </div>
   );

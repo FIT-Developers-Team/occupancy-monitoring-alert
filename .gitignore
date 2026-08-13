@@ -155,5 +155,6 @@ db/*.duckdb.web.lock
 db/.superset-sync-*
 db/.wiom-session-secret
 db/runtime-config/
+db/read-model-cache/
 !db/schema.sql
 audit/

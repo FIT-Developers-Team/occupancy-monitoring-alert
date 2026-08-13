@@ -6,6 +6,7 @@ import {
   getSupersetSyncConfig,
   getSupersetSyncStatus,
 } from "@/lib/superset-sync";
+import { accountStoreStatus } from "@/lib/account-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,6 +18,12 @@ export async function GET() {
   const session = sessionSecretStatus();
   checks.authentication = session.configured ? "ok" : session.reason;
   ready = ready && session.configured;
+
+  const accounts = accountStoreStatus();
+  checks.accounts = accounts.error
+    ? { status: "error", error: accounts.error }
+    : { status: accounts.ready ? "ok" : "error", active_admins: accounts.activeAdmins };
+  ready = ready && accounts.ready;
 
   try {
     const config = getSupersetSyncConfig();

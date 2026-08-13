@@ -97,12 +97,17 @@ export async function ruleCounts(hoursBack = 24 * 7) {
 
 export async function notificationLog(limit = 50) {
   return stateQuery(
-    `SELECT * FROM notification_log ORDER BY "at" DESC LIMIT ${Math.min(200, limit)}`
+    `SELECT id, alert_id, channel, recipient, "at", status,
+            left(coalesce(message, ''), 500) AS message
+     FROM notification_log ORDER BY "at" DESC LIMIT ${Math.min(200, limit)}`
   );
 }
 
 export async function auditLog(limit = 100) {
   return stateQuery(
-    `SELECT * FROM audit_log ORDER BY "at" DESC LIMIT ${Math.min(300, limit)}`
+    `SELECT id, "at", actor, action, entity,
+            left(coalesce(before_json, ''), 500) AS before_json,
+            left(coalesce(after_json, ''), 500) AS after_json
+     FROM audit_log ORDER BY "at" DESC LIMIT ${Math.min(300, limit)}`
   );
 }

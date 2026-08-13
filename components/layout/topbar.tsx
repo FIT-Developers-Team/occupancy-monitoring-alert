@@ -17,6 +17,9 @@ export default function Topbar({
   const router = useRouter();
   const { t } = useT();
   const [paused, setPaused] = useState(false);
+  const [dataStatus, setDataStatus] = useState<{
+    state: string; updatedAt?: string | null; workerOnline: boolean; hasSnapshot: boolean;
+  } | null>(null);
   const nextRefresh = useRef(Date.now() + INTERVAL_MS);
   const roleLabel = t(`shell.role.${role}`, role);
 
@@ -39,11 +42,40 @@ export default function Topbar({
     };
   }, [paused, refresh]);
 
+  useEffect(() => {
+    let active = true;
+    const read = async () => {
+      try {
+        const response = await fetch("/api/data-status", { cache: "no-store" });
+        const body = await response.json();
+        if (active) setDataStatus(body);
+      } catch {
+        if (active) setDataStatus(null);
+      }
+    };
+    void read();
+    const timer = window.setInterval(read, 60_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
     router.replace("/login");
     router.refresh();
   }
+
+  const syncBusy = dataStatus?.state === "queued" || dataStatus?.state === "running";
+  const syncAttention = dataStatus?.state === "failed" || (dataStatus && !dataStatus.workerOnline);
+  const syncLabel = syncBusy
+    ? t("shell.sync.running")
+    : syncAttention
+      ? t("shell.sync.lastValid")
+      : paused
+        ? t("shell.refreshPaused")
+        : t("shell.sync.current");
+  const syncTitle = dataStatus?.updatedAt
+    ? `${syncLabel} · ${new Date(dataStatus.updatedAt).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })} WIB`
+    : syncLabel;
 
   return (
     <header className="app-topbar">
@@ -57,21 +89,19 @@ export default function Topbar({
           <path d="M4 6h16M4 12h16M4 18h16" />
         </svg>
       </button>
-      <CommandPalette />
+      <CommandPalette role={role} />
       <div className="topbar-primary">
         <div className="topbar-basis"><BasisSwitch /></div>
         <button
           className="sync-control"
           onClick={() => setPaused((p) => !p)}
-          title={paused ? t("shell.autoRefreshResume") : t("shell.autoRefreshPause")}
+          title={`${syncTitle} · ${paused ? t("shell.autoRefreshResume") : t("shell.autoRefreshPause")}`}
           aria-label={paused ? t("shell.autoRefreshResume") : t("shell.autoRefreshPause")}
         >
           <span className="inline-block h-1.5 w-1.5 rounded-full"
-            style={{ background: paused ? "var(--text-muted)" : "var(--st-normal-fg)" }} />
+            style={{ background: syncAttention ? "var(--st-warning-fg)" : paused ? "var(--text-muted)" : "var(--st-normal-fg)" }} />
           <span className="hidden lg:inline">
-            {paused
-              ? t("shell.refreshPaused")
-              : t("shell.refreshEvery")}
+            {syncLabel}
           </span>
         </button>
         <button className="btn btn-sm topbar-refresh" onClick={refresh}>{t("action.refresh")}</button>

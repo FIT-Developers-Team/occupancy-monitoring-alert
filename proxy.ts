@@ -1,10 +1,14 @@
 // Next.js Proxy: proteksi seluruh app dengan verifikasi HMAC cookie.
 import { NextRequest, NextResponse } from "next/server";
 import { configuredSessionSecret } from "@/lib/session-secret";
+import { findActiveAccount } from "@/lib/account-store";
 
 const PUBLIC_PREFIXES = [
   "/login",
   "/api/auth/login",
+  "/api/auth/signup",
+  "/api/auth/signup-settings",
+  "/api/auth/password-reset",
   "/api/health",
   "/api/ready",
   "/api/cron",                        // dilindungi CRON_SECRET di handler
@@ -28,10 +32,10 @@ function b64urlToBytes(s: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-async function verify(token: string | undefined): Promise<boolean> {
-  if (!SECRET || !token) return false;
+async function verify(token: string | undefined): Promise<{ role: "admin" | "supervisor" } | null> {
+  if (!SECRET || !token) return null;
   const [payload, sig] = token.split(".");
-  if (!payload || !sig) return false;
+  if (!payload || !sig) return null;
   try {
     const key = await crypto.subtle.importKey(
       "raw", enc.encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]
@@ -39,11 +43,15 @@ async function verify(token: string | undefined): Promise<boolean> {
     const ok = await crypto.subtle.verify(
       "HMAC", key, b64urlToBytes(sig), enc.encode(payload)
     );
-    if (!ok) return false;
+    if (!ok) return null;
     const data = JSON.parse(new TextDecoder().decode(b64urlToBytes(payload)));
-    return typeof data.exp === "number" && data.exp > Date.now();
+    if (typeof data.exp !== "number" || data.exp <= Date.now()) return null;
+    const account = findActiveAccount(String(data.username ?? ""));
+    return account && account.session_version === data.sessionVersion
+      ? { role: account.role }
+      : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -51,8 +59,14 @@ export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) return NextResponse.next();
 
-  const ok = await verify(req.cookies.get("wiom_session")?.value);
-  if (ok) return NextResponse.next();
+  const user = await verify(req.cookies.get("wiom_session")?.value);
+  if (user) {
+    if (user.role !== "admin" && (pathname === "/settings" || pathname.startsWith("/settings/")
+      || pathname === "/audit" || pathname.startsWith("/audit/"))) {
+      return NextResponse.redirect(new URL("/", req.url));
+    }
+    return NextResponse.next();
+  }
 
   if (pathname.startsWith("/api/")) {
     return NextResponse.json({ error: "Tidak terautentikasi." }, { status: 401 });

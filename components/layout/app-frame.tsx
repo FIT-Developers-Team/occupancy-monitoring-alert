@@ -33,7 +33,7 @@ export default function AppFrame({
         <div className="fixed inset-0 z-30 bg-black/45 md:hidden"
           onClick={() => setMobileOpen(false)} aria-hidden />
       )}
-      <Sidebar mode={mode} mobileOpen={ready && mobileOpen}
+      <Sidebar mode={mode} mobileOpen={ready && mobileOpen} role={role}
         onNavigate={onNavigate} onToggle={toggleMode} />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar userName={userName} role={role}

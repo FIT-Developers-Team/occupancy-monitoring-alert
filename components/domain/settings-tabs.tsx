@@ -22,6 +22,11 @@ const EscalationSettings = dynamic(
   { loading: () => <SettingsPanelLoading /> },
 );
 
+const AccountManagement = dynamic(
+  () => import("@/components/domain/account-management"),
+  { loading: () => <SettingsPanelLoading /> },
+);
+
 interface Thresholds {
   default: { monitor: number; warning: number; critical: number; breach: number; hysteresis_buffer: number };
   overrides: Record<string, Partial<{ monitor: number; warning: number; critical: number; breach: number; hysteresis_buffer: number }>>;
@@ -53,7 +58,7 @@ const TKEYS = ["monitor", "warning", "critical", "breach", "hysteresis_buffer"] 
 
 export default function SettingsTabs() {
   const { t } = useT();
-  const [tab, setTab] = useState<"sync" | "thresholds" | "capacity" | "recipients">("sync");
+  const [tab, setTab] = useState<"accounts" | "sync" | "thresholds" | "capacity" | "recipients">("accounts");
   const [thresholds, setThresholds] = useState<Thresholds | null>(null);
   const [capacity, setCapacity] = useState<Capacity | null>(null);
   // Index of a freshly appended override rule, so it can be focused once the
@@ -103,6 +108,7 @@ export default function SettingsTabs() {
   }
 
   const tabs = [
+    { id: "accounts" as const, label: t("set.ui.tab.accounts") },
     { id: "sync" as const, label: t("set.ui.tab.sync", "Superset Sync") },
     { id: "thresholds" as const, label: t("set.ui.tab.thresholds") },
     { id: "capacity" as const, label: t("set.ui.tab.capacity") },
@@ -220,6 +226,8 @@ export default function SettingsTabs() {
       {msg && tab !== "sync" && <p className="settings-message" role="status">{t(msg, msg)}</p>}
 
       {tab === "sync" && <SupersetSyncSettings />}
+
+      {tab === "accounts" && <AccountManagement />}
 
       {tab === "recipients" && <EscalationSettings />}
 

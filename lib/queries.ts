@@ -4,17 +4,28 @@
 // (mis. HUB) otomatis tersaring, dan kode WH tidak lagi ditebak dari sloc_code.
 // Ditambah filter `active` dan basis ketiga: BIN (SLOC terisi vs kosong).
 import { historyDbVersion, queryHistory } from "@/lib/db";
+import { createHash } from "node:crypto";
 import { statusFor } from "@/lib/occupancy";
 import { wmaRatePctPerHour, hoursToTarget } from "@/lib/forecast";
 import { resolveSloc, categoryCounted, countedStatuses } from "@/lib/capacity";
 import type { SlocScope } from "@/lib/capacity";
-import { getCapacity, getWarehouses, whMapSQL, whNameByCode } from "@/lib/config";
+import { getCapacity, getThresholds, getWarehouses, whMapSQL, whNameByCode } from "@/lib/config";
+import { clearReadModelMemory, readModelCached } from "@/lib/read-model-cache";
 import type {
   SlocOccupancy, WarehouseSummary, ZoneSummary, RackZoneSummary, TrendPoint, ForecastRow, StockLine, Basis, BasisMode,
 } from "@/types";
 
 const r1 = (n: number) => Math.round(n * 10) / 10;
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
+
+function readModelVersion(): string {
+  return createHash("sha1")
+    .update(String(historyDbVersion()))
+    .update(JSON.stringify(getWarehouses()))
+    .update(JSON.stringify(getCapacity()))
+    .update(JSON.stringify(getThresholds()))
+    .digest("hex");
+}
 
 interface SlocMeta {
   sloc_id: number; sloc_code: string; wh: string; zone: string; rack_zone: string;
@@ -220,6 +231,7 @@ export function invalidateOccupancyReadCaches(): void {
   trendCache.clear();
   zoneCache.clear();
   warehouseBaseCache = null;
+  clearReadModelMemory();
   cacheHistoryVersion = historyDbVersion();
 }
 
@@ -323,7 +335,7 @@ let warehouseBaseCache: { at: number; rows: WarehouseBase[] } | null = null;
 let warehouseBaseInFlight: Promise<WarehouseBase[]> | null = null;
 
 /** Small read model for warehouse cards/trends; never materialises 143k SLOCs. */
-async function getWarehouseBase(): Promise<WarehouseBase[]> {
+async function loadWarehouseBase(): Promise<WarehouseBase[]> {
   refreshCachesForHistoryChange();
   if (warehouseBaseCache && Date.now() - warehouseBaseCache.at < DASHBOARD_TTL) return warehouseBaseCache.rows;
   if (warehouseBaseInFlight) return warehouseBaseInFlight;
@@ -403,6 +415,15 @@ async function getWarehouseBase(): Promise<WarehouseBase[]> {
   return warehouseBaseInFlight;
 }
 
+async function getWarehouseBase(): Promise<WarehouseBase[]> {
+  return readModelCached(
+    "warehouse-base-v1",
+    readModelVersion(),
+    loadWarehouseBase,
+    { freshMs: DASHBOARD_TTL },
+  );
+}
+
 async function whCaps() {
   const caps = new Map<string, { capQ: number; capV: number; basis: Basis; slocs: number }>();
   for (const w of await getWarehouseBase()) {
@@ -462,7 +483,7 @@ export interface OccupancyScopeQuality {
   disabled_zone_sloc: number;
   stock_without_operational_sloc: number;
 }
-export async function getOccupancyScopeQuality(): Promise<OccupancyScopeQuality[]> {
+async function loadOccupancyScopeQuality(): Promise<OccupancyScopeQuality[]> {
   return queryHistory<OccupancyScopeQuality>(
     // active_sloc and zoned_sloc deliberately mirror the occupancy denominators,
     // so a disabled zone leaves them. It is counted separately instead of
@@ -524,7 +545,7 @@ function summarizeRackZone(row: ZoneAggregateRow): RackZoneSummary {
  * heatmap wait many seconds. Capacity is resolved from grouped master rows;
  * DuckDB aggregates counted stock and occupied bins at source.
  */
-export async function getZoneSummary(wh?: string): Promise<ZoneSummary[]> {
+async function loadZoneSummary(wh?: string): Promise<ZoneSummary[]> {
   refreshCachesForHistoryChange();
   const scope = cleanScope({ wh, operational: true });
   if (wh && !scope.wh) return [];
@@ -612,6 +633,26 @@ export async function getZoneSummary(wh?: string): Promise<ZoneSummary[]> {
   }).sort((a, b) => naturalOrder.compare(a.wh, b.wh) || naturalOrder.compare(a.zone, b.zone));
   setBoundedCache(zoneCache, cacheKey, { at: Date.now(), rows: out }, 10);
   return out;
+}
+
+export async function getZoneSummary(wh?: string): Promise<ZoneSummary[]> {
+  const scope = cleanScope({ wh });
+  if (wh && !scope.wh) return [];
+  return readModelCached(
+    `zone-summary-v1-${scope.wh ?? "all"}`,
+    readModelVersion(),
+    () => loadZoneSummary(scope.wh),
+    { freshMs: DASHBOARD_TTL },
+  );
+}
+
+export async function getOccupancyScopeQuality(): Promise<OccupancyScopeQuality[]> {
+  return readModelCached(
+    "occupancy-scope-quality-v1",
+    readModelVersion(),
+    loadOccupancyScopeQuality,
+    { freshMs: DASHBOARD_TTL },
+  );
 }
 
 export async function getHeatmap(wh: string): Promise<SlocOccupancy[]> {
@@ -951,7 +992,7 @@ export async function getZoneDetail(
   };
 }
 
-export async function getWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
+async function loadWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
   refreshCachesForHistoryChange();
   const safeHours = Math.max(1, Math.floor(hoursBack));
   const cached = trendCache.get(safeHours);
@@ -998,6 +1039,16 @@ export async function getWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
   });
   setBoundedCache(trendCache, safeHours, { at: Date.now(), rows: out }, 6);
   return out;
+}
+
+export async function getWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
+  const safeHours = Math.max(1, Math.floor(hoursBack));
+  return readModelCached(
+    `warehouse-trend-v1-${safeHours}h`,
+    readModelVersion(),
+    () => loadWarehouseTrend(safeHours),
+    { freshMs: DASHBOARD_TTL },
+  );
 }
 
 /** Estimasi inbound/outbound per jam dari delta snapshot (26 jam terakhir). */
@@ -1052,7 +1103,7 @@ export async function getFlowRates(): Promise<Map<string, FlowRate>> {
   return m;
 }
 
-export async function getForecastRows(): Promise<ForecastRow[]> {
+async function loadForecastRows(): Promise<ForecastRow[]> {
   const [base, trend, flows] = await Promise.all([
     getWarehouseOccupancySummary(), getWarehouseTrend(48), getFlowRates(),
   ]);
@@ -1086,6 +1137,15 @@ export async function getForecastRows(): Promise<ForecastRow[]> {
       trend: pts.map((t) => ({ t: t.t, pct: t.pct })),
     };
   });
+}
+
+export async function getForecastRows(): Promise<ForecastRow[]> {
+  return readModelCached(
+    "forecast-rows-v1",
+    readModelVersion(),
+    loadForecastRows,
+    { freshMs: DASHBOARD_TTL },
+  );
 }
 
 export async function getSlocDetail(code: string, wh?: string): Promise<{ stock: StockLine[]; movements: unknown[] }> {
@@ -1128,7 +1188,7 @@ export interface IntegrityRow {
 }
 const whFilter = (wh?: string) => (wh ? `AND m.wh = '${wh.replace(/'/g, "''")}'` : "");
 
-export async function getIntegrity(wh?: string): Promise<IntegrityRow[]> {
+async function loadIntegrity(wh?: string): Promise<IntegrityRow[]> {
   return queryHistory<IntegrityRow>(
     `${WH_MAP()}, latest_count AS (
        SELECT *, row_number() OVER (PARTITION BY sloc_code ORDER BY count_date DESC) rn
@@ -1144,6 +1204,17 @@ export async function getIntegrity(wh?: string): Promise<IntegrityRow[]> {
      FROM c JOIN vw_sloc v ON v.sloc_code = c.sloc_code ${JOIN_WH}
       WHERE ${OPERATIONAL_SLOC} ${whFilter(wh)}
      GROUP BY 1 ORDER BY 1`
+  );
+}
+
+export async function getIntegrity(wh?: string): Promise<IntegrityRow[]> {
+  const scope = cleanScope({ wh });
+  if (wh && !scope.wh) return [];
+  return readModelCached(
+    `integrity-v1-${scope.wh ?? "all"}`,
+    readModelVersion(),
+    () => loadIntegrity(scope.wh),
+    { freshMs: DASHBOARD_TTL },
   );
 }
 
@@ -1246,7 +1317,7 @@ interface DenseAggregateRow {
   pct_bin: number; view_pct: number; qty_valid: boolean; cbm_valid: boolean;
 }
 
-export async function getDenseSlocs(
+async function loadDenseSlocs(
   wh?: string, minPct = 90, limit = 200, view: BasisMode = "policy"
 ): Promise<DenseSloc[]> {
   const scope = cleanScope({ wh, operational: true });
@@ -1335,4 +1406,20 @@ export async function getDenseSlocs(
     pct_qty: row.pct_qty, pct_cbm: row.pct_cbm, pct_bin: row.pct_bin,
     qty_valid: row.qty_valid, cbm_valid: row.cbm_valid,
   }));
+}
+
+export async function getDenseSlocs(
+  wh?: string, minPct = 90, limit = 200, view: BasisMode = "policy"
+): Promise<DenseSloc[]> {
+  const scope = cleanScope({ wh });
+  if (wh && !scope.wh) return [];
+  const safeMinimum = Number.isFinite(minPct) ? Math.max(0, minPct) : 90;
+  const safeLimit = Number.isFinite(limit) ? Math.min(1_000, Math.max(1, Math.floor(limit))) : 200;
+  const safeView: BasisMode = ["qty", "cbm", "bin", "policy"].includes(view) ? view : "policy";
+  return readModelCached(
+    `dense-sloc-v1-${scope.wh ?? "all"}-${safeMinimum}-${safeLimit}-${safeView}`,
+    readModelVersion(),
+    () => loadDenseSlocs(scope.wh, safeMinimum, safeLimit, safeView),
+    { freshMs: DASHBOARD_TTL },
+  );
 }

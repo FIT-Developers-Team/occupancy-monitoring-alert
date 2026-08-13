@@ -32,7 +32,11 @@ dan tidak menyalakan worker Superset kedua, sehingga aman saat port 3000 aktif.
 |---|---|---|
 | `admin` | `FITwiom#2026` | semua + Pengaturan |
 | `spv` | `FITspv#2026` | aksi alert |
-| `view` | `FITview#2026` | lihat saja |
+
+Aplikasi hanya memiliki dua tampilan: **Admin View** dan **SPV View**. Akun baru
+disimpan persisten di `db/runtime-config/accounts.json`; Admin membuka signup,
+menyetujui/menolak pendaftaran SPV, atau membuat akun Admin/SPV langsung dari
+**Pengaturan → Akun & Akses**.
 
 Buka **Alert Center → Evaluasi sekarang**. Demo menanam: BIT 96%+ dengan SLOC over-qty, CBT basis CBM (master 1/1 → override), Bad di luar BADSTOCK (R13), stok Lost (R14), qty −6 (R11), phantom/ghost di cycle count.
 
@@ -187,7 +191,7 @@ ruang sementara kira-kira sebesar database aktif sebelum pertukaran atomik.
 
 ## 7. Keamanan (sebelum dipakai tim)
 
-1. Ganti tiga password: `npm run hash-password -- "Baru#"` → `config/users.json`.
+1. Ganti dua password bootstrap: `npm run hash-password -- "Baru#"` → `config/users.json`.
 2. Buat secret sesi dengan `npm run secret:generate`, lalu simpan hasilnya sebagai
    environment variable `SESSION_SECRET` pada server/hosting. `AUTH_SECRET` dan
    `NEXTAUTH_SECRET` juga diterima sebagai alias. Jangan memakai awalan
@@ -198,8 +202,8 @@ ruang sementara kira-kira sebesar database aktif sebelum pertukaran atomik.
    (semuanya sudah di `.gitignore`).
 6. **Bila repo ini pernah dipakai sebelum Agustus 2026:** `config/.superset-sync.secrets.json`
    sempat ter-commit (commit `3c64e0a`) berisi cookie sesi Superset yang aktif, dan
-   `config/users.json` berisi hash dari tiga password default yang tercetak di bagian 1.
-   Perlakukan keduanya sebagai bocor: cabut sesi Superset tersebut, ganti tiga password
+   `config/users.json` pernah berisi hash dari tiga password default yang tercetak di bagian 1.
+   Perlakukan keduanya sebagai bocor: cabut sesi Superset tersebut, ganti password bootstrap
    aplikasi, lalu pertimbangkan membersihkan riwayat Git. File secrets kini sudah
    di-`.gitignore` dan tidak lagi ter-track.
 

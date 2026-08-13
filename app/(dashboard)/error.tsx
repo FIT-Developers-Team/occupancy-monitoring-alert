@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useT } from "@/lib/i18n-client";
 
 export default function DashboardError({ error, reset }: { error: Error; reset: () => void }) {
@@ -11,9 +12,12 @@ export default function DashboardError({ error, reset }: { error: Error; reset: 
         {noDb ? t("error.database.title") : t("error.page.title")}
       </h2>
       <p className="text-xs leading-relaxed" style={{ color: "var(--text-muted)" }}>
-        {noDb ? t("error.database.body") : error.message}
+        {noDb ? t("error.database.body") : t("error.page.body")}
       </p>
-      <button className="btn btn-primary btn-sm" onClick={reset}>{t("error.retry")}</button>
+      <div className="flex flex-wrap gap-2">
+        <button className="btn btn-primary btn-sm" onClick={reset}>{t("error.retry")}</button>
+        <Link className="btn btn-sm" href="/">{t("error.backOverview")}</Link>
+      </div>
     </div>
   );
 }

@@ -3,7 +3,7 @@
 export type OccupancyStatus = "NORMAL" | "MONITOR" | "WARNING" | "CRITICAL" | "BREACH";
 export type Severity = "INFO" | "WARNING" | "HIGH" | "CRITICAL" | "EMERGENCY";
 export type AlertStatus = "NEW" | "NOTIFIED" | "ACKNOWLEDGED" | "RESOLVED" | "FALSE_POSITIVE";
-export type Role = "admin" | "supervisor" | "viewer";
+export type Role = "admin" | "supervisor";
 
 export type Basis = "qty" | "cbm";
 export type ViewBasis = "qty" | "cbm" | "bin";
@@ -159,4 +159,5 @@ export interface SessionUser {
   username: string;
   role: Role;
   name: string;
+  sessionVersion: number;
 }
