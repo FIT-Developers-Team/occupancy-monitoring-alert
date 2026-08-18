@@ -445,19 +445,6 @@
     margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px;
     background: var(--surface-sunken); color: var(--text-muted); font-size: 12px;
   }
-  .density-table-wrap { max-width: 100%; overflow: auto; }
-  .density-mobile { display: none; }
-  .density-mobile-card {
-    display: grid; gap: 7px; width: 100%; padding: 10px;
-    border: 1px solid var(--border); border-radius: 8px;
-    background: var(--surface-raised); color: var(--text); text-align: left;
-  }
-  .density-mobile-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-  .density-mobile-head > span { display: grid; min-width: 0; }
-  .density-mobile-head small,
-  .density-mobile-storage { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-  .density-mobile-metrics { display: flex; flex-wrap: wrap; gap: 5px 13px; color: var(--text-muted); font-size: 11px; }
-  .density-mobile-metrics b { color: var(--text); }
   .forecast-table-wrap { max-width: 100%; overflow: auto; }
   .forecast-table { min-width: 820px; }
   .guide-diagram-scroll { max-width: 100%; overflow-x: auto; }
@@ -1010,8 +997,6 @@
     .zone-detail-table-wrap { display: none; }
     .occ-zone-mobile,
     .zone-detail-mobile { display: grid; gap: 7px; }
-    .density-table-wrap { display: none; }
-    .density-mobile { display: grid; gap: 7px; }
     .slocx-table-wrap { display: none; }
     .slocx-mobile { display: grid; gap: 7px; }
     .slocx-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }

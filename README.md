@@ -148,7 +148,36 @@ Switch **Kebijakan/Qty/CBM/Bin** di topbar mengubah metrik, bar, dan warna yang 
 
 ## 5. Fitur
 
-Ringkasan Eksekutif (KPI Qty & CBM, tren operasional 48 jam, Top Risiko) · Okupansi per gudang/zona · Heatmap SLOC + drawer isi produk & movement · Forecast time-to-full (laju %, Qty & SKU/jam) + What-If Inbound/Outbound · Pelanggaran + CSV · Alert Center (dedup, hysteresis, auto-resolve, eskalasi dinamis, notifikasi real-time Google Chat per WH) · Integritas (phantom/ghost) · Audit Trail · Pengaturan 4 tab termasuk Superset Sync · Panduan · sidebar ⇄ icon-rail smooth + drawer mobile · ⌘K.
+Ringkasan Eksekutif (KPI Qty & CBM, tren operasional 48 jam, Top Risiko) · Okupansi per gudang/zona · Heatmap SLOC + drawer isi produk & movement · Forecast time-to-full (laju %, Qty & SKU/jam) + What-If Inbound/Outbound · Penjelajah SLOC (cari & filter lintas 144k lokasi) + ekspor Excel · Alert Center (dedup, hysteresis, auto-resolve, eskalasi dinamis, notifikasi real-time Google Chat per WH) · Integritas (phantom/ghost) · Audit Trail · Pengaturan 4 tab termasuk Superset Sync · Panduan · sidebar ⇄ icon-rail smooth + drawer mobile · ⌘K.
+
+### 5.1 Filter, pencarian, dan ekspor Excel
+
+Setiap tabel yang berhubungan dengan SLOC dan zona memakai satu kontrak filter
+(`lib/sloc-filter.ts`) yang dibaca bersama oleh halaman, endpoint JSON, dan
+endpoint ekspor. Konsekuensinya disengaja: **berkas Excel selalu berisi tepat
+baris yang sedang tampil di layar — seluruhnya, dalam satu berkas, tanpa
+paginasi atau pembagian batch.**
+
+| Halaman | Filter & pencarian | Ekspor |
+| --- | --- | --- |
+| Lokasi Prioritas (`/density`) | Penjelajah SLOC penuh: pencarian bebas, gudang, zona, zona rak, penyimpanan, status, terisi/kosong, rentang %, basis tampilan. Filter tersimpan di URL. | `dataset=sloc` |
+| Okupansi (`/occupancy`) | Filter zona (pencarian, gudang, status, terisi/kosong) + penjelajah SLOC | `dataset=zone`, `dataset=warehouse`, `dataset=sloc` |
+| Detail gudang (`/occupancy/[wh]`) | Idem, terkunci pada satu gudang | `dataset=sloc` |
+| Isi zona (`/occupancy/[wh]/[zone]`) | Pencarian SLOC/SKU, status stok, kategori L1, zona rak + penjelajah SLOC untuk lokasi kosong | `dataset=zone-detail`, `dataset=sloc` |
+| Heatmap (`/heatmap`) | Pencarian zona, lompat ke kode SLOC, filter status pada legenda + penjelajah SLOC | `dataset=sloc` (termasuk per zona dari dialog) |
+| Alert (`/alerts`) | Pencarian judul/lokasi/SKU/aturan, gudang, tingkat, aturan | `dataset=alerts` |
+| Integritas (`/integrity`) | Pencarian kode SLOC, jenis selisih, gudang | `dataset=integrity` |
+| Proyeksi (`/forecast`) | — | `dataset=forecast` |
+
+Endpoint: `GET /api/export?dataset=<nama>&<filter>` mengembalikan `.xlsx` asli
+(ditulis tanpa dependensi oleh `lib/xlsx.ts`) berisi sheet data + sheet
+**Filter** yang mencatat kriteria, jumlah baris, dan waktu pembuatan sehingga
+setiap berkas dapat diaudit ulang. Data tabel interaktif berasal dari
+`GET /api/sloc/explore`, pilihan dropdown dari `GET /api/sloc/facets`.
+
+Batas pengaman: 400.000 baris SLOC, 200.000 baris isi zona, 50.000 alert —
+semuanya jauh di atas volume nyata (±144k SLOC aktif) sehingga tidak pernah
+memaksa unduhan bertahap.
 
 Trigger aktif saat ini hanya **OCC-ZONE-BREACH**: satu alert per kombinasi warehouse/zona ketika okupansi berbasis kebijakan mencapai ambang `breach`. Alert memakai hysteresis, auto-resolve, dedup thread, dan eskalasi sampai di-ack. Rule stok dan movement dinonaktifkan sampai dataset movement tersedia dan tervalidasi.
 
