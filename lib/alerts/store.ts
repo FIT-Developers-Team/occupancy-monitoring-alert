@@ -10,6 +10,14 @@ export interface AlertFilters {
   limit?: number;
 }
 
+/**
+ * Papan alert sengaja dibatasi beberapa ratus baris agar tetap ringan dibaca.
+ * Ekspor tidak boleh ikut dibatasi diam-diam: berkas yang berhenti di baris ke-500
+ * terlihat lengkap padahal bukan. Tabel alert ada di state DB dan berukuran kecil,
+ * jadi batas ini semata pengaman terhadap tabel yang tumbuh tak wajar.
+ */
+export const ALERT_EXPORT_MAX_ROWS = 50_000;
+
 export async function listAlerts(f: AlertFilters = {}): Promise<Alert[]> {
   const cond: string[] = [];
   const params: unknown[] = [];
@@ -21,7 +29,7 @@ export async function listAlerts(f: AlertFilters = {}): Promise<Alert[]> {
   if (f.warehouse) { cond.push("warehouse_code = ?"); params.push(f.warehouse); }
   if (f.rule) { cond.push("rule_id = ?"); params.push(f.rule); }
   const where = cond.length ? `WHERE ${cond.join(" AND ")}` : "";
-  const limit = Math.min(500, Math.max(1, f.limit ?? 200));
+  const limit = Math.min(ALERT_EXPORT_MAX_ROWS, Math.max(1, f.limit ?? 200));
   return stateQuery<Alert>(
     `SELECT * FROM alerts ${where}
      ORDER BY CASE severity

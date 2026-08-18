@@ -1,9 +1,10 @@
 "use client";
 
-import { useDeferredValue, useEffect, useRef, useState } from "react";
-import type { ZoneDetailSort, ZoneLine } from "@/lib/queries";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import type { ZoneDetailFacets, ZoneDetailSort, ZoneLine } from "@/lib/queries";
 import { fmtCbm, fmtNum } from "@/lib/utils";
 import { useT } from "@/lib/i18n-client";
+import ExportExcelButton from "@/components/domain/export-excel-button";
 
 type SortKey = ZoneDetailSort;
 type StockTone = "normal" | "monitor" | "warning" | "critical" | "breach";
@@ -25,18 +26,24 @@ export default function ZoneDetailTable({
   warehouse,
   zone,
   statusColor,
+  facets,
 }: {
   rows: ZoneLine[];
   total: number;
   warehouse: string;
   zone: string;
   statusColor: Record<string, string>;
+  /** Pilihan status stok / kategori / zona rak yang benar-benar ada di zona ini. */
+  facets: ZoneDetailFacets;
 }) {
   const { t } = useT();
   const [serverRows, setServerRows] = useState(rows);
   const [totalRows, setTotalRows] = useState(total);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
+  const [stockStatus, setStockStatus] = useState("");
+  const [category, setCategory] = useState("");
+  const [rackZone, setRackZone] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({
@@ -49,6 +56,18 @@ export default function ZoneDetailTable({
 
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
 
+  // Satu objek parameter dipakai tabel dan tombol ekspor. Kalau keduanya
+  // menyusun kueri sendiri, berkas yang diunduh cepat atau lambat tidak lagi
+  // sama dengan yang terlihat di layar.
+  const filterParams = useMemo(() => {
+    const params = new URLSearchParams({ wh: warehouse, zone });
+    if (deferredQuery) params.set("q", deferredQuery);
+    if (stockStatus) params.set("stockStatus", stockStatus);
+    if (category) params.set("category", category);
+    if (rackZone) params.set("rackZone", rackZone);
+    return params;
+  }, [category, deferredQuery, rackZone, stockStatus, warehouse, zone]);
+
   useEffect(() => {
     if (
       skipInitialRequest.current
@@ -56,22 +75,18 @@ export default function ZoneDetailTable({
       && pageSize === 100
       && sort.key === "sloc_code"
       && sort.dir === 1
-      && deferredQuery === ""
+      && filterParams.toString() === new URLSearchParams({ wh: warehouse, zone }).toString()
     ) {
       skipInitialRequest.current = false;
       return;
     }
     skipInitialRequest.current = false;
     const controller = new AbortController();
-    const params = new URLSearchParams({
-      wh: warehouse,
-      zone,
-      offset: String((page - 1) * pageSize),
-      limit: String(pageSize),
-      q: deferredQuery,
-      sort: sort.key,
-      dir: sort.dir === 1 ? "asc" : "desc",
-    });
+    const params = new URLSearchParams(filterParams);
+    params.set("offset", String((page - 1) * pageSize));
+    params.set("limit", String(pageSize));
+    params.set("sort", sort.key);
+    params.set("dir", sort.dir === 1 ? "asc" : "desc");
     setLoading(true);
     setError(false);
     fetch(`/api/occupancy/zone-detail?${params}`, { signal: controller.signal })
@@ -90,8 +105,11 @@ export default function ZoneDetailTable({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [deferredQuery, page, pageSize, sort, warehouse, zone]);
+  }, [filterParams, page, pageSize, sort, warehouse, zone]);
 
+  useEffect(() => {
+    setPage(1);
+  }, [deferredQuery, stockStatus, category, rackZone]);
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
@@ -129,16 +147,40 @@ export default function ZoneDetailTable({
           <input
             className="input"
             value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setPage(1);
-            }}
+            onChange={(event) => setQuery(event.target.value)}
             placeholder={`${t("action.search")} ${t("common.sloc")} / ${t("common.sku")}`}
+            autoComplete="off"
+            spellCheck={false}
           />
         </label>
+        <div className="zone-detail-filters">
+          {facets.rack_zones.length > 1 && (
+            <label>
+              <span className="sr-only">{t("export.rackZone")}</span>
+              <select className="input" value={rackZone} onChange={(event) => setRackZone(event.target.value)}>
+                <option value="">{t("zdx.allRackZones")}</option>
+                {facets.rack_zones.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+          )}
+          <label>
+            <span className="sr-only">{t("zdx.stockStatus")}</span>
+            <select className="input" value={stockStatus} onChange={(event) => setStockStatus(event.target.value)}>
+              <option value="">{t("zdx.allStatuses")}</option>
+              {facets.statuses.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label>
+            <span className="sr-only">{t("zdx.category")}</span>
+            <select className="input" value={category} onChange={(event) => setCategory(event.target.value)}>
+              <option value="">{t("zdx.allCategories")}</option>
+              {facets.categories.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+        </div>
         <div className="zone-detail-paging">
           <span className="num" aria-live="polite">
-            {totalRows.toLocaleString() } {t("occ.rows")}
+            {totalRows.toLocaleString()} {t("occ.rows")}
           </span>
           <select
             className="input"
@@ -166,6 +208,13 @@ export default function ZoneDetailTable({
             onClick={() => setPage((value) => value + 1)}
             aria-label={`${t("occ.rows")} · ${page + 1}`}
           >→</button>
+          <ExportExcelButton
+            dataset="zone-detail"
+            params={filterParams}
+            disabled={totalRows === 0}
+            label={`${t("export.excel")} (${totalRows.toLocaleString()})`}
+            title={t("export.fullHint")}
+          />
         </div>
       </div>
 

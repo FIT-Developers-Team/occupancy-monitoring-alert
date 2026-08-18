@@ -8,10 +8,12 @@ import { pickViewPct, pickViewStatus } from "@/lib/occupancy-view";
 import { useT } from "@/lib/i18n-client";
 import OccupancyBar from "@/components/ui/occupancy-bar";
 import { StatusBadge } from "@/components/ui/badges";
+import ExportExcelButton from "@/components/domain/export-excel-button";
 
 type SortKey = "wh" | "zone" | "pct" | "pct_qty" | "pct_cbm" | "pct_bin" | "sloc_occupied" | "sloc_empty";
 type Thresholds = { monitor: number; warning: number; critical: number; breach: number };
-type StatusFilter = "ALL" | OccupancyStatus;
+type StatusFilter = "ALL" | OccupancyStatus | "UNAVAILABLE";
+type FillFilter = "all" | "empty" | "occupied";
 
 export default function OccupancyZoneBrowser({
   rows, mode, thresholds, fixedWarehouse,
@@ -26,6 +28,7 @@ export default function OccupancyZoneBrowser({
   const deferredQuery = useDeferredValue(query);
   const [warehouse, setWarehouse] = useState(fixedWarehouse ?? "ALL");
   const [status, setStatus] = useState<StatusFilter>("ALL");
+  const [fill, setFill] = useState<FillFilter>("all");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "pct", dir: -1 });
   const [page, setPage] = useState(1);
 
@@ -37,10 +40,19 @@ export default function OccupancyZoneBrowser({
     const needle = deferredQuery.trim().toLocaleLowerCase();
     return rows.filter((row) => {
       if (warehouse !== "ALL" && row.wh !== warehouse) return false;
-      if (status !== "ALL" && (pickViewPct(row, mode) === null || pickViewStatus(row, mode) !== status)) return false;
+      // Zona "kosong" berarti zona yang masih menyisakan SLOC kosong — itulah
+      // ruang yang benar-benar dapat dipakai putaway hari ini, bukan zona yang
+      // seluruhnya nihil stok.
+      if (fill === "empty" && row.sloc_empty === 0) return false;
+      if (fill === "occupied" && row.sloc_occupied === 0) return false;
+      if (status !== "ALL") {
+        const pct = pickViewPct(row, mode);
+        const shown = pct === null ? "UNAVAILABLE" : pickViewStatus(row, mode);
+        if (shown !== status) return false;
+      }
       return !needle || `${row.wh} ${row.zone} ${row.storage}`.toLocaleLowerCase().includes(needle);
     });
-  }, [deferredQuery, mode, rows, status, warehouse]);
+  }, [deferredQuery, fill, mode, rows, status, warehouse]);
   const sorted = useMemo(() => [...filtered].sort((a, b) => {
     const av = sort.key === "pct" ? pickViewPct(a, mode) : a[sort.key];
     const bv = sort.key === "pct" ? pickViewPct(b, mode) : b[sort.key];
@@ -55,10 +67,26 @@ export default function OccupancyZoneBrowser({
     () => sorted.slice((page - 1) * pageSize, page * pageSize),
     [page, sorted],
   );
+  const emptySlocs = useMemo(
+    () => filtered.reduce((sum, row) => sum + row.sloc_empty, 0),
+    [filtered],
+  );
+
+  // Parameter ekspor sengaja dibentuk dari state filter yang sama dengan tabel,
+  // sehingga berkas berisi tepat zona yang sedang terlihat — seluruhnya.
+  const exportParams = useMemo(() => {
+    const params = new URLSearchParams();
+    if (warehouse !== "ALL") params.set("wh", warehouse);
+    if (deferredQuery.trim()) params.set("q", deferredQuery.trim());
+    if (status !== "ALL") params.set("status", status);
+    if (fill !== "all") params.set("fill", fill);
+    if (mode !== "policy") params.set("view", mode);
+    return params;
+  }, [deferredQuery, fill, mode, status, warehouse]);
 
   useEffect(() => {
     setPage(1);
-  }, [deferredQuery, mode, status, warehouse]);
+  }, [deferredQuery, fill, mode, status, warehouse]);
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
@@ -93,7 +121,7 @@ export default function OccupancyZoneBrowser({
           <label>
             <span className="sr-only">{t("occ.searchZone")}</span>
             <input className="input" value={query} onChange={(event) => setQuery(event.target.value)}
-              placeholder={t("occ.searchZone")} />
+              placeholder={t("occ.searchZone")} autoComplete="off" spellCheck={false} />
           </label>
           {!fixedWarehouse && (
             <label>
@@ -110,17 +138,34 @@ export default function OccupancyZoneBrowser({
               <option value="ALL">{t("heat.allStatuses")}</option>
               {(["NORMAL", "MONITOR", "WARNING", "CRITICAL", "BREACH"] as OccupancyStatus[])
                 .map((value) => <option key={value} value={value}>{t(`status.${value}`)}</option>)}
+              <option value="UNAVAILABLE">{t("heat.legendStatus.UNAVAILABLE")}</option>
+            </select>
+          </label>
+          <label>
+            <span className="sr-only">{t("export.fill")}</span>
+            <select className="input" value={fill} onChange={(event) => setFill(event.target.value as FillFilter)}>
+              <option value="all">{t("export.fill.all")}</option>
+              <option value="empty">{t("export.fill.empty")}</option>
+              <option value="occupied">{t("export.fill.occupied")}</option>
             </select>
           </label>
         </div>
         <div className="occ-zone-result">
           <span className="chip chip-accent">{t(`basis.${mode}`)}</span>
           <span className="num">{filtered.length}/{rows.length} {t("common.zone").toLowerCase()}</span>
+          <span className="num" title={t("occ.emptySloc")}>· {fmtNum(emptySlocs)} {t("common.empty").toLowerCase()}</span>
           <button type="button" className="btn btn-sm" disabled={page <= 1}
             onClick={() => setPage((value) => value - 1)} aria-label={t("action.back")}>←</button>
           <span className="num">{page}/{totalPages}</span>
           <button type="button" className="btn btn-sm" disabled={page >= totalPages}
             onClick={() => setPage((value) => value + 1)} aria-label={`${t("common.zone")} ${page + 1}`}>→</button>
+          <ExportExcelButton
+            dataset="zone"
+            params={exportParams}
+            disabled={filtered.length === 0}
+            label={`${t("export.excel")} (${filtered.length})`}
+            title={t("export.fullHint")}
+          />
         </div>
       </div>
 

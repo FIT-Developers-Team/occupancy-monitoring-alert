@@ -25,6 +25,11 @@ export async function GET(request: NextRequest) {
       offset: Number(request.nextUrl.searchParams.get("offset") ?? 0),
       limit: Number(request.nextUrl.searchParams.get("limit") ?? 100),
       query: request.nextUrl.searchParams.get("q") ?? "",
+      // Nama parameter ini harus sama persis dengan yang dipakai /api/export;
+      // begitu keduanya berbeda, tabel dan berkas Excel berhenti sepakat.
+      status: request.nextUrl.searchParams.get("stockStatus") ?? "",
+      category: request.nextUrl.searchParams.get("category") ?? "",
+      rackZone: request.nextUrl.searchParams.get("rackZone") ?? "",
       sort: requestedSort && SORTS.has(requestedSort) ? requestedSort : "sloc_code",
       direction: request.nextUrl.searchParams.get("dir") === "desc" ? "desc" : "asc",
     }));

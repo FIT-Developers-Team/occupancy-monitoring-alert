@@ -9,6 +9,8 @@ import Section from "@/components/ui/section";
 import KpiCard from "@/components/ui/kpi-card";
 import { StatusBadge } from "@/components/ui/badges";
 import OccupancyZoneBrowser from "@/components/domain/occupancy-zone-browser";
+import SlocExplorer from "@/components/domain/sloc-explorer";
+import ExportExcelButton from "@/components/domain/export-excel-button";
 import PageHeader from "@/components/ui/page-header";
 
 export const dynamic = "force-dynamic";
@@ -36,6 +38,8 @@ export default async function WarehouseDetail(
         actions={
           <>
           {shownStatus && <StatusBadge status={shownStatus} />}
+          <ExportExcelButton dataset="sloc" params={{ wh: w.code, view: mode }}
+            label={`${tr("export.excel")} · SLOC`} title={tr("export.fullHint")} />
           <Link className="btn btn-sm" href={`/heatmap?wh=${w.code}`}>{tr("heat.title")}</Link>
           <Link className="btn btn-ghost btn-sm" href="/occupancy">← {tr("common.allWarehouses")}</Link>
           </>
@@ -63,6 +67,10 @@ export default async function WarehouseDetail(
 
       <Section eyebrow={`${zones.length} ${tr("common.zone").toLowerCase()} · ${tr("occ.zoneHint")}`} title={tr("occ.byZone")}>
         <OccupancyZoneBrowser rows={zones} mode={mode} thresholds={{ [code]: t }} fixedWarehouse={code} />
+      </Section>
+
+      <Section eyebrow={`${tr("slocx.warehouseScope")} · ${tr("slocx.hint")}`} title={tr("slocx.title")}>
+        <SlocExplorer lockedWh={code} initialView={mode} storageKey="warehouse" />
       </Section>
 
       <Section eyebrow={`${code} · 10 ${tr("occ.rows")}`} title={tr("occ.movements")}>

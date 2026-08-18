@@ -37,13 +37,3 @@ export const statusLabel: Record<OccupancyStatus, string> = {
 
 export const severityOrder: Severity[] = ["INFO", "WARNING", "HIGH", "CRITICAL", "EMERGENCY"];
 export const severityRank = (s: Severity) => severityOrder.indexOf(s);
-
-export function toCsv(rows: Record<string, unknown>[]): string {
-  if (!rows.length) return "";
-  const cols = Object.keys(rows[0]);
-  const esc = (v: unknown) => {
-    const s = v === null || v === undefined ? "" : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  return [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n");
-}

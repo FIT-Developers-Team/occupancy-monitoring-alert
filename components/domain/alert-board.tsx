@@ -1,18 +1,19 @@
 "use client";
 // Papan alert per gudang + pop-up detail (sebab, dampak, tindakan, riwayat).
-import { useMemo, useState } from "react";
-import type { Alert } from "@/types";
-import { fmtDateTime } from "@/lib/utils";
+import { useDeferredValue, useMemo, useState } from "react";
+import type { Alert, Severity } from "@/types";
+import { fmtDateTime, severityOrder } from "@/lib/utils";
 import { useT } from "@/lib/i18n-client";
 import { SeverityBadge, AlertStatusBadge } from "@/components/ui/badges";
 import AlertActions from "@/components/domain/alert-actions";
+import ExportExcelButton from "@/components/domain/export-excel-button";
 
 export interface AlertEvent {
   id: string; alert_id: string; at: string; actor: string; action: string; note: string | null;
 }
 
 export default function AlertBoard({
-  alerts, events, writable, levels, ruleHints, initialId,
+  alerts, events, writable, levels, ruleHints, initialId, exportGroup,
 }: {
   alerts: Alert[];
   events: Record<string, AlertEvent[]>;
@@ -20,24 +21,84 @@ export default function AlertBoard({
   levels: Record<number, string>;
   ruleHints: Record<string, { reason: string; action: string }>;
   initialId?: string;
+  /** Kelompok status yang dimuat papan ini — dipakai ekspor agar cakupannya sama. */
+  exportGroup?: "open" | "acknowledged" | "closed" | "all";
 }) {
   const { t } = useT();
   const [wh, setWh] = useState<string>("");
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const [severity, setSeverity] = useState<Severity | "">("");
+  const [rule, setRule] = useState("");
   const [sel, setSel] = useState<Alert | null>(
     initialId ? alerts.find((a) => a.alert_id === initialId) ?? null : null);
 
   const whs = useMemo(
     () => [...new Set(alerts.map((a) => a.warehouse_code))].sort(), [alerts]);
+  const rules = useMemo(
+    () => [...new Set(alerts.map((a) => a.rule_id))].sort(), [alerts]);
   const counts = useMemo(() => {
     const m: Record<string, number> = {};
     for (const a of alerts) m[a.warehouse_code] = (m[a.warehouse_code] ?? 0) + 1;
     return m;
   }, [alerts]);
-  const shown = wh ? alerts.filter((a) => a.warehouse_code === wh) : alerts;
+  const shown = useMemo(() => {
+    const tokens = deferredQuery.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    return alerts.filter((alert) => {
+      if (wh && alert.warehouse_code !== wh) return false;
+      if (severity && alert.severity !== severity) return false;
+      if (rule && alert.rule_id !== rule) return false;
+      if (!tokens.length) return true;
+      // Judul dan detail ikut dicari: operator biasanya ingat kalimat alert,
+      // bukan kode aturannya.
+      const haystack = [
+        alert.warehouse_code, alert.zone, alert.sloc_code, alert.sku,
+        alert.title, alert.detail, alert.rule_id, alert.rule_name,
+      ].filter(Boolean).join(" ").toLocaleLowerCase();
+      return tokens.every((token) => haystack.includes(token));
+    });
+  }, [alerts, deferredQuery, rule, severity, wh]);
   const hint = (a: Alert) => ruleHints[a.rule_id] ?? { reason: a.detail, action: "" };
+
+  const exportParams = useMemo(() => {
+    const params = new URLSearchParams({ group: exportGroup ?? "all" });
+    if (wh) params.set("wh", wh);
+    if (severity) params.set("severity", severity);
+    if (rule) params.set("rule", rule);
+    if (deferredQuery.trim()) params.set("q", deferredQuery.trim());
+    return params;
+  }, [deferredQuery, exportGroup, rule, severity, wh]);
 
   return (
     <>
+      <div className="filter-toolbar">
+        <label>
+          <span className="sr-only">{t("alertx.search")}</span>
+          <input className="input" value={query} onChange={(event) => setQuery(event.target.value)}
+            placeholder={t("alertx.search")} autoComplete="off" spellCheck={false} />
+        </label>
+        <label>
+          <span className="sr-only">{t("alert.severity")}</span>
+          <select className="input" value={severity}
+            onChange={(event) => setSeverity(event.target.value as Severity | "")}>
+            <option value="">{t("alertx.allSeverities")}</option>
+            {severityOrder.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>
+        <label>
+          <span className="sr-only">{t("alert.rule")}</span>
+          <select className="input" value={rule} onChange={(event) => setRule(event.target.value)}>
+            <option value="">{t("alertx.allRules")}</option>
+            {rules.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>
+        <span className="filter-toolbar-spacer">
+          <span className="filter-count num">{shown.length}/{alerts.length}</span>
+          <ExportExcelButton dataset="alerts" params={exportParams}
+            disabled={shown.length === 0} title={t("export.fullHint")} />
+        </span>
+      </div>
+
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         <button className={`chip ${wh === "" ? "chip-accent" : ""}`} onClick={() => setWh("")}>
           {t("common.allWarehouses")} {alerts.length}
@@ -50,7 +111,9 @@ export default function AlertBoard({
       </div>
 
       {shown.length === 0 ? (
-        <p className="py-6 text-center text-xs" style={{ color: "var(--text-muted)" }}>{t("common.none")}</p>
+        <p className="py-6 text-center text-xs" style={{ color: "var(--text-muted)" }}>
+          {alerts.length === 0 ? t("common.none") : t("alertx.noMatches")}
+        </p>
       ) : (
         <ul className="alert-list">
           {shown.map((a) => (

@@ -9,8 +9,11 @@ import { statusFor } from "@/lib/occupancy";
 import { wmaRatePctPerHour, hoursToTarget } from "@/lib/forecast";
 import { resolveSloc, categoryCounted, countedStatuses } from "@/lib/capacity";
 import type { SlocScope } from "@/lib/capacity";
-import { getCapacity, getThresholds, getWarehouses, whMapSQL, whNameByCode } from "@/lib/config";
+import {
+  getCapacity, getThresholds, getWarehouses, thresholdsFor, whMapSQL, whNameByCode,
+} from "@/lib/config";
 import { clearReadModelMemory, readModelCached } from "@/lib/read-model-cache";
+import { DRIFT_TYPES, type SlocFilter, type SlocSort } from "@/lib/sloc-filter";
 import type {
   SlocOccupancy, WarehouseSummary, ZoneSummary, RackZoneSummary, TrendPoint, ForecastRow, StockLine, Basis, BasisMode,
 } from "@/types";
@@ -878,7 +881,23 @@ export interface ZoneDetailOptions {
   query?: string;
   sort?: ZoneDetailSort;
   direction?: "asc" | "desc";
+  /** Status stok Superset (Available, Quality inspection, …). */
+  status?: string;
+  /** Kategori L1 produk. */
+  category?: string;
+  /** Sub-zona rak, mis. SRA1. */
+  rackZone?: string;
+  /**
+   * Ekspor: ambil seluruh baris yang cocok, bukan satu halaman. Batas keras
+   * tetap dipasang agar satu zona yang tak wajar besar tidak menghabiskan
+   * memori proses.
+   */
+  all?: boolean;
 }
+
+/** Batas keras baris isi zona untuk satu berkas ekspor. */
+export const ZONE_DETAIL_EXPORT_MAX_ROWS = 200_000;
+
 export async function getZoneDetail(
   wh: string,
   zone: string,
@@ -886,11 +905,18 @@ export async function getZoneDetail(
 ): Promise<ZoneDetailResult> {
   const scope = cleanScope({ wh, zone, operational: true });
   if (!scope.wh || !scope.zone) return { rows: [], total: 0, truncated: false };
-  const safeOffset = Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset ?? 0)) : 0;
-  const safeLimit = Number.isFinite(options.limit)
-    ? Math.min(200, Math.max(25, Math.floor(options.limit ?? 100)))
-    : 100;
+  const safeOffset = options.all
+    ? 0
+    : Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset ?? 0)) : 0;
+  const safeLimit = options.all
+    ? ZONE_DETAIL_EXPORT_MAX_ROWS
+    : Number.isFinite(options.limit)
+      ? Math.min(200, Math.max(25, Math.floor(options.limit ?? 100)))
+      : 100;
   const query = (options.query ?? "").trim().toLocaleLowerCase().slice(0, 120);
+  const statusFilter = (options.status ?? "").trim().slice(0, 60);
+  const categoryFilter = (options.category ?? "").trim().slice(0, 80);
+  const rackZoneFilter = (options.rackZone ?? "").trim().toUpperCase().slice(0, 40);
   const sortColumns: Record<ZoneDetailSort, string> = {
     sloc_code: "sloc_code",
     sku_number: "sku_number",
@@ -962,6 +988,9 @@ export async function getZoneDetail(
          coalesce(sloc_code, '') || ' ' || coalesce(sku_number, '') || ' ' ||
          coalesce(product_name, '') || ' ' || coalesce(l1_category, '')
        ) LIKE ?)
+         AND (? = '' OR coalesce(status, '') = ?)
+         AND (? = '' OR coalesce(l1_category, '') = ?)
+         AND (? = '' OR upper(coalesce(rack_zone, '')) = ?)
      ), details AS (
        SELECT *, count(*) OVER ()::INT AS total
        FROM filtered
@@ -972,7 +1001,12 @@ export async function getZoneDetail(
             l1_category, status, qty, cbm, sloc_pct, sloc_basis
      FROM details
      ORDER BY ${sort} ${direction}, sloc_code ASC, sku_number ASC`,
-    [scope.wh, scope.zone, query, `%${query}%`, safeLimit, safeOffset],
+    [
+      scope.wh, scope.zone, query, `%${query}%`,
+      statusFilter, statusFilter, categoryFilter, categoryFilter,
+      rackZoneFilter, rackZoneFilter,
+      safeLimit, safeOffset,
+    ],
   );
   const mapped = rows.map((r) => {
     return {
@@ -989,6 +1023,49 @@ export async function getZoneDetail(
     rows: mapped,
     total,
     truncated: safeOffset > 0 || safeOffset + mapped.length < total,
+  };
+}
+
+export interface ZoneDetailFacets {
+  statuses: string[];
+  categories: string[];
+  rack_zones: string[];
+}
+
+/**
+ * Pilihan filter isi zona diambil dari zona itu sendiri. Daftar status stok dan
+ * kategori L1 berbeda antar gudang, jadi menuliskannya sebagai konstanta akan
+ * menawarkan filter yang tidak pernah menghasilkan satu baris pun.
+ */
+export async function getZoneDetailFacets(wh: string, zone: string): Promise<ZoneDetailFacets> {
+  const scope = cleanScope({ wh, zone, operational: true });
+  if (!scope.wh || !scope.zone) return { statuses: [], categories: [], rack_zones: [] };
+  const rows = await queryHistory<{ status: string; category: string; rack_zone: string }>(
+    `${WH_MAP()}, scoped AS (
+       SELECT v.location_id, v.sloc_code, coalesce(v.rack_zone, '') AS rack_zone
+       FROM vw_sloc v ${JOIN_WH}
+       WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()} AND m.wh = ? AND v.zone = ?
+     )
+     SELECT DISTINCT coalesce(s.status, '') AS status,
+            coalesce(s.l1_category, '') AS category,
+            e.rack_zone
+     FROM scoped e
+     LEFT JOIN vw_stock_latest s
+       ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code`,
+    [scope.wh, scope.zone],
+  );
+  const statuses = new Set<string>();
+  const categories = new Set<string>();
+  const rackZones = new Set<string>();
+  for (const row of rows) {
+    if (row.status) statuses.add(row.status);
+    if (row.category) categories.add(row.category);
+    if (row.rack_zone) rackZones.add(row.rack_zone);
+  }
+  return {
+    statuses: [...statuses].sort(naturalOrder.compare),
+    categories: [...categories].sort(naturalOrder.compare),
+    rack_zones: [...rackZones].sort(naturalOrder.compare),
   };
 }
 
@@ -1218,22 +1295,54 @@ export async function getIntegrity(wh?: string): Promise<IntegrityRow[]> {
   );
 }
 
-export async function getIntegrityDrift(limit = 30, wh?: string) {
-  return queryHistory(
+export interface IntegrityDriftRow {
+  warehouse: string; sloc_code: string; count_date: string;
+  system_qty: number; physical_qty: number; diff: number; drift_type: string;
+}
+
+export interface IntegrityDriftOptions {
+  wh?: string;
+  /** Pencarian kode SLOC. */
+  query?: string;
+  /** PHANTOM · GHOST · SELISIH. */
+  driftType?: string;
+  limit?: number;
+}
+
+export async function getIntegrityDrift(
+  limit = 30,
+  wh?: string,
+  options: Omit<IntegrityDriftOptions, "wh" | "limit"> = {},
+): Promise<IntegrityDriftRow[]> {
+  const scope = cleanScope({ wh });
+  if (wh && !scope.wh) return [];
+  const safeLimit = Number.isFinite(limit)
+    ? Math.min(200_000, Math.max(1, Math.floor(limit)))
+    : 30;
+  const query = (options.query ?? "").trim().toLocaleLowerCase().slice(0, 80);
+  const driftType = (options.driftType ?? "").trim().toUpperCase();
+  const safeDriftType = (DRIFT_TYPES as readonly string[]).includes(driftType) ? driftType : "";
+  return queryHistory<IntegrityDriftRow>(
     `${WH_MAP()}, latest_count AS (
        SELECT *, row_number() OVER (PARTITION BY sloc_code ORDER BY count_date DESC) rn
        FROM cycle_count
+     ), drift AS (
+       SELECT m.wh AS warehouse, c.sloc_code, c.count_date::VARCHAR AS count_date,
+              c.system_qty, c.physical_qty, (c.physical_qty - c.system_qty) AS diff,
+              CASE WHEN c.system_qty > 0 AND c.physical_qty = 0 THEN 'PHANTOM'
+                   WHEN c.system_qty = 0 AND c.physical_qty > 0 THEN 'GHOST'
+                   ELSE 'SELISIH' END AS drift_type
+       FROM latest_count c JOIN vw_sloc v ON v.sloc_code = c.sloc_code ${JOIN_WH}
+       WHERE c.rn = 1 AND ${OPERATIONAL_SLOC}
+         AND abs(c.system_qty - c.physical_qty) > greatest(1, 0.02*c.system_qty)
+         ${whFilter(scope.wh)}
      )
-     SELECT m.wh AS warehouse, c.sloc_code, c.count_date::VARCHAR AS count_date,
-            c.system_qty, c.physical_qty, (c.physical_qty - c.system_qty) AS diff,
-            CASE WHEN c.system_qty > 0 AND c.physical_qty = 0 THEN 'PHANTOM'
-                 WHEN c.system_qty = 0 AND c.physical_qty > 0 THEN 'GHOST'
-                 ELSE 'SELISIH' END AS drift_type
-     FROM latest_count c JOIN vw_sloc v ON v.sloc_code = c.sloc_code ${JOIN_WH}
-      WHERE c.rn = 1 AND ${OPERATIONAL_SLOC}
-       AND abs(c.system_qty - c.physical_qty) > greatest(1, 0.02*c.system_qty)
-       ${whFilter(wh)}
-     ORDER BY abs(c.physical_qty - c.system_qty) DESC LIMIT ${Math.max(1, limit)}`
+     SELECT * FROM drift
+     WHERE (? = '' OR lower(sloc_code || ' ' || warehouse) LIKE ?)
+       AND (? = '' OR drift_type = ?)
+     ORDER BY abs(diff) DESC, warehouse, sloc_code
+     LIMIT ${safeLimit}`,
+    [query, `%${query}%`, safeDriftType, safeDriftType],
   );
 }
 
@@ -1420,6 +1529,477 @@ export async function getDenseSlocs(
     `dense-sloc-v1-${scope.wh ?? "all"}-${safeMinimum}-${safeLimit}-${safeView}`,
     readModelVersion(),
     () => loadDenseSlocs(scope.wh, safeMinimum, safeLimit, safeView),
+    { freshMs: DASHBOARD_TTL },
+  );
+}
+
+// ---- SLOC explorer: satu read-model untuk filter, pencarian, dan ekspor -----
+//
+// Halaman kepadatan, heatmap, dan ekspor Excel sebelumnya masing-masing
+// menyusun kueri sendiri, sehingga tabel di layar dan berkas yang diunduh dapat
+// berbeda diam-diam. Semuanya kini melewati satu pembangun SQL: DuckDB yang
+// memfilter, mengurutkan, dan menghitung ringkasan, sehingga ekspor "sesuai
+// filter" benar-benar berarti sesuai filter yang sedang tampil.
+
+/** Tangga status per gudang sebagai ekspresi SQL (cermin statusFor()). */
+function statusLadderSQL(pctExpr: string, whExpr: string): string {
+  const ladder = (t: { monitor: number; warning: number; critical: number; breach: number }) =>
+    `CASE WHEN ${pctExpr} >= ${t.breach} THEN 'BREACH'
+          WHEN ${pctExpr} >= ${t.critical} THEN 'CRITICAL'
+          WHEN ${pctExpr} >= ${t.warning} THEN 'WARNING'
+          WHEN ${pctExpr} >= ${t.monitor} THEN 'MONITOR'
+          ELSE 'NORMAL' END`;
+  let expression = ladder(getThresholds().default);
+  for (const warehouse of getWarehouses().warehouses) {
+    expression =
+      `CASE WHEN ${whExpr} = ${sqlString(warehouse.code)} THEN ${ladder(thresholdsFor(warehouse.code))}
+            ELSE ${expression} END`;
+  }
+  return expression;
+}
+
+export interface SlocExplorerRow {
+  sloc_code: string; wh: string; zone: string; rack_zone: string;
+  aisle: string; bay: string; level: string; bin: string; storage: string;
+  basis: Basis; occupied: boolean;
+  occ_qty: number; cap_qty: number; occ_cbm: number; cap_cbm: number;
+  qty_valid: boolean; cbm_valid: boolean;
+  pct_qty: number | null; pct_cbm: number | null; pct_bin: number;
+  /** Okupansi basis kebijakan — tetap sama apa pun basis tampilan. */
+  pct: number;
+  /** Okupansi pada basis tampilan; null bila kapasitasnya belum tersedia. */
+  view_pct: number | null;
+  status: string;
+  sku_count: number;
+}
+
+export interface SlocExplorerSummary {
+  total: number;
+  occupied: number;
+  empty: number;
+  by_status: Record<string, number>;
+  occ_qty: number; cap_qty: number;
+  occ_cbm: number; cap_cbm: number;
+  sku_count: number;
+}
+
+export interface SlocExplorerPage {
+  rows: SlocExplorerRow[];
+  summary: SlocExplorerSummary;
+  offset: number;
+  limit: number;
+}
+
+/**
+ * Batas aman ekspor. Delapan gudang bersama-sama memiliki sekitar 143 ribu SLOC
+ * aktif, jadi angka ini memberi ruang lebih dari dua kali lipat tanpa pernah
+ * memaksa pengguna mengunduh per bagian, dan tetap jauh di bawah batas baris
+ * Excel.
+ */
+export const SLOC_EXPORT_MAX_ROWS = 400_000;
+
+interface SlocSqlPlan { cte: string; params: unknown[] }
+
+const SLOC_SORT_COLUMNS: Record<SlocSort, string> = {
+  sloc_code: "sloc_code",
+  wh: "wh",
+  zone: "zone",
+  rack_zone: "rack_zone",
+  storage: "storage_handling",
+  pct: "view_pct",
+  pct_qty: "pct_qty",
+  pct_cbm: "pct_cbm",
+  pct_bin: "pct_bin",
+  occ_qty: "occ_qty",
+  occ_cbm: "occ_cbm",
+  sku_count: "sku_count",
+};
+
+/** Kolom pencarian digabung sekali agar setiap kata kunci diuji atas semuanya. */
+const SLOC_HAYSTACK =
+  `lower(sloc_code || ' ' || wh || ' ' || zone || ' ' || rack_zone || ' ' ||
+         aisle || ' ' || bay || ' ' || level || ' ' || bin || ' ' || storage_handling)`;
+
+function slocSqlPlan(filter: SlocFilter): SlocSqlPlan {
+  const params: unknown[] = [];
+  const cap = capacitySqlExpressions();
+  // Setiap placeholder di-CAST secara eksplisit. CTE `effective` dirujuk dua
+  // kali (oleh stock_agg dan occupancy), dan tanpa CAST penyimpulan tipe
+  // parameter DuckDB di dalamnya terbukti rapuh — gejalanya berupa
+  // "Expected vector of type VARCHAR, but found vector of type INT32".
+  const scope: string[] = [];
+  if (filter.wh) { scope.push("m.wh = CAST(? AS VARCHAR)"); params.push(filter.wh); }
+  if (filter.zone) {
+    scope.push("upper(coalesce(v.zone, '')) = CAST(? AS VARCHAR)");
+    params.push(filter.zone);
+  }
+  if (filter.rackZone) {
+    scope.push("upper(coalesce(v.rack_zone, '')) = CAST(? AS VARCHAR)");
+    params.push(filter.rackZone);
+  }
+  if (filter.storage) {
+    scope.push("lower(coalesce(v.storage_handling, '')) LIKE CAST(? AS VARCHAR)");
+    params.push(`%${filter.storage.toLocaleLowerCase()}%`);
+  }
+
+  // Basis tampilan mengikuti UI: kebijakan selalu punya angka (0 bila kosong),
+  // sedangkan Qty/CBM boleh NULL supaya "kapasitas belum tersedia" tidak
+  // menyamar sebagai 0%.
+  const viewExpression =
+    filter.view === "qty" ? "pct_qty"
+    : filter.view === "cbm" ? "pct_cbm"
+    : filter.view === "bin" ? "pct_bin"
+    : "coalesce(pct_policy, 0)";
+  const statusExpression = filter.view === "bin"
+    ? "CASE WHEN occupied THEN 'OCCUPIED' ELSE 'EMPTY' END"
+    : `CASE WHEN view_pct IS NULL THEN 'UNAVAILABLE' ELSE ${statusLadderSQL("view_pct", "wh")} END`;
+
+  const conditions: string[] = [];
+  for (const token of filter.q.toLocaleLowerCase().split(/\s+/).filter(Boolean).slice(0, 6)) {
+    conditions.push(`${SLOC_HAYSTACK} LIKE CAST(? AS VARCHAR)`);
+    params.push(`%${token}%`);
+  }
+  if (filter.fill === "occupied") conditions.push("occupied");
+  if (filter.fill === "empty") conditions.push("NOT occupied");
+  if (filter.status.length) {
+    // Basis Bin melabeli sel EMPTY/OCCUPIED, bukan tangga okupansi, sehingga
+    // memaksakan pilihan tangga di sana hanya akan mengosongkan tabel.
+    const wanted = filter.view === "bin" ? [] : filter.status;
+    if (wanted.length) conditions.push(`status IN (${sqlList(wanted)})`);
+  }
+  if (filter.minPct !== null) {
+    conditions.push("view_pct >= CAST(? AS DOUBLE)");
+    params.push(filter.minPct);
+  }
+  if (filter.maxPct !== null) {
+    conditions.push("view_pct <= CAST(? AS DOUBLE)");
+    params.push(filter.maxPct);
+  }
+
+  const cte =
+    `${WH_MAP()}, effective AS (
+       SELECT v.sloc_id, v.location_id, v.sloc_code, m.wh, coalesce(v.zone, '') AS zone,
+              coalesce(v.rack_zone, '') AS rack_zone, coalesce(v.aisle, '') AS aisle,
+              coalesce(v.bay, '') AS bay, coalesce(v.level, '') AS level,
+              coalesce(v.bin, '') AS bin,
+              coalesce(v.storage_handling, '') AS storage_handling,
+              ${cap.basis} AS basis, ${cap.capQty} AS cap_qty, ${cap.capCbm} AS cap_cbm,
+              ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
+       FROM vw_sloc v ${JOIN_WH}
+       WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()}${scope.length ? ` AND ${scope.join(" AND ")}` : ""}
+     ), stock_agg AS (
+       SELECT e.location_id, e.sloc_code,
+              coalesce(sum(s.stock_qty), 0)::DOUBLE AS occ_qty,
+              coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS occ_cbm,
+              count(DISTINCT s.product_id)::INT AS sku_count
+       FROM effective e
+       JOIN vw_stock_latest s
+         ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
+       WHERE ${statusPredicateSQL("s.status")}
+         AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
+       GROUP BY 1, 2
+     ), occupancy AS (
+       SELECT e.*, coalesce(a.occ_qty, 0)::DOUBLE AS occ_qty,
+              coalesce(a.occ_cbm, 0)::DOUBLE AS occ_cbm,
+              coalesce(a.sku_count, 0)::INT AS sku_count
+       FROM effective e
+       LEFT JOIN stock_agg a
+         ON a.location_id = e.location_id AND a.sloc_code = e.sloc_code
+     ), percentages AS (
+       SELECT *,
+              CASE WHEN qty_valid AND cap_qty > 0 THEN 100.0 * occ_qty / cap_qty END AS pct_qty,
+              CASE WHEN cbm_valid AND cap_cbm > 0 THEN 100.0 * occ_cbm / cap_cbm END AS pct_cbm,
+              CASE WHEN occ_qty > 0 OR occ_cbm > 0 THEN 100.0 ELSE 0.0 END AS pct_bin,
+              (occ_qty > 0 OR occ_cbm > 0) AS occupied
+       FROM occupancy
+     ), policy_scored AS (
+       SELECT *,
+              coalesce(
+                CASE WHEN basis = 'qty' THEN pct_qty ELSE pct_cbm END,
+                CASE WHEN basis = 'qty' THEN pct_cbm ELSE pct_qty END
+              ) AS pct_policy
+       FROM percentages
+     ), view_scored AS (
+       SELECT *, ${viewExpression} AS view_pct FROM policy_scored
+     ), labelled AS (
+       SELECT *, ${statusExpression} AS status FROM view_scored
+     ), filtered AS (
+       SELECT * FROM labelled${conditions.length ? `
+       WHERE ${conditions.join(" AND ")}` : ""}
+     )`;
+  return { cte, params };
+}
+
+function slocOrderBy(filter: SlocFilter): string {
+  const column = SLOC_SORT_COLUMNS[filter.sort] ?? "view_pct";
+  const direction = filter.dir === "asc" ? "ASC" : "DESC";
+  // NULLS LAST pada kedua arah: baris tanpa kapasitas adalah catatan kualitas
+  // data, bukan lokasi paling kosong atau paling penuh.
+  return `${column} ${direction} NULLS LAST, wh ASC, sloc_code ASC`;
+}
+
+interface SlocRawRow {
+  sloc_code: string; wh: string; zone: string; rack_zone: string;
+  aisle: string; bay: string; level: string; bin: string; storage_handling: string;
+  basis: Basis; occupied: boolean;
+  occ_qty: number; cap_qty: number; occ_cbm: number; cap_cbm: number;
+  qty_valid: boolean; cbm_valid: boolean;
+  pct_qty: number | null; pct_cbm: number | null; pct_bin: number;
+  pct_policy: number | null; view_pct: number | null;
+  status: string; sku_count: number;
+}
+
+const SLOC_SELECT_COLUMNS =
+  `sloc_code, wh, zone, rack_zone, aisle, bay, level, bin, storage_handling,
+   basis, occupied, occ_qty, cap_qty, occ_cbm, cap_cbm, qty_valid, cbm_valid,
+   pct_qty, pct_cbm, pct_bin, pct_policy, view_pct, status, sku_count`;
+
+function toExplorerRow(row: SlocRawRow): SlocExplorerRow {
+  return {
+    sloc_code: row.sloc_code, wh: row.wh, zone: row.zone, rack_zone: row.rack_zone,
+    aisle: row.aisle, bay: row.bay, level: row.level, bin: row.bin,
+    storage: row.storage_handling, basis: row.basis, occupied: Boolean(row.occupied),
+    occ_qty: r1(row.occ_qty), cap_qty: r1(row.cap_qty),
+    occ_cbm: r3(row.occ_cbm), cap_cbm: r3(row.cap_cbm),
+    qty_valid: Boolean(row.qty_valid), cbm_valid: Boolean(row.cbm_valid),
+    pct_qty: row.pct_qty === null ? null : r1(row.pct_qty),
+    pct_cbm: row.pct_cbm === null ? null : r1(row.pct_cbm),
+    pct_bin: r1(row.pct_bin),
+    pct: r1(row.pct_policy ?? 0),
+    view_pct: row.view_pct === null ? null : r1(row.view_pct),
+    status: row.status,
+    sku_count: row.sku_count,
+  };
+}
+
+const EMPTY_SLOC_SUMMARY: SlocExplorerSummary = {
+  total: 0, occupied: 0, empty: 0, by_status: {},
+  occ_qty: 0, cap_qty: 0, occ_cbm: 0, cap_cbm: 0, sku_count: 0,
+};
+
+function warehouseKnown(code: string): boolean {
+  return !code || getWarehouses().warehouses.some((warehouse) => warehouse.code === code);
+}
+
+/** Halaman tabel + ringkasan seluruh hasil filter dalam satu perjalanan kueri. */
+export async function getSlocExplorerPage(
+  filter: SlocFilter,
+  offset = 0,
+  limit = 100,
+): Promise<SlocExplorerPage> {
+  refreshCachesForHistoryChange();
+  const safeOffset = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
+  const safeLimit = Number.isFinite(limit)
+    ? Math.min(500, Math.max(10, Math.floor(limit)))
+    : 100;
+  // Kode gudang tak dikenal tidak boleh diam-diam melebar menjadi "semua
+  // gudang" — itu menampilkan cakupan yang tidak diminta.
+  if (!warehouseKnown(filter.wh)) {
+    return { rows: [], summary: EMPTY_SLOC_SUMMARY, offset: safeOffset, limit: safeLimit };
+  }
+
+  const plan = slocSqlPlan(filter);
+  const countIf = (predicate: string) =>
+    `sum(CASE WHEN ${predicate} THEN 1 ELSE 0 END) OVER ()::BIGINT`;
+  const rows = await queryHistory<SlocRawRow & {
+    total_rows: number; total_occupied: number;
+    n_normal: number; n_monitor: number; n_warning: number; n_critical: number;
+    n_breach: number; n_unavailable: number;
+    sum_occ_qty: number; sum_cap_qty: number; sum_occ_cbm: number; sum_cap_cbm: number;
+    sum_sku: number;
+  }>(
+    `${plan.cte}
+     SELECT ${SLOC_SELECT_COLUMNS},
+            count(*) OVER ()::BIGINT AS total_rows,
+            ${countIf("occupied")} AS total_occupied,
+            ${countIf("status = 'NORMAL'")} AS n_normal,
+            ${countIf("status = 'MONITOR'")} AS n_monitor,
+            ${countIf("status = 'WARNING'")} AS n_warning,
+            ${countIf("status = 'CRITICAL'")} AS n_critical,
+            ${countIf("status = 'BREACH'")} AS n_breach,
+            ${countIf("status = 'UNAVAILABLE'")} AS n_unavailable,
+            sum(occ_qty) OVER ()::DOUBLE AS sum_occ_qty,
+            sum(CASE WHEN qty_valid THEN cap_qty ELSE 0 END) OVER ()::DOUBLE AS sum_cap_qty,
+            sum(occ_cbm) OVER ()::DOUBLE AS sum_occ_cbm,
+            sum(CASE WHEN cbm_valid THEN cap_cbm ELSE 0 END) OVER ()::DOUBLE AS sum_cap_cbm,
+            sum(sku_count) OVER ()::BIGINT AS sum_sku
+     FROM filtered
+     ORDER BY ${slocOrderBy(filter)}
+     LIMIT ? OFFSET ?`,
+    [...plan.params, safeLimit, safeOffset],
+  );
+
+  const head = rows[0];
+  if (!head) {
+    return { rows: [], summary: EMPTY_SLOC_SUMMARY, offset: safeOffset, limit: safeLimit };
+  }
+  const total = head.total_rows;
+  const occupied = head.total_occupied;
+  return {
+    rows: rows.map(toExplorerRow),
+    summary: {
+      total,
+      occupied,
+      empty: Math.max(0, total - occupied),
+      by_status: {
+        NORMAL: head.n_normal, MONITOR: head.n_monitor, WARNING: head.n_warning,
+        CRITICAL: head.n_critical, BREACH: head.n_breach, UNAVAILABLE: head.n_unavailable,
+        OCCUPIED: occupied, EMPTY: Math.max(0, total - occupied),
+      },
+      occ_qty: r1(head.sum_occ_qty), cap_qty: r1(head.sum_cap_qty),
+      occ_cbm: r3(head.sum_occ_cbm), cap_cbm: r3(head.sum_cap_cbm),
+      sku_count: head.sum_sku,
+    },
+    offset: safeOffset,
+    limit: safeLimit,
+  };
+}
+
+/**
+ * Ringkasan tanpa baris — untuk KPI halaman yang hanya butuh angka.
+ *
+ * Berbeda dari getSlocExplorerPage, kueri ini tidak mengurutkan 144 ribu lokasi
+ * hanya untuk membuang semuanya kecuali hitungannya, dan hasilnya di-cache
+ * seperti read-model lain sehingga KPI tidak memindai ulang tiap render.
+ */
+export async function getSlocSummary(filter: SlocFilter): Promise<SlocExplorerSummary> {
+  if (!warehouseKnown(filter.wh)) return EMPTY_SLOC_SUMMARY;
+  const cacheKey = createHash("sha1").update(JSON.stringify({
+    ...filter, sort: undefined, dir: undefined,
+  })).digest("hex").slice(0, 16);
+  return readModelCached(
+    `sloc-summary-v1-${cacheKey}`,
+    readModelVersion(),
+    () => loadSlocSummary(filter),
+    { freshMs: DASHBOARD_TTL },
+  );
+}
+
+async function loadSlocSummary(filter: SlocFilter): Promise<SlocExplorerSummary> {
+  refreshCachesForHistoryChange();
+  const plan = slocSqlPlan(filter);
+  const countIf = (predicate: string) => `sum(CASE WHEN ${predicate} THEN 1 ELSE 0 END)::BIGINT`;
+  const [row] = await queryHistory<{
+    total_rows: number; total_occupied: number;
+    n_normal: number; n_monitor: number; n_warning: number; n_critical: number;
+    n_breach: number; n_unavailable: number;
+    sum_occ_qty: number; sum_cap_qty: number; sum_occ_cbm: number; sum_cap_cbm: number;
+    sum_sku: number;
+  }>(
+    `${plan.cte}
+     SELECT count(*)::BIGINT AS total_rows,
+            ${countIf("occupied")} AS total_occupied,
+            ${countIf("status = 'NORMAL'")} AS n_normal,
+            ${countIf("status = 'MONITOR'")} AS n_monitor,
+            ${countIf("status = 'WARNING'")} AS n_warning,
+            ${countIf("status = 'CRITICAL'")} AS n_critical,
+            ${countIf("status = 'BREACH'")} AS n_breach,
+            ${countIf("status = 'UNAVAILABLE'")} AS n_unavailable,
+            coalesce(sum(occ_qty), 0)::DOUBLE AS sum_occ_qty,
+            coalesce(sum(CASE WHEN qty_valid THEN cap_qty ELSE 0 END), 0)::DOUBLE AS sum_cap_qty,
+            coalesce(sum(occ_cbm), 0)::DOUBLE AS sum_occ_cbm,
+            coalesce(sum(CASE WHEN cbm_valid THEN cap_cbm ELSE 0 END), 0)::DOUBLE AS sum_cap_cbm,
+            coalesce(sum(sku_count), 0)::BIGINT AS sum_sku
+     FROM filtered`,
+    plan.params,
+  );
+  if (!row) return EMPTY_SLOC_SUMMARY;
+  const total = row.total_rows;
+  const occupied = row.total_occupied;
+  return {
+    total,
+    occupied,
+    empty: Math.max(0, total - occupied),
+    by_status: {
+      NORMAL: row.n_normal, MONITOR: row.n_monitor, WARNING: row.n_warning,
+      CRITICAL: row.n_critical, BREACH: row.n_breach, UNAVAILABLE: row.n_unavailable,
+      OCCUPIED: occupied, EMPTY: Math.max(0, total - occupied),
+    },
+    occ_qty: r1(row.sum_occ_qty), cap_qty: r1(row.sum_cap_qty),
+    occ_cbm: r3(row.sum_occ_cbm), cap_cbm: r3(row.sum_cap_cbm),
+    sku_count: row.sum_sku,
+  };
+}
+
+/** Seluruh baris yang cocok dengan filter — sumber tunggal berkas Excel. */
+export async function getSlocExplorerAll(
+  filter: SlocFilter,
+  maxRows = SLOC_EXPORT_MAX_ROWS,
+): Promise<SlocExplorerRow[]> {
+  refreshCachesForHistoryChange();
+  if (!warehouseKnown(filter.wh)) return [];
+  const plan = slocSqlPlan(filter);
+  const cap = Math.min(SLOC_EXPORT_MAX_ROWS, Math.max(1, Math.floor(maxRows)));
+  // LIMIT sengaja diikat sebagai parameter, bukan ditulis sebagai angka.
+  // Dengan LIMIT literal, DuckDB salah mengikat placeholder di dalam CTE
+  // `effective`: filter gudang mengembalikan nol baris dan filter zona
+  // melempar kesalahan tipe — persis kegagalan diam-diam yang membuat berkas
+  // ekspor berbeda dari tabel di layar.
+  const rows = await queryHistory<SlocRawRow>(
+    `${plan.cte}
+     SELECT ${SLOC_SELECT_COLUMNS}
+     FROM filtered
+     ORDER BY ${slocOrderBy(filter)}
+     LIMIT ? OFFSET ?`,
+    [...plan.params, cap, 0],
+  );
+  return rows.map(toExplorerRow);
+}
+
+export interface SlocFacets {
+  warehouses: Array<{ code: string; name: string; sloc_total: number }>;
+  zones: Array<{ wh: string; zone: string; rack_zones: string[]; sloc_total: number }>;
+  storages: string[];
+}
+
+async function loadSlocFacets(): Promise<SlocFacets> {
+  const rows = await queryHistory<{
+    wh: string; zone: string; rack_zone: string; storage: string; sloc_total: number;
+  }>(
+    `${WH_MAP()}
+     SELECT m.wh, coalesce(v.zone, '') AS zone, coalesce(v.rack_zone, '') AS rack_zone,
+            coalesce(v.storage_handling, '') AS storage, count(*)::INT AS sloc_total
+     FROM vw_sloc v ${JOIN_WH}
+     WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()}
+     GROUP BY 1, 2, 3, 4
+     ORDER BY 1, 2, 3, 4`,
+  );
+  const names = whNameByCode();
+  const warehouses = new Map<string, number>();
+  const zones = new Map<string, {
+    wh: string; zone: string; rack_zones: Set<string>; sloc_total: number;
+  }>();
+  const storages = new Set<string>();
+  for (const row of rows) {
+    warehouses.set(row.wh, (warehouses.get(row.wh) ?? 0) + row.sloc_total);
+    const key = `${row.wh}|${row.zone}`;
+    const zone = zones.get(key)
+      ?? { wh: row.wh, zone: row.zone, rack_zones: new Set<string>(), sloc_total: 0 };
+    zone.sloc_total += row.sloc_total;
+    if (row.rack_zone) zone.rack_zones.add(row.rack_zone);
+    zones.set(key, zone);
+    if (row.storage) storages.add(row.storage);
+  }
+  return {
+    warehouses: [...warehouses.entries()]
+      .map(([code, sloc_total]) => ({ code, name: names.get(code) ?? code, sloc_total }))
+      .sort((a, b) => naturalOrder.compare(a.code, b.code)),
+    zones: [...zones.values()]
+      .map((zone) => ({
+        wh: zone.wh, zone: zone.zone, sloc_total: zone.sloc_total,
+        rack_zones: [...zone.rack_zones].sort(naturalOrder.compare),
+      }))
+      .sort((a, b) => naturalOrder.compare(a.wh, b.wh) || naturalOrder.compare(a.zone, b.zone)),
+    storages: [...storages].sort(naturalOrder.compare),
+  };
+}
+
+/** Pilihan zona/rack/penyimpanan untuk dropdown filter — mengikuti data nyata. */
+export async function getSlocFacets(): Promise<SlocFacets> {
+  return readModelCached(
+    "sloc-facets-v1",
+    readModelVersion(),
+    loadSlocFacets,
     { freshMs: DASHBOARD_TTL },
   );
 }

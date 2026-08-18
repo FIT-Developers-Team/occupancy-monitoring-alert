@@ -7,6 +7,7 @@ import Section from "@/components/ui/section";
 import { SeverityBadge, AlertStatusBadge } from "@/components/ui/badges";
 import RunTickButton from "@/components/domain/run-tick-button";
 import AlertBoard, { type AlertEvent } from "@/components/domain/alert-board";
+import ExportExcelButton from "@/components/domain/export-excel-button";
 import PageHeader from "@/components/ui/page-header";
 
 export const dynamic = "force-dynamic";
@@ -61,19 +62,27 @@ export default async function AlertsPage(
       <PageHeader
         eyebrow={`${open.length} ${t("alert.open").toLowerCase()} · ${acked.length} ${t("alert.ack").toLowerCase()}`}
         title={t("alert.title")}
-        actions={<RunTickButton enabled={writable} />}
+        actions={
+          <>
+            <ExportExcelButton dataset="alerts" params={{ group: "all" }}
+              label={`${t("export.excel")} · ${t("alert.title")}`} />
+            <RunTickButton enabled={writable} />
+          </>
+        }
       />
 
       <Section eyebrow={`${open.length}`} title={t("alert.open")}>
         <AlertBoard alerts={open} events={evMap} writable={writable} levels={levels}
-          ruleHints={hints} initialId={id} />
+          ruleHints={hints} initialId={id} exportGroup="open" />
       </Section>
 
       <Section eyebrow={`${acked.length}`} title={t("alert.ack")}>
-        <AlertBoard alerts={acked} events={evMap} writable={writable} levels={levels} ruleHints={hints} />
+        <AlertBoard alerts={acked} events={evMap} writable={writable} levels={levels} ruleHints={hints}
+          exportGroup="acknowledged" />
       </Section>
 
-      <Section eyebrow="30" title={t("alert.resolved")}>
+      <Section eyebrow="30" title={t("alert.resolved")}
+        action={<ExportExcelButton dataset="alerts" params={{ group: "closed" }} />}>
         {closed.length === 0 ? (
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>{t("common.none")}</p>
         ) : (

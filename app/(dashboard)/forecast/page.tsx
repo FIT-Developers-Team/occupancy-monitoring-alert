@@ -4,6 +4,7 @@ import { fmtNum, fmtHours, fmtPct } from "@/lib/utils";
 import Section from "@/components/ui/section";
 import WhatIfPanel from "@/components/domain/what-if-panel";
 import PageHeader from "@/components/ui/page-header";
+import ExportExcelButton from "@/components/domain/export-excel-button";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +15,8 @@ export default async function ForecastPage() {
   const sorted = [...rows].sort((a, b) => (a.hours_to_95 ?? 1e9) - (b.hours_to_95 ?? 1e9));
   return (
     <div className="dashboard-page">
-      <PageHeader eyebrow={t("fc.method")} title={t("fc.title")} />
+      <PageHeader eyebrow={t("fc.method")} title={t("fc.title")}
+        actions={<ExportExcelButton dataset="forecast" />} />
       <Section eyebrow={t("fc.method")} title={t("fc.horizon")}>
         <div className="forecast-table-wrap">
           <table className="tbl forecast-table">

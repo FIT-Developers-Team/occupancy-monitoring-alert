@@ -14,6 +14,7 @@ import type { BasisMode, RackZoneSummary, SlocOccupancy, StockLine, ZoneSummary 
 import { fmtCbm, fmtNum } from "@/lib/utils";
 import { pickViewPct, pickViewStatus } from "@/lib/occupancy-view";
 import { useT } from "@/lib/i18n-client";
+import ExportExcelButton from "@/components/domain/export-excel-button";
 
 type HeatStatus =
   | "EMPTY"
@@ -491,6 +492,9 @@ export default function HeatmapGrid({
   const [error, setError] = useState(false);
   const [reload, setReload] = useState(0);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
+  const [zoneQuery, setZoneQuery] = useState("");
+  const [slocQuery, setSlocQuery] = useState("");
+  const [slocLookup, setSlocLookup] = useState<"idle" | "loading" | "missing">("idle");
   const [initialLookup, setInitialLookup] = useState<"idle" | "loading" | "found" | "missing">(
     initialSloc ? "loading" : "idle",
   );
@@ -715,8 +719,20 @@ export default function HeatmapGrid({
 
   // Preview cells are a bounded sample. Never hide a whole zone from a status
   // filter based on that sample; dim non-matching cells while retaining the
-  // authoritative zone index.
-  const visibleZones = zones;
+  // authoritative zone index. Pencarian zona aman disaring di sini karena
+  // indeks zona itu lengkap — berbeda dengan sel pratinjaunya.
+  const visibleZones = useMemo(() => {
+    const tokens = zoneQuery.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return zones;
+    return zones.filter((zone) => {
+      const haystack = [
+        zone.zone,
+        zone.storage,
+        ...(zone.rack_zones ?? []).map((rack) => rack.rack_zone),
+      ].join(" ").toLocaleLowerCase();
+      return tokens.every((token) => haystack.includes(token));
+    });
+  }, [zoneQuery, zones]);
 
   const statusLabel = useCallback((status: HeatStatus) => {
     return t(`heat.legendStatus.${status}`);
@@ -732,6 +748,40 @@ export default function HeatmapGrid({
   }), [t]);
   const selectedPct = selectedCell ? cellPct(selectedCell, basis) : null;
   const selectedStatus = selectedCell ? heatStatus(selectedCell, basis) : null;
+
+  // Mencari satu kode SLOC harus menemukannya di mana pun ia berada di gudang
+  // ini, bukan hanya di antara sel pratinjau yang kebetulan tergambar.
+  const lookupSloc = useCallback(async (code: string) => {
+    const trimmed = code.trim().toUpperCase();
+    if (!trimmed) return;
+    setSlocLookup("loading");
+    try {
+      const response = await fetch(
+        `/api/occupancy/heatmap?wh=${encodeURIComponent(wh)}&sloc=${encodeURIComponent(trimmed)}`,
+      );
+      if (!response.ok) throw new Error("SLOC lookup failed");
+      const data = await response.json();
+      const cell = data.cell as SlocOccupancy | null;
+      if (!cell) {
+        setSlocLookup("missing");
+        return;
+      }
+      setSlocLookup("idle");
+      openCell(cell);
+    } catch {
+      setSlocLookup("missing");
+    }
+  }, [openCell, wh]);
+
+  const heatExportParams = useMemo(() => {
+    const params = new URLSearchParams({ wh });
+    if (basis !== "policy") params.set("view", basis);
+    if (zoneQuery.trim()) params.set("q", zoneQuery.trim());
+    if (statusFilter === "EMPTY") params.set("fill", "empty");
+    else if (statusFilter === "OCCUPIED") params.set("fill", "occupied");
+    else if (statusFilter !== "ALL") params.set("status", statusFilter);
+    return params;
+  }, [basis, statusFilter, wh, zoneQuery]);
 
   return (
     <div className="heatmap-shell card">
@@ -750,6 +800,44 @@ export default function HeatmapGrid({
           </select>
         </label>
 
+        <div className="heat-search">
+          <label>
+            <span className="sr-only">{t("heat.searchZone")}</span>
+            <input
+              className="input"
+              value={zoneQuery}
+              onChange={(event) => setZoneQuery(event.target.value)}
+              placeholder={t("heat.searchZone")}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void lookupSloc(slocQuery);
+            }}
+          >
+            <label>
+              <span className="sr-only">{t("slocx.searchLabel")}</span>
+              <input
+                className="input"
+                value={slocQuery}
+                onChange={(event) => {
+                  setSlocQuery(event.target.value);
+                  setSlocLookup("idle");
+                }}
+                placeholder={t("heat.searchSloc")}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <button type="submit" className="btn btn-sm" disabled={!slocQuery.trim() || slocLookup === "loading"}>
+              {slocLookup === "loading" ? t("common.loading") : t("action.search")}
+            </button>
+          </form>
+        </div>
+
         <div className="heat-legend" aria-label={t("heat.legend")}>
           {statusOptions.map((status) => (
             <button
@@ -766,6 +854,11 @@ export default function HeatmapGrid({
         </div>
 
         <div className="heat-toolbar-meta" aria-live="polite">
+          {slocLookup === "missing" && (
+            <span style={{ color: "var(--st-critical-fg)" }}>
+              {t("heat.initialSlocMissing").replace("{sloc}", slocQuery.trim().toUpperCase())}
+            </span>
+          )}
           {initialSloc ? (
             <span>
               {t(
@@ -783,6 +876,12 @@ export default function HeatmapGrid({
               <span><b className="num">{loading && zones.length === 0 ? "—" : totals.total.toLocaleString(locale)}</b> SLOC</span>
             </>
           )}
+          <ExportExcelButton
+            dataset="sloc"
+            params={heatExportParams}
+            disabled={loading && zones.length === 0}
+            title={t("export.fullHint")}
+          />
         </div>
       </div>
 
@@ -892,7 +991,20 @@ export default function HeatmapGrid({
                   ? `${(zoneOffset + 1).toLocaleString(locale)}–${Math.min(zoneOffset + zoneCells.length, zoneTotal).toLocaleString(locale)} / ${zoneTotal.toLocaleString(locale)}`
                   : `0 / ${zoneTotal.toLocaleString(locale)}`}
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Dialog ini hanya memuat 600 sel sekaligus; ekspor mengambil
+                    seluruh SLOC zona langsung dari server dalam satu berkas. */}
+                <ExportExcelButton
+                  dataset="sloc"
+                  params={{
+                    wh,
+                    zone: selectedZone.zone,
+                    rackZone: selectedZone.rack_zone,
+                    ...(basis !== "policy" ? { view: basis } : {}),
+                  }}
+                  label={`${t("export.excel")} (${zoneTotal.toLocaleString(locale)})`}
+                  title={t("export.fullHint")}
+                />
                 <button
                   type="button"
                   className="btn btn-sm"

@@ -1,13 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getZoneSummary, getZoneDetail } from "@/lib/queries";
+import { getZoneDetail, getZoneDetailFacets, getZoneSummary } from "@/lib/queries";
 import { getBasisMode, pickPct, pickStatus } from "@/lib/basis";
 import { fmtNum, fmtPct, fmtCbm } from "@/lib/utils";
 import { getT } from "@/lib/i18n";
 import Section from "@/components/ui/section";
 import KpiCard from "@/components/ui/kpi-card";
 import { StatusBadge } from "@/components/ui/badges";
-import CsvButton from "@/components/domain/csv-button";
+import ExportExcelButton from "@/components/domain/export-excel-button";
+import SlocExplorer from "@/components/domain/sloc-explorer";
 import ZoneDetailTable from "@/components/domain/zone-detail-table";
 import type { OccupancyStatus } from "@/types";
 import PageHeader from "@/components/ui/page-header";
@@ -33,21 +34,15 @@ export default async function ZoneDetailPage(
   const p = await params;
   const code = p.warehouseId.toUpperCase();
   const zone = decodeURIComponent(p.zone).toUpperCase();
-  const [mode, t, zones, detail] = await Promise.all([
+  const [mode, t, zones, detail, facets] = await Promise.all([
     getBasisMode(), getT(),
-    getZoneSummary(code), getZoneDetail(code, zone),
+    getZoneSummary(code), getZoneDetail(code, zone), getZoneDetailFacets(code, zone),
   ]);
   const lines = detail.rows;
   const z = zones.find((x) => x.zone === zone);
   if (!z) notFound();
   const shownPct = pickPct(z, mode);
   const shownStatus = shownPct === null ? null : pickStatus(z, mode);
-
-  const csvRows = lines.map((l) => ({
-    lokasi: l.sloc_code, rack_zone: l.rack_zone, no_sku: l.sku_number, nama_sku: l.product_name,
-    kategori: l.l1_category, status: l.status, qty: l.qty, cbm: l.cbm,
-    okupansi_sloc_pct: l.sloc_pct, basis: l.sloc_basis,
-  }));
 
   return (
     <div className="dashboard-page">
@@ -58,6 +53,8 @@ export default async function ZoneDetailPage(
           <>
           <span className="chip">{t("basis.label")}: {t(`basis.${mode}`)}</span>
           {shownStatus && <StatusBadge status={shownStatus} />}
+          <ExportExcelButton dataset="sloc" params={{ wh: code, zone, view: mode }}
+            label={`${t("export.excel")} · SLOC`} title={t("export.fullHint")} />
           <Link className="btn btn-sm" href={`/heatmap?wh=${code}`}>{t("heat.title")}</Link>
           <Link className="btn btn-ghost btn-sm" href={`/occupancy/${code}`}>← {t("action.back")}</Link>
           </>
@@ -113,13 +110,6 @@ export default async function ZoneDetailPage(
       <Section
         eyebrow={`${fmtNum(lines.length)} ${t("common.of")} ${fmtNum(detail.total)} ${t("occ.rows")} · ${code}/${zone}`}
         title={t("occ.zoneContents")}
-        action={
-          <CsvButton
-            rows={csvRows}
-            filename={`wiom-${code}-${zone}${detail.truncated ? "-loaded" : ""}.csv`}
-            label={detail.truncated ? `${t("action.export")} (${fmtNum(lines.length)})` : t("action.export")}
-          />
-        }
       >
         <ZoneDetailTable
           rows={lines}
@@ -127,6 +117,19 @@ export default async function ZoneDetailPage(
           warehouse={code}
           zone={zone}
           statusColor={stColor}
+          facets={facets}
+        />
+      </Section>
+
+      {/* Isi zona hanya memuat lokasi yang punya stok. SLOC kosong — justru
+          kapasitas yang masih bisa dipakai — hanya terlihat pada tabel lokasi,
+          jadi keduanya ditampilkan berdampingan. */}
+      <Section eyebrow={`${t("slocx.zoneScope")} · ${t("slocx.hint")}`} title={t("slocx.title")}>
+        <SlocExplorer
+          lockedWh={code}
+          lockedZone={zone}
+          initialView={mode}
+          storageKey="zone"
         />
       </Section>
     </div>

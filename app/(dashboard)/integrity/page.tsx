@@ -5,8 +5,17 @@ import { getLang, getT, localeOf } from "@/lib/i18n";
 import Section from "@/components/ui/section";
 import KpiCard from "@/components/ui/kpi-card";
 import PageHeader from "@/components/ui/page-header";
+import IntegrityDriftTable from "@/components/domain/integrity-drift-table";
+import ExportExcelButton from "@/components/domain/export-excel-button";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Halaman memuat lebih banyak selisih daripada 30 baris lama supaya pencarian
+ * di sisi klien punya bahan yang cukup; ekspor tetap mengambil ulang seluruh
+ * baris yang cocok langsung dari DuckDB.
+ */
+const DRIFT_PAGE_ROWS = 500;
 
 function formatNumber(value: number | null | undefined, locale: string, digits = 0) {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
@@ -58,7 +67,7 @@ export default async function IntegrityPage(
 
   const [rows, drift, sync, t, lang] = await Promise.all([
     getIntegrity(whSel),
-    getIntegrityDrift(30, whSel),
+    getIntegrityDrift(DRIFT_PAGE_ROWS, whSel),
     getSyncHealth(),
     getT(),
     getLang(),
@@ -131,7 +140,11 @@ export default async function IntegrityPage(
         {t("int.ui.explanation")}
       </div>
 
-      <Section eyebrow={t("int.ui.byWarehouseEyebrow")} title={t("int.ui.byWarehouseTitle")}>
+      <Section
+        eyebrow={t("int.ui.byWarehouseEyebrow")}
+        title={t("int.ui.byWarehouseTitle")}
+        action={<ExportExcelButton dataset="integrity" params={whSel ? { wh: whSel } : {}} />}
+      >
         <div className="overflow-x-auto">
           <table className="tbl">
             <thead>
@@ -198,61 +211,7 @@ export default async function IntegrityPage(
         eyebrow={`${t("int.ui.largestDrift")}${whSel ? ` · ${whSel}` : ""}`}
         title={t("int.ui.driftTitle")}
       >
-        <div className="overflow-x-auto">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>{t("common.warehouse")}</th>
-                <th>{t("common.sloc")}</th>
-                <th>{t("int.ui.countDate")}</th>
-                <th className="text-right">{t("int.ui.system")}</th>
-                <th className="text-right">{t("int.ui.physical")}</th>
-                <th className="text-right">{t("int.ui.difference")}</th>
-                <th>{t("int.ui.kind")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(drift as Array<Record<string, unknown>>).map((item, index) => {
-                const type = String(item.drift_type);
-                return (
-                  <tr key={index}>
-                    <td className="num font-semibold">{String(item.warehouse)}</td>
-                    <td className="num">{String(item.sloc_code)}</td>
-                    <td className="num">{formatDate(item.count_date, locale)}</td>
-                    <td className="num text-right">{formatNumber(Number(item.system_qty), locale)}</td>
-                    <td className="num text-right">{formatNumber(Number(item.physical_qty), locale)}</td>
-                    <td
-                      className="num text-right font-semibold"
-                      style={{ color: Number(item.diff) < 0 ? "var(--st-critical-fg)" : "var(--st-warning-fg)" }}
-                    >
-                      {Number(item.diff) > 0 ? "+" : ""}{formatNumber(Number(item.diff), locale)}
-                    </td>
-                    <td>
-                      <span
-                        className={`badge ${
-                          type === "PHANTOM"
-                            ? "badge-critical"
-                            : type === "GHOST"
-                              ? "badge-warning"
-                              : "badge-monitor"
-                        }`}
-                      >
-                        {t(`int.ui.drift.${type}`, type)}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-              {(drift as unknown[]).length === 0 && (
-                <tr>
-                  <td colSpan={7} className="py-8 text-center text-xs" style={{ color: "var(--text-muted)" }}>
-                    {t("int.ui.noDrift")}{whSel ? ` ${t("int.ui.forWarehouse")} ${whSel}` : ""}.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <IntegrityDriftTable rows={drift} warehouse={whSel} loadedLimit={DRIFT_PAGE_ROWS} />
         <p className="mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
           {t("int.ui.driftNote")}
         </p>
