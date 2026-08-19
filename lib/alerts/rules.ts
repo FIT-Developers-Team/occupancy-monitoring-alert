@@ -1,9 +1,14 @@
 // Rule registry v2 — semua rule berbasis kondisi stok saat ini (state-based,
 // auto-resolve saat pulih). Rule movement menyusul saat tabel movement disinkron.
+//
+// CATATAN: modul ini BELUM dipakai. lib/alerts/engine.ts mengevaluasi rule-nya
+// sendiri; registry ini disiapkan untuk rule berbasis movement. Pemformatan
+// angkanya tetap dijaga sama dengan layar agar kelak tidak menjadi satu-satunya
+// tempat yang menampilkan kapasitas dengan cara berbeda.
 import { queryHistory } from "@/lib/db";
 import { getSlocOccupancy } from "@/lib/queries";
 import { whMapSQL } from "@/lib/config";
-import { fmtNum } from "@/lib/utils";
+import { fmtCbm, fmtNum } from "@/lib/utils";
 import type { Severity } from "@/types";
 
 export interface Violation {
@@ -24,7 +29,7 @@ const r03OverCapacity: Evaluator = async (ctx) => {
     title: `${s.sloc_code} ${s.pct}% (basis ${s.basis.toUpperCase()})`,
     detail: `Isi ${s.basis === "qty"
       ? `${fmtNum(s.occ_qty)} dari kapasitas ${fmtNum(s.cap_qty)} unit`
-      : `${s.occ_cbm} dari kapasitas efektif ${s.cap_cbm} m³`} — relokasi kelebihan ke SLOC kosong terdekat.`,
+      : `${fmtCbm(s.occ_cbm)} dari kapasitas efektif ${fmtCbm(s.cap_cbm)} m³ (max ${s.cap_cbm_nominal} × ${s.utilization_pct}%)`} — relokasi kelebihan ke SLOC kosong terdekat.`,
     dedup_key: `R03:${s.sloc_code}`,
   }));
 };

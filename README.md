@@ -134,6 +134,14 @@ Zona diturunkan otomatis: `SRA1 → SRA` (view `vw_sloc`). Baris **Lost tanpa lo
 
 Setiap SLOC dinilai dengan **satu basis kebijakan**: `pct = qty/max_qty` atau `cbm/(max_volume × utilisasi)`. Diatur di **Pengaturan → Kapasitas (Qty/CBM)**:
 
+> **Kapasitas CBM yang tampil adalah kapasitas *efektif*.** Utilisasi volume
+> hanya mengalikan basis CBM, tidak pernah basis Qty. Contoh: `max_cbm 0,0336`
+> dengan utilisasi `85%` tampil sebagai `0,029 m³` — itu 0,0336 × 0,85, bukan
+> konfigurasi yang gagal tersimpan. Nilai konfigurasinya ditampilkan berdampingan
+> pada popup detail SLOC (heatmap dan Penjelajah SLOC), pada catatan “Standar
+> kapasitas yang berlaku” di setiap halaman okupansi, dan sebagai kolom
+> `Max CBM (konfigurasi)` + `Utilisasi volume (%)` di ekspor Excel.
+
 | Lapisan | Isi |
 |---|---|
 | Default | basis, utilisasi %, status yang dihitung (Available/Bad/Lost), kategori dikecualikan |
@@ -142,7 +150,24 @@ Setiap SLOC dinilai dengan **satu basis kebijakan**: `pct = qty/max_qty` atau `c
 
 Kenapa perlu override: master **CBT & STL `max 1/1` per bin**, **SRG `max_volume 1`** — angka mentah ini tidak layak dipakai langsung, jadi demo menetapkan CBT/STL → CBM dengan kapasitas efektif 3.0/2.5 m³, SRG → Qty. Sesuaikan dengan angka rak sebenarnya.
 
-Switch **Kebijakan/Qty/CBM/Bin** di topbar mengubah metrik, bar, dan warna yang ditampilkan. **Alert tetap dievaluasi pada basis kebijakan** agar eskalasi tidak berubah hanya karena seorang pengguna mengganti view.
+Switch **Kebijakan/Qty/CBM/Bin** di topbar mengubah metrik, bar, dan warna yang ditampilkan. **Status okupansi mengikuti basis tampilan; alert dievaluasi pada kedua basis kapasitas** (lihat §Alert) agar eskalasi tidak berubah hanya karena seorang pengguna mengganti view.
+
+Tangga status memakai satu bahasa warna di seluruh aplikasi — lencana, bar
+okupansi, sel heatmap, KPI, dan papan alert:
+
+| Status | Warna | Severity alert yang sepadan |
+|---|---|---|
+| Normal | Hijau | `INFO` |
+| Monitor | Biru | `WARNING` |
+| Warning | Kuning | `HIGH` |
+| Critical | Oranye | `CRITICAL` |
+| Breach | Merah | `EMERGENCY` |
+
+Setiap pasangan latar/teks diverifikasi ≥ 4,5:1 (WCAG AA) di tema terang dan
+gelap. Monitor memakai keluarga *sky*, bukan biru FIT `--accent`: satu-satunya
+hal lain yang berwarna biru FIT adalah elemen yang bisa diklik. Breach juga
+diberi arsir diagonal pada lencana dan sel heatmap sebagai penanda kedua di luar
+warna.
 
 ---
 
@@ -179,7 +204,40 @@ Batas pengaman: 400.000 baris SLOC, 200.000 baris isi zona, 50.000 alert —
 semuanya jauh di atas volume nyata (±144k SLOC aktif) sehingga tidak pernah
 memaksa unduhan bertahap.
 
-Trigger aktif saat ini hanya **OCC-ZONE-BREACH**: satu alert per kombinasi warehouse/zona ketika okupansi berbasis kebijakan mencapai ambang `breach`. Alert memakai hysteresis, auto-resolve, dedup thread, dan eskalasi sampai di-ack. Rule stok dan movement dinonaktifkan sampai dataset movement tersedia dan tervalidasi.
+Dua trigger aktif: **OCC-ZONE-BREACH** (satu alert per warehouse/zona) dan
+**OCC-SLOC-BREACH** (lokasi terparah, dibatasi `sloc_alerts.max_alerts` per pass).
+Keduanya memakai hysteresis, auto-resolve, dedup thread, dan eskalasi sampai
+di-ack. Rule stok dan movement dinonaktifkan sampai dataset movement tersedia.
+
+### Tingkat keparahan: dinilai pada KEDUA basis kapasitas
+
+Okupansi punya dua pengukuran independen — unit (Qty) dan volume (CBM). Berapa
+banyak di antaranya yang melewati kapasitas itulah yang menentukan tingkat
+keparahannya:
+
+| Kondisi | Severity | Warna |
+|---|---|---|
+| Qty **dan** CBM melebihi kapasitas | `EMERGENCY` | Breach (merah) |
+| Qty **atau** CBM melebihi kapasitas, keduanya terukur | `CRITICAL` | Critical (oranye) |
+| Melebihi kapasitas, tetapi hanya satu basis yang punya kapasitas sahih | `CRITICAL` | Critical (oranye) |
+| Melewati ambang breach, belum ada basis yang melebihi kapasitas | `HIGH` | Warning (kuning) |
+
+Alasannya: satu basis melewati kapasitas masih bisa berarti angka kapasitas
+master pada basis itu yang salah. Qty **dan** CBM sama-sama lewat tidak punya
+penjelasan seperti itu — dua pengukuran independen sepakat lokasinya memang
+penuh, dan itu memerlukan tindakan yang berbeda.
+
+Baris ketiga adalah kasus ambigu: bila basis lainnya belum punya kapasitas,
+kondisi "keduanya lewat" tidak akan pernah dapat dibuktikan, sehingga menaikkan
+ke Breach berarti menghukum lubang di data master, bukan kondisi gudang.
+Detail alert menyebut hal ini dan mengarahkan admin melengkapi kapasitasnya.
+
+Keempat baris dapat diatur di **Pengaturan → Ambang → Tingkat keparahan
+kelebihan kapasitas**, termasuk batas "melebihi kapasitas" (bawaan 100%).
+
+Catatan penting: penilaian ini melihat **kedua** basis, bukan hanya basis
+kebijakan. Sebelumnya lokasi yang 5.000% penuh menurut CBM tidak pernah masuk
+daftar alert sama sekali bila basis kebijakannya Qty dan Qty-nya masih longgar.
 
 ---
 
@@ -187,7 +245,24 @@ Trigger aktif saat ini hanya **OCC-ZONE-BREACH**: satu alert per kombinasi wareh
 
 - **Cron**: `deploy/crontab.example` (sync → tick → ringkasan harian 08:00 WIB `POST /api/cron/daily-summary`).
 - **Google Chat (real-time)**: buat *incoming webhook* di Space (Space → Apps & integrations → Webhooks → Add), lalu buat rute di **Pengaturan → Eskalasi**. Setiap rute memiliki nama, level, cakupan satu/beberapa WH, URL webhook, status aktif, serta daftar user ID untuk auto-tag. Masukkan `all` hanya bila seluruh Space harus ditag. Gunakan **Uji koneksi** sebelum menyimpan. Alert terkirim saat breach zona tercipta dan tiap eskalasi; alert yang sama tergabung satu thread (`threadKey = dedup_key`). Set `APP_BASE_URL` agar kartu membuka detail alert. Referensi format mention: `<users/USER_ID>` pada [dokumentasi Google Chat](https://developers.google.com/workspace/chat/format-messages).
-- **Penyimpanan rahasia**: perubahan eskalasi dari UI ditulis ke `db/runtime-config/recipients.json` (volume runtime yang diabaikan Git), bukan ke template `config/recipients.json`. Lokasinya dapat dipindah dengan `WIOM_RUNTIME_CONFIG_DIR`.
+- **Penyimpanan konfigurasi (tahan deploy ulang)**: setiap perubahan dari halaman
+  Pengaturan — ambang, kapasitas, gudang, eskalasi, dan Superset Sync — ditulis ke
+  `db/runtime-config/` pada volume `/app/db`, bukan ke `config/`. Isi `config/`
+  ikut dibangun ke dalam image, jadi apa pun yang disimpan di sana kembali ke
+  nilai bawaan pada build berikutnya; `db/` bertahan. Aturannya:
+  - **Baca**: salinan runtime bila ada, jatuh ke `config/*.json` bila belum pernah disimpan.
+  - **Tulis**: selalu ke `db/runtime-config/`.
+  - **Start pertama**: konfigurasi yang sedang berlaku disalin sekali ke folder
+    runtime, sehingga penyetelan instalasi lama ikut terselamatkan.
+  - **Kembali ke bawaan**: hapus berkas terkait dari `db/runtime-config/`.
+  - Lokasi folder dapat dipindah dengan `WIOM_RUNTIME_CONFIG_DIR`.
+  - Worker Python memakai urutan pencarian yang sama, jadi daemon dan aplikasi web
+    selalu membaca `superset-sync.json` yang sama.
+  - Verifikasi: **Pengaturan → Ambang/Kapasitas** menampilkan folder penyimpanan
+    yang aktif, dan `GET /api/health` serta `GET /api/ready` melaporkan
+    `config_storage`. `/api/ready` mengembalikan 503 bila folder itu tidak dapat
+    ditulis — sehingga deployment yang akan kehilangan setelan gagal lebih awal,
+    bukan diam-diam.
 - **Penerima lain**: kolom *Webhook Lain* per level menerima URL apa pun yang mau di-POST JSON alert (n8n, Apps Script, sistem tiket).
 - **Email**: `SMTP_*` di `.env` (kosong = dilewati).
 - **Docker**: `docker compose up -d --build` = dua service: web Node-only + managed sync. Scheduler tick/summary sudah menyatu di supervisor web, jadi tidak memerlukan container ketiga.

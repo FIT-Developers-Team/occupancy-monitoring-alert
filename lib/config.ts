@@ -1,6 +1,5 @@
 // Config-driven policy layer: thresholds, rules, recipients, warehouses, capacity.
 import fs from "fs";
-import path from "path";
 import { z } from "zod";
 import {
   googleChatSpaceOf,
@@ -8,18 +7,26 @@ import {
   normalizeGoogleChatMentionId,
   normalizeGoogleChatThreadName,
 } from "@/lib/notify/gchat-url";
+import { ensureRuntimeConfigSeeded, resolveConfigFile, writeConfigJsonAtomic } from "@/lib/runtime-config";
 
-const CONFIG_DIR = path.join(process.cwd(), "config");
-const RUNTIME_CONFIG_DIR = process.env.WIOM_RUNTIME_CONFIG_DIR?.trim()
-  ? path.resolve(process.env.WIOM_RUNTIME_CONFIG_DIR.trim())
-  : path.join(process.cwd(), "db", "runtime-config");
+// Dijalankan sekali per proses, saat modul kebijakan pertama kali dimuat —
+// yaitu sebelum permintaan apa pun sempat membaca konfigurasi.
+ensureRuntimeConfigSeeded();
 
+/**
+ * Setiap seksi kebijakan disimpan di volume permanen, bukan di dalam image.
+ *
+ * Sebelumnya hanya `recipients` yang diperlakukan begitu; sisanya ditulis ke
+ * `config/*.json` yang ikut dibangun ke image, sehingga ambang, kapasitas, dan
+ * daftar gudang yang sudah disimpan admin kembali ke nilai bawaan pada deploy
+ * berikutnya. Lihat lib/runtime-config.ts untuk aturan baca/tulis.
+ */
 function sectionFile(section: ConfigSection, forWrite = false): string {
-  if (section !== "recipients") return path.join(CONFIG_DIR, `${section}.json`);
-  const runtimeFile = path.join(RUNTIME_CONFIG_DIR, "recipients.json");
-  if (forWrite || fs.existsSync(runtimeFile)) return runtimeFile;
-  return path.join(CONFIG_DIR, "recipients.json");
+  return resolveConfigFile(`${section}.json`, forWrite);
 }
+
+export const SEVERITY_LEVELS = ["INFO", "WARNING", "HIGH", "CRITICAL", "EMERGENCY"] as const;
+const SeverityEnum = z.enum(SEVERITY_LEVELS);
 
 const ThresholdSchema = z.object({
   default: z.object({
@@ -42,6 +49,38 @@ const ThresholdSchema = z.object({
     min_pct: z.number().min(100).max(1000).default(110),
     max_alerts: z.number().int().min(1).max(200).default(20),
   }).default({}),
+  /**
+   * Bagaimana kelebihan kapasitas diterjemahkan menjadi tingkat keparahan.
+   *
+   * Ambang di atas menjawab "kapan sebuah lokasi/zona layak diberi alert".
+   * Blok ini menjawab pertanyaan yang berbeda dan lebih tajam: SEBERAPA buruk
+   * kondisinya. Satu basis melebihi kapasitas masih bisa berarti data master
+   * yang salah pada basis itu; Qty DAN CBM sama-sama melebihi kapasitas berarti
+   * lokasinya memang benar-benar penuh, dan itu tidak boleh berbagi tingkat
+   * keparahan dengan kasus pertama.
+   *
+   * Dibuat dapat diatur, bukan ditanam di kode, karena batas antara "perlu
+   * dirapikan" dan "hentikan inbound" adalah keputusan operasional yang berbeda
+   * di setiap gudang.
+   */
+  overflow_severity: z.object({
+    /** Persentase yang dianggap "melebihi kapasitas". 100 = tepat di kapasitas. */
+    over_pct: z.number().min(100).max(1000).default(100),
+    /** Qty ATAU CBM melebihi kapasitas, sementara keduanya terukur. */
+    single_basis: SeverityEnum.default("CRITICAL"),
+    /** Qty DAN CBM sama-sama melebihi kapasitas. */
+    dual_basis: SeverityEnum.default("EMERGENCY"),
+    /**
+     * Hanya satu dari dua basis yang punya kapasitas sahih.
+     *
+     * Di sini "Qty dan CBM sama-sama lewat" tidak akan pernah dapat dibuktikan,
+     * jadi menaikkannya ke tingkat tertinggi berarti menghukum lubang di data
+     * master, bukan kondisi gudang. Bawaannya sengaja sama dengan satu basis.
+     */
+    single_measurable: SeverityEnum.default("CRITICAL"),
+    /** Ambang breach terlampaui tetapi belum ada basis yang melebihi kapasitas. */
+    threshold_only: SeverityEnum.default("HIGH"),
+  }).default({}),
 }).superRefine((value, ctx) => {
   const check = (v: { monitor?: number; warning?: number; critical?: number; breach?: number }, path: (string | number)[]) => {
     const values = [v.monitor, v.warning, v.critical, v.breach];
@@ -58,7 +97,7 @@ const ThresholdSchema = z.object({
 const RulesSchema = z.object({
   rules: z.array(z.object({
     id: z.string(), name: z.string(), category: z.string(),
-    severity: z.enum(["INFO", "WARNING", "HIGH", "CRITICAL", "EMERGENCY"]),
+    severity: SeverityEnum,
     enabled: z.boolean(), params: z.record(z.string(), z.any()).default({}),
     description: z.string().default(""),
   })),
@@ -262,7 +301,20 @@ const CapacitySchema = z.object({
     zone: z.string().trim().min(1).max(40),
     note: z.string().trim().max(200).default(""),
   })).default([]),
-  rules: z.array(CapacityRule).default([]),
+  /**
+   * Baris kosong hasil "Tambah aturan" yang tidak jadi diisi dibuang di sini.
+   *
+   * Aturan tanpa scope DAN tanpa nilai tidak mengubah apa pun, tetapi ia ikut
+   * terhitung pada penghitung aturan, memperpanjang tabel editor, dan membuat
+   * pencarian "override global" (aturan pertama tanpa scope) mendarat di baris
+   * kosong alih-alih di kebijakan yang sebenarnya. Membersihkannya saat parse
+   * berarti konfigurasi lama ikut rapi tanpa migrasi terpisah.
+   */
+  rules: z.array(CapacityRule).default([]).transform((rules) =>
+    rules.filter((rule) =>
+      Object.keys(rule.scope).length > 0
+      || Object.values(rule.set).some((value) => value !== undefined)
+      || rule.note.trim().length > 0)),
 }).superRefine((v, ctx) => {
   const seen = new Set<string>();
   v.disabled_zones.forEach((entry, i) => {
@@ -307,16 +359,19 @@ const schemas = {
 } as const;
 export type ConfigSection = keyof typeof schemas;
 
-const cache = new Map<string, { mtime: number; data: unknown }>();
+const cache = new Map<string, { file: string; mtime: number; data: unknown }>();
 
 function readSection<T>(section: ConfigSection): T {
   const file = sectionFile(section);
   const stat = fs.statSync(file);
   const hit = cache.get(section);
-  if (hit && hit.mtime === stat.mtimeMs) return hit.data as T;
+  // Berkas ikut dibandingkan: begitu penyimpanan pertama memindahkan seksi ini
+  // dari seed image ke volume permanen, sumbernya berganti dan cache lama tidak
+  // boleh dipakai hanya karena mtime-nya kebetulan sama.
+  if (hit && hit.file === file && hit.mtime === stat.mtimeMs) return hit.data as T;
   const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
   const parsed = schemas[section].parse(raw);
-  cache.set(section, { mtime: stat.mtimeMs, data: parsed });
+  cache.set(section, { file, mtime: stat.mtimeMs, data: parsed });
   return parsed as T;
 }
 
@@ -362,9 +417,12 @@ export function writeSection(section: ConfigSection, data: unknown): unknown {
       .map((entry) => `${entry.wh}/${entry.zone}`);
     if (unknown.length) throw new Error(`Warehouse pada zona nonaktif tidak dikenal: ${unknown.join(", ")}.`);
   }
-  const file = sectionFile(section, true);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(parsed, null, 2));
+  // Penulisan atomik: berkas kebijakan yang terpotong karena proses mati di
+  // tengah tulis akan membuat aplikasi gagal start pada restart berikutnya.
+  // 0o644: worker sinkronisasi Python membaca folder yang sama dan pada
+  // sebagian deployment berjalan sebagai pengguna berbeda dari aplikasi web.
+  // Berkas rahasia tidak lewat jalur ini — ia ditulis dengan 0o600 tersendiri.
+  writeConfigJsonAtomic(sectionFile(section, true), parsed, 0o644);
   cache.delete(section);
   return parsed;
 }

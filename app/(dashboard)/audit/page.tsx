@@ -4,8 +4,10 @@ import Section from "@/components/ui/section";
 import PageHeader from "@/components/ui/page-header";
 import { redirect } from "next/navigation";
 import { currentUser, isAdmin } from "@/lib/auth";
+import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
+export const generateMetadata = pageTitle("nav.audit");
 
 function formatDateTime(value: string, locale: string) {
   const date = new Date(value);
@@ -21,14 +23,18 @@ function formatDateTime(value: string, locale: string) {
 }
 
 export default async function AuditPage() {
-  const [user, audits, notifications, t, lang] = await Promise.all([
-    currentUser(),
+  // Otorisasi diperiksa sebelum kuerinya, bukan sesudah. Bentuk lama menarik
+  // 150 baris jejak audit dan log notifikasi lebih dulu, lalu membuangnya lewat
+  // redirect — pekerjaan basis data yang selalu terbuang untuk supervisor yang
+  // membuka URL ini langsung.
+  const user = await currentUser();
+  if (!user || !isAdmin(user.role)) redirect("/");
+  const [audits, notifications, t, lang] = await Promise.all([
     auditLog(100),
     notificationLog(50),
     getT(),
     getLang(),
   ]);
-  if (!user || !isAdmin(user.role)) redirect("/");
   const locale = localeOf(lang);
 
   return (

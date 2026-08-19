@@ -20,14 +20,51 @@ import type {
 
 const r1 = (n: number) => Math.round(n * 10) / 10;
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
+// Kapasitas nominal harus dapat dicocokkan huruf-per-huruf dengan yang diketik
+// admin. Empat desimal cukup untuk nilai serapat 0,0336 tanpa membulatkannya
+// menjadi angka lain — justru pembulatan itulah yang membuat konfigurasi
+// terlihat tidak diterapkan.
+const r4 = (n: number) => Math.round(n * 10000) / 10000;
+
+/**
+ * Sidik jari data + kebijakan yang menentukan kapan read model harus dihitung
+ * ulang.
+ *
+ * Fungsi ini dipanggil pada setiap akses read model, dan menyusunnya berarti
+ * men-stringify konfigurasi kapasitas — puluhan kilobita JSON — lalu
+ * mem-hash-nya. Karena `getCapacity()` dan kawan-kawan mengembalikan objek yang
+ * sama persis selama berkasnya tidak berubah, identitas objek itu sendiri sudah
+ * merupakan penanda perubahan yang tepat: cukup hitung ulang saat salah satu
+ * referensinya benar-benar berganti.
+ */
+let versionMemo: {
+  db: string;
+  warehouses: unknown;
+  capacity: unknown;
+  thresholds: unknown;
+  value: string;
+} | null = null;
 
 function readModelVersion(): string {
-  return createHash("sha1")
-    .update(String(historyDbVersion()))
-    .update(JSON.stringify(getWarehouses()))
-    .update(JSON.stringify(getCapacity()))
-    .update(JSON.stringify(getThresholds()))
+  const db = String(historyDbVersion());
+  const warehouses = getWarehouses();
+  const capacity = getCapacity();
+  const thresholds = getThresholds();
+  if (
+    versionMemo
+    && versionMemo.db === db
+    && versionMemo.warehouses === warehouses
+    && versionMemo.capacity === capacity
+    && versionMemo.thresholds === thresholds
+  ) return versionMemo.value;
+  const value = createHash("sha1")
+    .update(db)
+    .update(JSON.stringify(warehouses))
+    .update(JSON.stringify(capacity))
+    .update(JSON.stringify(thresholds))
     .digest("hex");
+  versionMemo = { db, warehouses, capacity, thresholds, value };
+  return value;
 }
 
 interface SlocMeta {
@@ -145,8 +182,35 @@ function locationScopePredicateSQL(
  * database lets aggregate numerators use exactly the same SLOC population as
  * their denominators without materialising 143k locations in Node.js.
  */
-function capacitySqlExpressions(slocAlias = "v", whAlias = "m") {
+interface CapacitySqlExpressions {
+  basis: string; capQty: string; capCbm: string; capCbmNominal: string;
+  utilization: string; qtyValid: string; cbmValid: string;
+}
+
+/**
+ * Ekspresi ini berupa CASE bersarang sepanjang jumlah aturan kapasitas, dan
+ * setiap kueri okupansi membangunnya lagi dari awal. Hasilnya hanya bergantung
+ * pada isi konfigurasi dan pasangan alias, jadi disimpan selama objek
+ * konfigurasinya belum berganti — sekali per perubahan kebijakan, bukan sekali
+ * per kueri.
+ */
+const capacitySqlMemo = new Map<string, { config: unknown; value: CapacitySqlExpressions }>();
+
+function capacitySqlExpressions(slocAlias = "v", whAlias = "m"): CapacitySqlExpressions {
   const cfg = getCapacity();
+  const memoKey = `${slocAlias}|${whAlias}`;
+  const memo = capacitySqlMemo.get(memoKey);
+  if (memo && memo.config === cfg) return memo.value;
+  const built = buildCapacitySqlExpressions(cfg, slocAlias, whAlias);
+  capacitySqlMemo.set(memoKey, { config: cfg, value: built });
+  return built;
+}
+
+function buildCapacitySqlExpressions(
+  cfg: ReturnType<typeof getCapacity>,
+  slocAlias: string,
+  whAlias: string,
+): CapacitySqlExpressions {
   let basis = sqlString(cfg.basis_default);
   let utilization = String(cfg.utilization_pct);
   let maxQty = `coalesce(${slocAlias}.max_quantity, 0)`;
@@ -175,6 +239,10 @@ function capacitySqlExpressions(slocAlias = "v", whAlias = "m") {
     basis,
     capQty: `greatest(0, ${maxQty})`,
     capCbm: `greatest(0, ${maxCbm}) * (${utilization} / 100.0)`,
+    // Angka apa adanya dari konfigurasi, tanpa faktor utilisasi. Dipakai layar
+    // detail agar admin dapat mencocokkan langsung dengan yang ia ketik.
+    capCbmNominal: `greatest(0, ${maxCbm})`,
+    utilization: `(${utilization})`,
     qtyValid: `(${qtyOverridden} OR coalesce(${slocAlias}.max_quantity, 0) > 1)`,
     cbmValid: `(${cbmOverridden} OR coalesce(${slocAlias}.max_volume, 0) > 1)`,
   };
@@ -235,6 +303,11 @@ export function invalidateOccupancyReadCaches(): void {
   zoneCache.clear();
   warehouseBaseCache = null;
   clearReadModelMemory();
+  // Memo di bawah sudah membandingkan identitas objek konfigurasi, jadi ia
+  // batal dengan sendirinya. Dibersihkan di sini juga supaya satu pemanggilan
+  // benar-benar mengembalikan proses ke keadaan tanpa turunan yang tersimpan.
+  capacitySqlMemo.clear();
+  versionMemo = null;
   cacheHistoryVersion = historyDbVersion();
 }
 
@@ -303,6 +376,7 @@ export async function getSlocOccupancy(input: OccupancyScope = {}): Promise<Sloc
       basis: eff.basis,
       occ_qty: r1(o.qty), cap_qty: r1(eff.cap_qty),
       occ_cbm: r3(o.cbm), cap_cbm: r3(eff.cap_cbm),
+      cap_cbm_nominal: r4(eff.cap_cbm_nominal), utilization_pct: eff.utilization_pct,
       qty_valid: eff.qty_valid, cbm_valid: eff.cbm_valid,
       pct_qty: pq === null ? null : r1(pq),
       pct_cbm: pv === null ? null : r1(pv),
@@ -670,17 +744,36 @@ export async function getHeatmap(wh: string): Promise<SlocOccupancy[]> {
  * Small first-paint preview for the heatmap. It deliberately samples a bounded
  * number of active SLOCs per operational zone; the full zone remains available
  * through getHeatmapPage when a user needs to inspect it.
+ *
+ * Hasilnya melewati read model persisten seperti ringkasan zona. Sebelumnya
+ * pratinjau hanya tersimpan di memori proses, sehingga pembukaan heatmap pertama
+ * setelah setiap deploy — persis saat orang paling ingin melihatnya — kembali
+ * menunggu pemindaian penuh, sementara bagian lain halaman sudah menyajikan
+ * hasil valid terakhir. Data yang ditampilkan tidak berubah sedikit pun.
  */
 export async function getHeatmapPreviews(
   wh: string,
   perZone = 36,
 ): Promise<Record<string, SlocOccupancy[]>> {
-  refreshCachesForHistoryChange();
   const scope = cleanScope({ wh, operational: true });
   if (!scope.wh) return {};
   const safePerZone = Number.isFinite(perZone)
     ? Math.min(72, Math.max(12, Math.floor(perZone)))
     : 36;
+  return readModelCached(
+    `heatmap-preview-v1-${scope.wh}-${safePerZone}`,
+    readModelVersion(),
+    () => loadHeatmapPreviews(scope.wh!, safePerZone),
+    { freshMs: DASHBOARD_TTL },
+  );
+}
+
+async function loadHeatmapPreviews(
+  wh: string,
+  safePerZone: number,
+): Promise<Record<string, SlocOccupancy[]>> {
+  refreshCachesForHistoryChange();
+  const scope = { wh } as const;
   const cacheKey = `${scope.wh}|${safePerZone}`;
   const cached = heatPreviewCache.get(cacheKey);
   if (cached && Date.now() - cached.at < DASHBOARD_TTL) return cached.data;
@@ -750,6 +843,7 @@ export async function getHeatmapPreviews(
       aisle: m.aisle, bay: m.bay, level: m.level, bin: m.bin, storage: m.storage,
       basis: eff.basis,
       occ_qty: r1(o.qty), cap_qty: r1(eff.cap_qty), occ_cbm: r3(o.cbm), cap_cbm: r3(eff.cap_cbm),
+      cap_cbm_nominal: r4(eff.cap_cbm_nominal), utilization_pct: eff.utilization_pct,
       qty_valid: eff.qty_valid, cbm_valid: eff.cbm_valid,
       pct_qty: pq === null ? null : r1(pq), pct_cbm: pv === null ? null : r1(pv),
       occupied, pct_bin: occupied ? 100 : 0, pct: r1(pct),
@@ -848,6 +942,7 @@ export async function getHeatmapPage(
       sloc_id: m.sloc_id, sloc_code: m.sloc_code, wh: m.wh, zone: m.zone, rack_zone: m.rack_zone,
       aisle: m.aisle, bay: m.bay, level: m.level, bin: m.bin, storage: m.storage, basis: eff.basis,
       occ_qty: r1(o.qty), cap_qty: r1(eff.cap_qty), occ_cbm: r3(o.cbm), cap_cbm: r3(eff.cap_cbm),
+      cap_cbm_nominal: r4(eff.cap_cbm_nominal), utilization_pct: eff.utilization_pct,
       qty_valid: eff.qty_valid, cbm_valid: eff.cbm_valid,
       pct_qty: pq === null ? null : r1(pq), pct_cbm: pv === null ? null : r1(pv),
       occupied, pct_bin: occupied ? 100 : 0, pct: r1(pct),
@@ -1418,6 +1513,8 @@ export interface DenseSloc {
   occ_cbm: number; cap_cbm: number; sku_count: number;
   pct_qty: number | null; pct_cbm: number | null; pct_bin: number;
   qty_valid: boolean; cbm_valid: boolean;
+  /** Persentase pada basis yang dipakai untuk memeringkat baris ini. */
+  ranking_pct: number;
 }
 interface DenseAggregateRow {
   sloc_code: string; wh: string; zone: string; storage: string; basis: Basis;
@@ -1426,8 +1523,20 @@ interface DenseAggregateRow {
   pct_bin: number; view_pct: number; qty_valid: boolean; cbm_valid: boolean;
 }
 
+/**
+ * Basis pemeringkatan lokasi padat.
+ *
+ * Selain empat basis tampilan, mesin alert memakai `"worst"`: yang tertinggi di
+ * antara Qty dan CBM. Memeringkat pada basis kebijakan saja adalah cacat asli
+ * logika alert — sebuah lokasi yang 5.000% penuh menurut CBM tidak pernah masuk
+ * daftar sama sekali bila basis kebijakannya Qty dan Qty-nya masih longgar.
+ * Mode ini tidak diekspos ke UI: ia menjawab "mana yang paling parah pada basis
+ * apa pun", bukan "apa yang sedang saya lihat".
+ */
+export type DenseRanking = BasisMode | "worst";
+
 async function loadDenseSlocs(
-  wh?: string, minPct = 90, limit = 200, view: BasisMode = "policy"
+  wh?: string, minPct = 90, limit = 200, view: DenseRanking = "policy"
 ): Promise<DenseSloc[]> {
   const scope = cleanScope({ wh, operational: true });
   if (wh && !scope.wh) return [];
@@ -1438,6 +1547,9 @@ async function loadDenseSlocs(
     view === "qty" ? "pct_qty"
     : view === "cbm" ? "pct_cbm"
     : view === "bin" ? "pct_bin"
+    // greatest() di DuckDB mengabaikan NULL, jadi lokasi yang hanya punya satu
+    // kapasitas sahih tetap dinilai dari basis itu alih-alih hilang.
+    : view === "worst" ? "greatest(pct_qty, pct_cbm)"
     : "pct";
   const params: unknown[] = scope.wh ? [scope.wh, safeMinimum, safeLimit] : [safeMinimum, safeLimit];
 
@@ -1510,6 +1622,7 @@ async function loadDenseSlocs(
     sloc_code: row.sloc_code, wh: row.wh, zone: row.zone, storage: row.storage,
     basis: row.basis, pct: row.view_pct,
     status: view === "bin" ? "NORMAL" : statusFor(row.view_pct, row.wh),
+    ranking_pct: row.view_pct,
     occ_qty: row.occ_qty, cap_qty: row.cap_qty,
     occ_cbm: row.occ_cbm, cap_cbm: row.cap_cbm, sku_count: row.sku_count,
     pct_qty: row.pct_qty, pct_cbm: row.pct_cbm, pct_bin: row.pct_bin,
@@ -1517,14 +1630,98 @@ async function loadDenseSlocs(
   }));
 }
 
+/** Okupansi kedua basis untuk sekumpulan lokasi tertentu. */
+export interface SlocBasisReading {
+  wh: string;
+  sloc_code: string;
+  pct_qty: number | null;
+  pct_cbm: number | null;
+}
+
+/**
+ * Bacaan terkini untuk daftar lokasi yang disebut namanya.
+ *
+ * Mesin alert memerlukan ini untuk menutup alert yang sudah pulih. Daftar
+ * lokasi padat dibatasi `max_alerts` demi menjaga volume notifikasi, sehingga
+ * "tidak ada di daftar" TIDAK berarti "sudah pulih" — ia bisa saja sekadar
+ * kalah peringkat. Sebelumnya penutupan otomatis dilewati sepenuhnya setiap
+ * kali daftar penuh, dan di gudang yang memang kronis penuh daftar itu selalu
+ * penuh: akibatnya tidak ada satu pun alert lokasi yang pernah tertutup
+ * sendiri. Satu kueri bertarget menjawabnya dengan pasti.
+ */
+export const SLOC_BASIS_READING_MAX = 500;
+
+export async function getSlocBasisReadings(
+  codes: Array<{ wh: string; sloc: string }>,
+): Promise<Map<string, SlocBasisReading>> {
+  const result = new Map<string, SlocBasisReading>();
+  const allowed = new Set(getWarehouses().warehouses.map((warehouse) => warehouse.code));
+  // Dibatasi supaya satu tick tidak pernah menyusun kueri tak terbatas dari
+  // tabel alert yang membesar.
+  const wanted = codes
+    .filter((entry) => allowed.has(entry.wh) && entry.sloc)
+    .slice(0, SLOC_BASIS_READING_MAX);
+  if (!wanted.length) return result;
+
+  const cap = capacitySqlExpressions();
+  const pairs = wanted
+    .map((entry) => `(${sqlString(entry.wh)}, ${sqlString(entry.sloc.toUpperCase())})`)
+    .join(", ");
+  const rows = await queryHistory<{
+    wh: string; sloc_code: string; pct_qty: number | null; pct_cbm: number | null;
+  }>(
+    `${WH_MAP()}, wanted(wh, sloc_code) AS (VALUES ${pairs}),
+     effective AS (
+       SELECT v.location_id, v.sloc_code, m.wh,
+              coalesce(v.zone, '') AS zone, coalesce(v.rack_zone, '') AS rack_zone,
+              coalesce(v.aisle, '') AS aisle, coalesce(v.bay, '') AS bay,
+              coalesce(v.level, '') AS level, coalesce(v.bin, '') AS bin,
+              coalesce(v.storage_handling, '') AS storage_handling,
+              ${cap.capQty} AS cap_qty, ${cap.capCbm} AS cap_cbm,
+              ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
+       FROM vw_sloc v ${JOIN_WH}
+       JOIN wanted w ON w.wh = m.wh AND w.sloc_code = v.sloc_code
+       WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()}
+     ), stock_agg AS (
+       SELECT e.location_id, e.sloc_code,
+              coalesce(sum(s.stock_qty), 0)::DOUBLE AS occ_qty,
+              coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS occ_cbm
+       FROM effective e
+       JOIN vw_stock_latest s
+         ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
+       WHERE ${statusPredicateSQL("s.status")}
+         AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
+       GROUP BY 1, 2
+     )
+     SELECT e.wh, e.sloc_code,
+            CASE WHEN e.qty_valid AND e.cap_qty > 0
+              THEN round(100.0 * coalesce(a.occ_qty, 0) / e.cap_qty, 1) END AS pct_qty,
+            CASE WHEN e.cbm_valid AND e.cap_cbm > 0
+              THEN round(100.0 * coalesce(a.occ_cbm, 0) / e.cap_cbm, 1) END AS pct_cbm
+     FROM effective e
+     LEFT JOIN stock_agg a
+       ON a.location_id = e.location_id AND a.sloc_code = e.sloc_code`,
+  );
+  for (const row of rows) {
+    result.set(`${row.wh}|${row.sloc_code}`, {
+      wh: row.wh,
+      sloc_code: row.sloc_code,
+      pct_qty: row.pct_qty === null ? null : Number(row.pct_qty),
+      pct_cbm: row.pct_cbm === null ? null : Number(row.pct_cbm),
+    });
+  }
+  return result;
+}
+
 export async function getDenseSlocs(
-  wh?: string, minPct = 90, limit = 200, view: BasisMode = "policy"
+  wh?: string, minPct = 90, limit = 200, view: DenseRanking = "policy"
 ): Promise<DenseSloc[]> {
   const scope = cleanScope({ wh });
   if (wh && !scope.wh) return [];
   const safeMinimum = Number.isFinite(minPct) ? Math.max(0, minPct) : 90;
   const safeLimit = Number.isFinite(limit) ? Math.min(1_000, Math.max(1, Math.floor(limit))) : 200;
-  const safeView: BasisMode = ["qty", "cbm", "bin", "policy"].includes(view) ? view : "policy";
+  const safeView: DenseRanking =
+    ["qty", "cbm", "bin", "policy", "worst"].includes(view) ? view : "policy";
   return readModelCached(
     `dense-sloc-v1-${scope.wh ?? "all"}-${safeMinimum}-${safeLimit}-${safeView}`,
     readModelVersion(),
@@ -1563,6 +1760,10 @@ export interface SlocExplorerRow {
   aisle: string; bay: string; level: string; bin: string; storage: string;
   basis: Basis; occupied: boolean;
   occ_qty: number; cap_qty: number; occ_cbm: number; cap_cbm: number;
+  /** max_cbm apa adanya dari konfigurasi, sebelum faktor utilisasi volume. */
+  cap_cbm_nominal: number;
+  /** Faktor utilisasi volume yang berlaku pada lokasi ini (%). */
+  utilization_pct: number;
   qty_valid: boolean; cbm_valid: boolean;
   pct_qty: number | null; pct_cbm: number | null; pct_bin: number;
   /** Okupansi basis kebijakan — tetap sama apa pun basis tampilan. */
@@ -1684,6 +1885,7 @@ function slocSqlPlan(filter: SlocFilter): SlocSqlPlan {
               coalesce(v.bin, '') AS bin,
               coalesce(v.storage_handling, '') AS storage_handling,
               ${cap.basis} AS basis, ${cap.capQty} AS cap_qty, ${cap.capCbm} AS cap_cbm,
+              ${cap.capCbmNominal} AS cap_cbm_nominal, ${cap.utilization} AS utilization_pct,
               ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
        FROM vw_sloc v ${JOIN_WH}
        WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()}${scope.length ? ` AND ${scope.join(" AND ")}` : ""}
@@ -1743,6 +1945,7 @@ interface SlocRawRow {
   aisle: string; bay: string; level: string; bin: string; storage_handling: string;
   basis: Basis; occupied: boolean;
   occ_qty: number; cap_qty: number; occ_cbm: number; cap_cbm: number;
+  cap_cbm_nominal: number; utilization_pct: number;
   qty_valid: boolean; cbm_valid: boolean;
   pct_qty: number | null; pct_cbm: number | null; pct_bin: number;
   pct_policy: number | null; view_pct: number | null;
@@ -1751,7 +1954,8 @@ interface SlocRawRow {
 
 const SLOC_SELECT_COLUMNS =
   `sloc_code, wh, zone, rack_zone, aisle, bay, level, bin, storage_handling,
-   basis, occupied, occ_qty, cap_qty, occ_cbm, cap_cbm, qty_valid, cbm_valid,
+   basis, occupied, occ_qty, cap_qty, occ_cbm, cap_cbm, cap_cbm_nominal,
+   utilization_pct, qty_valid, cbm_valid,
    pct_qty, pct_cbm, pct_bin, pct_policy, view_pct, status, sku_count`;
 
 function toExplorerRow(row: SlocRawRow): SlocExplorerRow {
@@ -1761,6 +1965,7 @@ function toExplorerRow(row: SlocRawRow): SlocExplorerRow {
     storage: row.storage_handling, basis: row.basis, occupied: Boolean(row.occupied),
     occ_qty: r1(row.occ_qty), cap_qty: r1(row.cap_qty),
     occ_cbm: r3(row.occ_cbm), cap_cbm: r3(row.cap_cbm),
+    cap_cbm_nominal: r4(row.cap_cbm_nominal), utilization_pct: r1(row.utilization_pct),
     qty_valid: Boolean(row.qty_valid), cbm_valid: Boolean(row.cbm_valid),
     pct_qty: row.pct_qty === null ? null : r1(row.pct_qty),
     pct_cbm: row.pct_cbm === null ? null : r1(row.pct_cbm),

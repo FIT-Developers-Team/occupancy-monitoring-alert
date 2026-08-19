@@ -10,6 +10,7 @@ import duckdb from "duckdb";
 import path from "path";
 import fs from "fs";
 import os from "os";
+import { createHash } from "crypto";
 
 const HISTORY_PATH =
   process.env.DUCKDB_HISTORY_PATH || path.join(process.cwd(), "db", "warehouse_history.duckdb");
@@ -159,6 +160,21 @@ export function historyDbVersion(): string {
   try { return historyVersionFromStat(fs.statSync(HISTORY_PATH)); } catch { return "missing"; }
 }
 
+/**
+ * Opaque marker for the snapshot the dashboard is currently reading.
+ *
+ * Same input as historyDbVersion — the file's size and mtime, which is exactly
+ * what the read model invalidates on — but hashed, because this one is sent to
+ * the browser. The client only ever needs to answer "did the snapshot change?",
+ * never the size or write time of a file on the server.
+ */
+export function historyDataVersion(): string {
+  const version = historyDbVersion();
+  return version === "missing"
+    ? "missing"
+    : createHash("sha1").update(version).digest("hex").slice(0, 12);
+}
+
 async function ensureHistoryReplica(): Promise<string> {
   const source = fs.statSync(HISTORY_PATH);
   const version = historyVersionFromStat(source);
@@ -294,12 +310,27 @@ function sweepAbandonedReplicaDirs(): void {
   for (const entry of entries) {
     const pid = Number.parseInt(entry, 10);
     if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    let dead = false;
     try {
       // Signal 0 tests for existence without touching the process.
       process.kill(pid, 0);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue;
+      dead = (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+    if (!dead) continue;
+    try {
       fs.rmSync(path.join(root, entry), { recursive: true, force: true });
+    } catch (error) {
+      // Reclaiming disk space must never be able to stop the app from starting.
+      // On Windows the file handle of a killed process can stay held for a
+      // moment (and a virus scanner can hold it longer), so `rm` fails with
+      // EPERM/EBUSY. Unhandled, that threw during module import and took the
+      // whole process down — observed as a deployment failing at page-data
+      // collection over a leftover temporary copy. The next pass retries.
+      const code = (error as NodeJS.ErrnoException).code;
+      console.warn(
+        `[WIOM] Salinan baca lama ${entry} belum dapat dihapus (${code ?? "unknown"}); dicoba lagi nanti.`,
+      );
     }
   }
 }

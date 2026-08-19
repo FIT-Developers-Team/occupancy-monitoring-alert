@@ -30,6 +30,13 @@ const nextConfig: NextConfig = {
       "./db/.superset-sync-heartbeat.json",
       "./db/.superset-sync-status.json",
       "./config/.superset-sync.secrets.json",
+      "./db/.superset-sync-request.json",
+      "./db/.superset-sync-bootstrap.lock",
+      // Sisanya — berkas DuckDB preview, cache read model, dan terutama
+      // db/runtime-config yang memuat kredensial Superset — tidak dapat
+      // dijangkau dari sini: pola wildcard tidak pernah cocok pada path
+      // Windows, hanya path persis. scripts/prune-standalone.mjs membuangnya
+      // setelah build, sehingga aturannya tidak bergantung pada platform.
     ],
   },
 

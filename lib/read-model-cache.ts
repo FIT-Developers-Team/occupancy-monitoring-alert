@@ -45,12 +45,27 @@ function saveEnvelope<T>(key: string, envelope: CacheEnvelope<T>): void {
 }
 
 /**
- * Persistent stale-while-revalidate for expensive, read-only dashboard models.
+ * Persistent cache for expensive, read-only dashboard models.
  *
- * A last valid result is returned immediately while a newer Superset snapshot
- * is being aggregated in the background. The first ever read still waits for
- * a real query; no fabricated data is served. Cache files live on the existing
- * /app/db volume and never contain credentials or account records.
+ * Two different things can make a cached result obsolete, and they do not
+ * deserve the same answer:
+ *
+ *   - The **version** changed. It carries the fingerprint of the DuckDB file
+ *     plus the active policy, so a different value means a newer snapshot is
+ *     already on disk and the cached numbers are known to be wrong. This waits
+ *     for the real result.
+ *   - Only the **age** ran out. The snapshot behind the cached result has not
+ *     moved, so the copy is still a correct answer to the same question. It is
+ *     served immediately and refreshed in the background.
+ *
+ * The distinction is the whole point: treating both as "stale" meant the first
+ * request after every sync rendered figures one cycle behind, even though the
+ * fresh data was sitting right there and the version key already knew it.
+ *
+ * A failed recompute still falls back to the last valid result — a snapshot one
+ * cycle old beats an error boundary, which is what the sync worker's write
+ * window would otherwise produce. Cache files live on the existing /app/db
+ * volume and never contain credentials or account records.
  */
 export async function readModelCached<T>(
   key: string,
@@ -60,8 +75,8 @@ export async function readModelCached<T>(
 ): Promise<T> {
   const freshMs = options.freshMs ?? 5 * 60_000;
   const cached = loadEnvelope<T>(key);
-  const isFresh = cached && cached.version === version && Date.now() - cached.updatedAt < freshMs;
-  if (isFresh) return cached.data;
+  const sameVersion = cached ? cached.version === version : false;
+  if (cached && sameVersion && Date.now() - cached.updatedAt < freshMs) return cached.data;
 
   let refresh = inFlight.get(key) as Promise<T> | undefined;
   if (!refresh) {
@@ -74,15 +89,26 @@ export async function readModelCached<T>(
     inFlight.set(key, refresh);
   }
 
-  if (cached) {
-    // Prevent an intentionally detached refresh from surfacing as an unhandled
-    // rejection. The next request retries while the last valid data remains.
+  if (cached && sameVersion) {
+    // Same snapshot, same policy — only the age ran out. Prevent the detached
+    // refresh from surfacing as an unhandled rejection; the next request
+    // retries while the last valid data remains on screen.
     void refresh.catch((error) => {
       console.warn(`[WIOM] Refresh read model ${key} gagal: ${(error as Error).message}`);
     });
     return cached.data;
   }
-  return refresh;
+
+  try {
+    return await refresh;
+  } catch (error) {
+    if (!cached) throw error;
+    console.warn(
+      `[WIOM] Read model ${key} gagal dihitung ulang (${(error as Error).message})`
+      + " — memakai hasil valid terakhir.",
+    );
+    return cached.data;
+  }
 }
 
 export function clearReadModelMemory(): void {

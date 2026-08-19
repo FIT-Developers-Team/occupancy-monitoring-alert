@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n-client";
+import { fmtCapCbm } from "@/lib/utils";
 
 function SettingsPanelLoading() {
   return (
@@ -27,10 +28,38 @@ const AccountManagement = dynamic(
   { loading: () => <SettingsPanelLoading /> },
 );
 
+type Severity = "INFO" | "WARNING" | "HIGH" | "CRITICAL" | "EMERGENCY";
+const SEVERITIES: Severity[] = ["INFO", "WARNING", "HIGH", "CRITICAL", "EMERGENCY"];
+
+interface OverflowSeverity {
+  over_pct: number;
+  single_basis: Severity;
+  dual_basis: Severity;
+  single_measurable: Severity;
+  threshold_only: Severity;
+}
 interface Thresholds {
   default: { monitor: number; warning: number; critical: number; breach: number; hysteresis_buffer: number };
   overrides: Record<string, Partial<{ monitor: number; warning: number; critical: number; breach: number; hysteresis_buffer: number }>>;
+  /** Ditulis balik apa adanya saat menyimpan; hanya blok di bawah yang diedit. */
+  sloc_alerts?: { enabled: boolean; min_pct: number; max_alerts: number };
+  overflow_severity?: OverflowSeverity;
 }
+
+const OVERFLOW_ROWS: Array<{ key: keyof Omit<OverflowSeverity, "over_pct">; labelKey: string; hintKey: string }> = [
+  { key: "dual_basis", labelKey: "set.ui.overflow.dual", hintKey: "set.ui.overflow.dualHint" },
+  { key: "single_basis", labelKey: "set.ui.overflow.single", hintKey: "set.ui.overflow.singleHint" },
+  { key: "single_measurable", labelKey: "set.ui.overflow.ambiguous", hintKey: "set.ui.overflow.ambiguousHint" },
+  { key: "threshold_only", labelKey: "set.ui.overflow.thresholdOnly", hintKey: "set.ui.overflow.thresholdOnlyHint" },
+];
+
+const SEVERITY_TONE_CLASS: Record<Severity, string> = {
+  INFO: "severity-normal",
+  WARNING: "severity-monitor",
+  HIGH: "severity-warning",
+  CRITICAL: "severity-critical",
+  EMERGENCY: "severity-breach",
+};
 interface CapRule {
   scope: {
     wh?: string; zone?: string; rack_zone?: string; aisle?: string; bay?: string;
@@ -48,6 +77,10 @@ interface Capacity {
   disabled_zones: DisabledZone[];
   rules: CapRule[];
 }
+export interface ConfigStorage {
+  /** Apakah penyimpanan permanen dapat ditulis pada deployment ini. */
+  writable: boolean;
+}
 interface CapMeta {
   warehouses: string[]; zones: Record<string, string[]>;
   rack_zones: Record<string, string[]>; levels: string[];
@@ -56,7 +89,7 @@ interface CapMeta {
 
 const TKEYS = ["monitor", "warning", "critical", "breach", "hysteresis_buffer"] as const;
 
-export default function SettingsTabs() {
+export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
   const { t } = useT();
   const [tab, setTab] = useState<"accounts" | "sync" | "thresholds" | "capacity" | "recipients">("accounts");
   const [thresholds, setThresholds] = useState<Thresholds | null>(null);
@@ -206,6 +239,15 @@ export default function SettingsTabs() {
     rules[index] = { ...rules[index], set };
     setCapacity({ ...capacity, rules });
   };
+  const overflow = thresholds?.overflow_severity;
+  const setOverflow = (patch: Partial<OverflowSeverity>) => {
+    if (!thresholds?.overflow_severity) return;
+    setThresholds({
+      ...thresholds,
+      overflow_severity: { ...thresholds.overflow_severity, ...patch },
+    });
+  };
+
   const toggleList = (list: string[], v: string) =>
     list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
 
@@ -224,6 +266,17 @@ export default function SettingsTabs() {
         ))}
       </div>
       {msg && tab !== "sync" && <p className="settings-message" role="status">{t(msg, msg)}</p>}
+
+      {/* Jalur normal tidak berkata apa-apa: admin tidak perlu tahu di mana
+          berkasnya disimpan. Peringatan hanya muncul bila penyimpanan tidak
+          dapat ditulis — di situ setiap perubahan akan hilang saat container
+          dibuat ulang, dan itu harus diketahui sebelum menyimpan. */}
+      {!storage.writable && (
+        <div className="config-storage-note is-error" role="alert">
+          <span className="eyebrow">{t("set.ui.storage.title")}</span>
+          <p>{t("set.ui.storage.readOnly")}</p>
+        </div>
+      )}
 
       {tab === "sync" && <SupersetSyncSettings />}
 
@@ -270,11 +323,16 @@ export default function SettingsTabs() {
                   <option value="cbm">{t("set.ui.capacity.cbmOption")}</option>
                 </select>
               </label>
+              {/* Faktor ini hanya mengalikan kapasitas CBM, dan angka hasil
+                  kalinya itulah yang muncul sebagai penyebut di heatmap. Tanpa
+                  keterangan di sini, "max CBM 0,0336" yang tampil "0,029"
+                  terbaca sebagai konfigurasi yang tidak tersimpan. */}
               <label className="block space-y-1">
                 <span className="eyebrow">{t("set.ui.capacity.volumeUtilisation")}</span>
-                <input type="number" min={10} max={100} className="input num w-24"
+                <input type="number" min={10} max={100} step={1} className="input num w-24"
                   value={capacity.utilization_pct}
                   onChange={(e) => setCapacity({ ...capacity, utilization_pct: Number(e.target.value) })} />
+                <span className="field-hint">{t("set.ui.capacity.utilisationHint")}</span>
               </label>
               <div className="grid grid-cols-2 gap-2">
                 {(["max_qty", "max_cbm"] as const).map((key) => {
@@ -286,10 +344,19 @@ export default function SettingsTabs() {
                           ? t("set.ui.capacity.globalQtyOverride")
                           : t("set.ui.capacity.globalCbmOverride")}
                       </span>
-                      <input type="number" min={0.001} step={key === "max_cbm" ? "0.001" : "1"}
+                      {/* step="0.001" menolak nilai seperti 0,0336 di
+                          sebagian browser (stepMismatch). Kapasitas per-slot
+                          memang serapat itu, jadi langkahnya dibebaskan. */}
+                      <input type="number" min={0} step="any" inputMode="decimal"
                         className="input num w-full" placeholder={t("set.ui.capacity.supersetData")}
                         value={global?.set[key] ?? ""}
                         onChange={(e) => setGlobalCapacity(key, e.target.value)} />
+                      {key === "max_cbm" && global?.set.max_cbm !== undefined && (
+                        <span className="field-hint num">
+                          {t("set.ui.capacity.effectivePreview")}{" "}
+                          {fmtCapCbm(global.set.max_cbm * capacity.utilization_pct / 100)} m³
+                        </span>
+                      )}
                     </label>
                   );
                 })}
@@ -414,12 +481,17 @@ export default function SettingsTabs() {
                               <option value="cbm">CBM</option>
                             </select>
                           </td>
-                          <td><input type="number" className="input num w-20" disabled={catScoped}
+                          <td><input type="number" min={0} step="any" inputMode="decimal"
+                            className="input num w-20" disabled={catScoped}
                             value={r.set.max_qty ?? ""} placeholder="—"
                             onChange={(e) => setSetNum(i, "max_qty", e.target.value)} /></td>
-                          <td><input type="number" step="0.1" className="input num w-20" disabled={catScoped}
-                            value={r.set.max_cbm ?? ""} placeholder="—"
-                            onChange={(e) => setSetNum(i, "max_cbm", e.target.value)} /></td>
+                          <td>
+                            <input type="number" min={0} step="any" inputMode="decimal"
+                              className="input num w-24" disabled={catScoped}
+                              value={r.set.max_cbm ?? ""} placeholder="—"
+                              title={r.set.max_cbm === undefined ? undefined : `${t("set.ui.capacity.effectivePreview")} ${fmtCapCbm(r.set.max_cbm * (r.set.utilization_pct ?? capacity.utilization_pct) / 100)} m³`}
+                              onChange={(e) => setSetNum(i, "max_cbm", e.target.value)} />
+                          </td>
                           <td><input type="number" className="input num w-16" disabled={catScoped}
                             value={r.set.utilization_pct ?? ""} placeholder="—"
                             onChange={(e) => setSetNum(i, "utilization_pct", e.target.value)} /></td>
@@ -625,6 +697,49 @@ export default function SettingsTabs() {
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             {t("set.ui.threshold.hint")}
           </p>
+
+          {/* Ambang di atas menjawab "kapan sesuatu layak diberi alert". Blok
+              ini menjawab "seberapa buruk" — dan itu ditentukan oleh berapa
+              banyak basis kapasitas yang terlampaui, bukan oleh satu angka. */}
+          {overflow && (
+            <div className="card card-pad space-y-3">
+              <div>
+                <div className="panel-title">{t("set.ui.overflow.title")}</div>
+                <p className="mt-1 text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+                  {t("set.ui.overflow.intro")}
+                </p>
+              </div>
+              <label className="flex flex-wrap items-center gap-2 text-[11.5px]">
+                <span className="eyebrow">{t("set.ui.overflow.overPct")}</span>
+                <input type="number" min={100} max={1000} step={1} className="input num w-24"
+                  value={overflow.over_pct}
+                  onChange={(e) => setOverflow({ over_pct: Number(e.target.value) })} />
+                <span style={{ color: "var(--text-muted)" }}>{t("set.ui.overflow.overPctHint")}</span>
+              </label>
+              <div className="overflow-severity-grid">
+                {OVERFLOW_ROWS.map((row) => (
+                  <div key={row.key} className="overflow-severity-row">
+                    <div className="min-w-0">
+                      <strong>{t(row.labelKey)}</strong>
+                      <p>{t(row.hintKey)}</p>
+                    </div>
+                    <div className="overflow-severity-pick">
+                      <span className={`badge badge-${SEVERITY_TONE_CLASS[overflow[row.key]].replace("severity-", "")}`}>
+                        {t(`severity.${overflow[row.key]}`)}
+                      </span>
+                      <select className="input w-36" value={overflow[row.key]}
+                        onChange={(e) => setOverflow({ [row.key]: e.target.value as Severity })}>
+                        {SEVERITIES.map((value) => (
+                          <option key={value} value={value}>{t(`severity.${value}`)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <button className="btn btn-primary" disabled={busy}
             onClick={() => save("thresholds", thresholds)}>
             {t("set.ui.threshold.save")}

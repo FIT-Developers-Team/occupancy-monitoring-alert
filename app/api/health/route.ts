@@ -5,6 +5,7 @@ import { getThresholds, getRules, getRecipients, getWarehouses, getCapacity } fr
 import { sessionSecretStatus } from "@/lib/session-secret";
 import { getSupersetSyncConfig, getSupersetSyncStatus } from "@/lib/superset-sync";
 import { accountStoreStatus } from "@/lib/account-store";
+import { configStorageInfo } from "@/lib/runtime-config";
 
 export async function GET() {
   const checks: Record<string, unknown> = { history_db: historyDbExists() };
@@ -23,6 +24,18 @@ export async function GET() {
   try {
     getThresholds(); getRules(); getRecipients(); getWarehouses(); getCapacity();
     checks.config = "ok";
+    // Persistensi konfigurasi adalah bagian dari kesehatan deployment: bila
+    // folder runtime tidak dapat ditulis, setiap penyimpanan admin akan hilang
+    // pada deploy berikutnya, dan itu harus terlihat sebelum kejadian.
+    // Endpoint ini terbuka tanpa login (lihat PUBLIC_PREFIXES di proxy.ts),
+    // jadi yang dilaporkan hanya bentuk masalahnya — bukan path di server.
+    const storage = configStorageInfo();
+    checks.config_storage = {
+      writable: storage.writable,
+      persisted: storage.persisted.length,
+      using_image_defaults: storage.usingSeed.length,
+      reason: storage.reason,
+    };
   } catch (e) {
     checks.config = `error: ${(e as Error).message}`;
   }

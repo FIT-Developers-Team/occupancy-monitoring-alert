@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useCallback, useRef } from "react";
 import { useT } from "@/lib/i18n-client";
 
 export type NavMode = "open" | "rail";
@@ -39,8 +40,23 @@ export default function Sidebar({
   mode, mobileOpen, onNavigate, onToggle, role,
 }: { mode: NavMode; mobileOpen: boolean; onNavigate: () => void; onToggle: () => void; role: string }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { t } = useT();
   const rail = mode === "rail";
+
+  // Setiap halaman dasbor bersifat dinamis, jadi prefetch otomatis Next
+  // dimatikan supaya membuka aplikasi tidak langsung memicu sepuluh permintaan
+  // sekaligus. Namun menunggu klik berarti setiap perpindahan halaman selalu
+  // dimulai dari nol. Mengambilnya saat kursor atau fokus menyentuh tautan
+  // memberi selisih ratusan milidetik untuk memuat bundel rute dan batas
+  // loading-nya, tepat sebelum navigasi terjadi — dan hanya untuk tautan yang
+  // benar-benar akan ditekan.
+  const prefetched = useRef(new Set<string>());
+  const warm = useCallback((href: string) => {
+    if (prefetched.current.has(href)) return;
+    prefetched.current.add(href);
+    router.prefetch(href);
+  }, [router]);
 
   return (
     <aside
@@ -83,6 +99,10 @@ export default function Sidebar({
             const active = n.href === "/" ? pathname === "/" : pathname.startsWith(n.href);
             return (
               <Link key={n.href} href={n.href} prefetch={false} onClick={onNavigate} title={t(n.key)}
+                onMouseEnter={() => warm(n.href)}
+                onFocus={() => warm(n.href)}
+                onTouchStart={() => warm(n.href)}
+                aria-current={active ? "page" : undefined}
                 className={`navlink ${active ? "active" : ""} ${rail ? "md:justify-center md:px-0" : ""}`}>
                 <svg className="navicon shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                   strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>

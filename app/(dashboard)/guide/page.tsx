@@ -2,8 +2,13 @@ import Section from "@/components/ui/section";
 import GuideTasks from "@/components/domain/guide-tasks";
 import PageHeader from "@/components/ui/page-header";
 import { getT, type TFn } from "@/lib/i18n";
+import { getThresholds } from "@/lib/config";
+import { STATUS_TONE } from "@/lib/status-tone";
+import type { OccupancyStatus } from "@/types";
+import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
+export const generateMetadata = pageTitle("nav.guide");
 
 function FlowDiagram({ t }: { t: TFn }) {
   const box = { fill: "var(--surface-sunken)", stroke: "var(--border-strong)" } as const;
@@ -192,7 +197,7 @@ function ResolverDiagram({ t }: { t: TFn }) {
   return (
     <div className="guide-diagram-scroll">
       <svg
-        viewBox="0 0 900 240"
+        viewBox="0 0 900 258"
         className="guide-diagram guide-resolver-diagram"
         role="img"
         aria-label={t("guide.resolver.aria")}
@@ -281,6 +286,18 @@ function ResolverDiagram({ t }: { t: TFn }) {
         >
           {t("guide.resolver.masterNote")}
         </text>
+        {/* Aturan yang paling sering ditanyakan: mengapa max CBM yang diketik
+            di Pengaturan tidak sama dengan penyebut yang muncul di layar. */}
+        <text
+          x={280}
+          y={252}
+          textAnchor="middle"
+          fontSize={9.5}
+          fill="var(--text-muted)"
+          fontFamily="var(--font-mono)"
+        >
+          {t("guide.resolver.effectiveNote")}
+        </text>
       </svg>
     </div>
   );
@@ -288,6 +305,14 @@ function ResolverDiagram({ t }: { t: TFn }) {
 
 export default async function GuidePage() {
   const t = await getT();
+  const ladder = getThresholds().default;
+  const statusLadder: Array<{ status: OccupancyStatus; range: string }> = [
+    { status: "NORMAL", range: `< ${ladder.monitor}%` },
+    { status: "MONITOR", range: `${ladder.monitor}–${ladder.warning - 1}%` },
+    { status: "WARNING", range: `${ladder.warning}–${ladder.critical - 1}%` },
+    { status: "CRITICAL", range: `${ladder.critical}–${ladder.breach - 1}%` },
+    { status: "BREACH", range: `≥ ${ladder.breach}%` },
+  ];
   const roles = [
     [t("guide.role.viewer"), "view", t("guide.role.viewer.description")],
     [t("guide.role.supervisor"), "spv", t("guide.role.supervisor.description")],
@@ -325,14 +350,20 @@ export default async function GuidePage() {
         <div className="grid gap-3 md:grid-cols-2">
           <div className="card card-pad text-[12.5px] leading-relaxed">
             <span className="panel-title block pb-1">{t("guide.dashboard.status.title")}</span>
-            <p style={{ color: "var(--text-muted)" }}>
-              {t("guide.dashboard.status.intro")}{" "}
-              <b style={{ color: "var(--st-normal-fg)" }}>{t("status.NORMAL")}</b> &lt; 70% ·{" "}
-              <b style={{ color: "var(--st-monitor-fg)" }}>{t("status.MONITOR")}</b> 70–79% ·{" "}
-              <b style={{ color: "var(--st-warning-fg)" }}>{t("status.WARNING")}</b> 80–89% ·{" "}
-              <b style={{ color: "var(--st-critical-fg)" }}>{t("status.CRITICAL")}</b> 90–99% ·{" "}
-              <b>{t("status.BREACH")}</b> ≥ 100%. {t("guide.dashboard.status.tail")}
-            </p>
+            {/* Rentangnya dibaca dari ambang yang benar-benar berlaku, bukan
+                angka yang diketik ke dalam teks. Versi lama menulis 70/80/90
+                sementara bawaan konfigurasinya 70/85/95 — panduan yang salah
+                lebih buruk daripada tidak ada panduan. */}
+            <p style={{ color: "var(--text-muted)" }}>{t("guide.dashboard.status.intro")}</p>
+            <ul className="status-ladder-legend">
+              {statusLadder.map((step) => (
+                <li key={step.status}>
+                  <span className={`badge badge-${STATUS_TONE[step.status]}`}>{t(`status.${step.status}`)}</span>
+                  <span className="num">{step.range}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2" style={{ color: "var(--text-muted)" }}>{t("guide.dashboard.status.tail")}</p>
           </div>
           <div className="card card-pad text-[12.5px] leading-relaxed">
             <span className="panel-title block pb-1">{t("guide.dashboard.basis.title")}</span>

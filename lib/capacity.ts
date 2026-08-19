@@ -20,6 +20,18 @@ export interface ResolvedCap {
   basis: Basis;
   cap_qty: number;
   cap_cbm: number;    // efektif (× utilisasi)
+  /**
+   * Angka max_cbm persis seperti yang tertulis di konfigurasi — sebelum faktor
+   * utilisasi volume.
+   *
+   * Dipisahkan karena inilah satu-satunya nilai yang dapat dicocokkan admin
+   * dengan apa yang ia ketik di Pengaturan. Menampilkan hanya kapasitas efektif
+   * membuat "max CBM 0,0336" terbaca sebagai "0,029" di layar, dan itu tampak
+   * seperti konfigurasi tidak diterapkan padahal justru sedang diterapkan.
+   */
+  cap_cbm_nominal: number;
+  /** Kapasitas qty tidak diturunkan: utilisasi hanya berlaku untuk volume. */
+  cap_qty_nominal: number;
   utilization_pct: number;
   qty_valid: boolean; // master max_quantity > 1 ATAU ada override — nilai 1 = sentinel per-slot
   cbm_valid: boolean;
@@ -62,10 +74,14 @@ export function resolveSloc(m: SlocScope): ResolvedCap {
     if (r.set.max_qty !== undefined) { maxQty = r.set.max_qty; qtyOverridden = true; }
     if (r.set.max_cbm !== undefined) { maxCbm = r.set.max_cbm; cbmOverridden = true; }
   }
+  const nominalCbm = Math.max(0, maxCbm);
+  const nominalQty = Math.max(0, maxQty);
   return {
     basis,
-    cap_qty: Math.max(0, maxQty),
-    cap_cbm: Math.max(0, maxCbm) * (util / 100),
+    cap_qty: nominalQty,
+    cap_cbm: nominalCbm * (util / 100),
+    cap_cbm_nominal: nominalCbm,
+    cap_qty_nominal: nominalQty,
     utilization_pct: util,
     qty_valid: qtyOverridden || m.max_quantity > 1,
     cbm_valid: cbmOverridden || m.max_volume > 1,

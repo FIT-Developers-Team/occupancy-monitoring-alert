@@ -7,8 +7,10 @@ import KpiCard from "@/components/ui/kpi-card";
 import PageHeader from "@/components/ui/page-header";
 import IntegrityDriftTable from "@/components/domain/integrity-drift-table";
 import ExportExcelButton from "@/components/domain/export-excel-button";
+import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
+export const generateMetadata = pageTitle("nav.integrity");
 
 /**
  * Halaman memuat lebih banyak selisih daripada 30 baris lama supaya pencarian

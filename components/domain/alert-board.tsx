@@ -1,9 +1,11 @@
 "use client";
 // Papan alert per gudang + pop-up detail (sebab, dampak, tindakan, riwayat).
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { Alert, Severity } from "@/types";
 import { fmtDateTime, severityOrder } from "@/lib/utils";
 import { useT } from "@/lib/i18n-client";
+import { SEVERITY_TONE } from "@/lib/status-tone";
+import { trapFocus } from "@/lib/focus-trap";
 import { SeverityBadge, AlertStatusBadge } from "@/components/ui/badges";
 import AlertActions from "@/components/domain/alert-actions";
 import ExportExcelButton from "@/components/domain/export-excel-button";
@@ -42,6 +44,18 @@ export default function AlertBoard({
     for (const a of alerts) m[a.warehouse_code] = (m[a.warehouse_code] ?? 0) + 1;
     return m;
   }, [alerts]);
+  // Berapa banyak alert di setiap tingkat keparahan. Dipakai deretan filter di
+  // bawah agar "seberapa buruk keadaan sekarang" terbaca sebelum satu baris pun
+  // dibuka — dan sekaligus mengajarkan urutan warnanya.
+  const severityCounts = useMemo(() => {
+    const m: Partial<Record<Severity, number>> = {};
+    for (const a of alerts) m[a.severity] = (m[a.severity] ?? 0) + 1;
+    return m;
+  }, [alerts]);
+  const worstFirst = useMemo(
+    () => [...severityOrder].reverse().filter((value) => severityCounts[value]),
+    [severityCounts],
+  );
   const shown = useMemo(() => {
     const tokens = deferredQuery.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
     return alerts.filter((alert) => {
@@ -58,7 +72,26 @@ export default function AlertBoard({
       return tokens.every((token) => haystack.includes(token));
     });
   }, [alerts, deferredQuery, rule, severity, wh]);
-  const hint = (a: Alert) => ruleHints[a.rule_id] ?? { reason: a.detail, action: "" };
+  // Penjelasan spesifik alert ini lebih dulu; keterangan aturan hanya latar
+  // belakang. Sebelumnya urutannya terbalik dan `detail` — satu-satunya tempat
+  // angka Qty/CBM sebenarnya ditulis — tidak pernah tampil sama sekali.
+  const hint = (a: Alert) => ruleHints[a.rule_id] ?? { reason: "", action: "" };
+
+  const dialogTrigger = useRef<HTMLElement | null>(null);
+  const openAlert = (alert: Alert) => {
+    dialogTrigger.current = document.activeElement as HTMLElement | null;
+    setSel(alert);
+  };
+  const closeAlert = () => {
+    setSel(null);
+    requestAnimationFrame(() => dialogTrigger.current?.focus());
+  };
+  useEffect(() => {
+    if (!sel) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [sel]);
 
   const exportParams = useMemo(() => {
     const params = new URLSearchParams({ group: exportGroup ?? "all" });
@@ -82,7 +115,9 @@ export default function AlertBoard({
           <select className="input" value={severity}
             onChange={(event) => setSeverity(event.target.value as Severity | "")}>
             <option value="">{t("alertx.allSeverities")}</option>
-            {severityOrder.map((value) => <option key={value} value={value}>{value}</option>)}
+            {[...severityOrder].reverse().map((value) => (
+              <option key={value} value={value}>{t(`severity.${value}`)}</option>
+            ))}
           </select>
         </label>
         <label>
@@ -98,6 +133,24 @@ export default function AlertBoard({
             disabled={shown.length === 0} title={t("export.fullHint")} />
         </span>
       </div>
+
+      {worstFirst.length > 0 && (
+        <div className="severity-filter" role="group" aria-label={t("alert.severity")}>
+          {worstFirst.map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={`severity-filter-item severity-${SEVERITY_TONE[value]}${severity === value ? " is-active" : ""}`}
+              aria-pressed={severity === value}
+              onClick={() => setSeverity((current) => (current === value ? "" : value))}
+            >
+              <i aria-hidden="true" />
+              <span>{t(`severity.${value}`)}</span>
+              <b className="num">{severityCounts[value]}</b>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         <button className={`chip ${wh === "" ? "chip-accent" : ""}`} onClick={() => setWh("")}>
@@ -118,11 +171,14 @@ export default function AlertBoard({
         <ul className="alert-list">
           {shown.map((a) => (
             <li key={a.alert_id}>
-              <button className="alert-row"
-                onClick={() => setSel(a)}>
+              {/* Pita kiri berwarna keparahan: satu baris dapat dinilai tanpa
+                  membaca lencananya, dan daftar panjang tetap dapat dipindai. */}
+              <button className={`alert-row severity-${SEVERITY_TONE[a.severity]}`}
+                onClick={() => openAlert(a)}>
                 <div className="flex flex-wrap items-center gap-2">
                   <SeverityBadge severity={a.severity} />
                   <span className="num text-[13px] font-semibold">{a.warehouse_code}</span>
+                  {a.zone && <span className="chip">{a.zone}</span>}
                   {a.sloc_code && <span className="chip num">{a.sloc_code}</span>}
                   <span className="ml-auto flex items-center gap-2">
                     <span className="eyebrow">{levels[a.escalation_level] ?? `L${a.escalation_level}`}</span>
@@ -130,9 +186,7 @@ export default function AlertBoard({
                   </span>
                 </div>
                 <div className="mt-1 text-[12.5px] font-semibold">{a.title}</div>
-                <div className="truncate text-[11px]" style={{ color: "var(--text-muted)" }}>
-                  {hint(a).reason}
-                </div>
+                <div className="alert-row-detail">{a.detail}</div>
               </button>
             </li>
           ))}
@@ -140,25 +194,27 @@ export default function AlertBoard({
       )}
 
       {sel && (
-        <div className="anim-fade fixed inset-0 z-50 flex items-end justify-center p-0 md:items-center md:p-4"
-          style={{ background: "rgba(8,12,24,0.55)" }} onMouseDown={() => setSel(null)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") setSel(null);
+        <div className="alert-dialog-backdrop"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) closeAlert();
           }}>
           <div
-            className="card anim-in w-full max-w-lg overflow-hidden"
+            className={`card anim-in alert-dialog severity-${SEVERITY_TONE[sel.severity]}`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="alert-detail-title"
-            onMouseDown={(e) => e.stopPropagation()}
+            onKeyDown={(event) => {
+              trapFocus(event);
+              if (event.key === "Escape") closeAlert();
+            }}
           >
             <div className="flex items-start justify-between gap-3 px-4 pb-3 pt-4"
               style={{ borderBottom: "1px solid var(--border)" }}>
               <div className="min-w-0">
                 <div className="eyebrow">{t("alert.detail")} · {sel.rule_id}</div>
-                <h3 id="alert-detail-title" className="panel-title truncate">{sel.title}</h3>
+                <h3 id="alert-detail-title" className="panel-title">{sel.title}</h3>
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => setSel(null)}
+              <button className="btn btn-ghost btn-sm" autoFocus onClick={closeAlert}
                 aria-label={t("action.close")}>{t("action.close")}</button>
             </div>
             <div className="space-y-3 px-4 py-3 text-[12.5px]">
@@ -171,9 +227,18 @@ export default function AlertBoard({
                 {sel.sku && <span className="chip num">{t("common.skuNo")} {sel.sku}</span>}
               </div>
               <div>
-                <div className="eyebrow mb-1">{t("alert.reason")}</div>
-                <p style={{ color: "var(--text-muted)" }}>{hint(sel).reason}</p>
+                <div className="eyebrow mb-1">{t("alert.reading")}</div>
+                {/* Angka Qty dan CBM lokasi/zona ini berikut tindakannya.
+                    Sebelumnya blok ini menampilkan keterangan umum aturan, dan
+                    satu-satunya tempat angkanya tertulis tidak pernah terlihat. */}
+                <p className="alert-detail-body">{sel.detail}</p>
               </div>
+              {hint(sel).reason && (
+                <div>
+                  <div className="eyebrow mb-1">{t("alert.reason")}</div>
+                  <p style={{ color: "var(--text-muted)" }}>{hint(sel).reason}</p>
+                </div>
+              )}
               {hint(sel).action && (
                 <div>
                   <div className="eyebrow mb-1">{t("alert.action")}</div>

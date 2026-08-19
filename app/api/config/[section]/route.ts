@@ -85,6 +85,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ section: s
   const { section } = await ctx.params;
   if (!valid(section)) return NextResponse.json({ error: "Section tidak dikenal." }, { status: 404 });
   const meta = section === "capacity" ? await capacityMeta() : undefined;
+  // Lokasi penyimpanan tidak diulang di sini: halaman Pengaturan menerimanya
+  // dari server saat render, dan /api/health melaporkannya untuk monitoring.
   return NextResponse.json({ section, data: readers[section](), meta });
 }
 

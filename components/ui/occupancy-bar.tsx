@@ -1,10 +1,5 @@
 import type { OccupancyStatus } from "@/types";
-
-const fill: Record<OccupancyStatus, string> = {
-  NORMAL: "var(--st-normal-fg)", MONITOR: "var(--st-monitor-fg)",
-  WARNING: "var(--st-warning-fg)", CRITICAL: "var(--st-critical-fg)",
-  BREACH: "var(--st-critical-fg)",
-};
+import { STATUS_COLOR } from "@/lib/status-tone";
 
 /** Signature FIT: bar okupansi dengan tick ambang — aturan terbaca langsung di bar. */
 export default function OccupancyBar({
@@ -27,7 +22,7 @@ export default function OccupancyBar({
       aria-valuenow={Math.max(0, Math.min(100, pct))}
       aria-valuetext={`${pct}%`}
     >
-      <div className="occ-fill" style={{ width: `${width}%`, background: fill[status] }} />
+      <div className="occ-fill" style={{ width: `${width}%`, background: STATUS_COLOR[status] }} />
       {( [t.monitor, t.warning, t.critical] as const ).map((tick, i) => (
         <span key={i} className={`occ-tick ${pct >= tick ? "hot" : ""}`}
           style={{ left: `${tick}%` }} />

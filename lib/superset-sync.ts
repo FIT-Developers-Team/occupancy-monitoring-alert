@@ -3,34 +3,37 @@ import fs from "fs";
 import path from "path";
 import { z } from "zod";
 import { getWarehouses } from "@/lib/config";
+import { resolveConfigFile, runtimeConfigFile } from "@/lib/runtime-config";
 
 const ROOT = process.cwd();
 const CONFIG_DIR = path.join(ROOT, "config");
 const DB_DIR = path.join(ROOT, "db");
-const CONFIG_FILE = path.join(CONFIG_DIR, "superset-sync.json");
+
 /**
- * Where the Superset credential actually lives at runtime.
+ * Konfigurasi dan kredensial sinkronisasi sama-sama harus selamat dari deploy.
  *
- * It used to be written into `config/`, which does not survive a container
- * rebuild: `.dockerignore` keeps the secrets file out of the image on purpose,
- * so `/app/config` starts empty and an admin had to paste the cookie again
- * after every deploy. `db/` is the volume that demonstrably persists — the
- * DuckDB history lives there — so the credential belongs beside it, exactly as
- * `lib/config.ts` already does for recipients.
+ * Kredensial sudah lama pindah ke `db/runtime-config/`: `.dockerignore`
+ * sengaja menahannya di luar image, sehingga `/app/config` mulai kosong dan
+ * admin harus menempelkan cookie lagi setelah setiap deploy. Berkas
+ * konfigurasinya sendiri — jadwal, dataset, pemetaan kolom — masih tertinggal
+ * di `config/` yang ikut dibangun ke image, jadi setiap perubahan dari halaman
+ * Pengaturan kembali ke nilai bawaan pada build berikutnya.
  *
- * Reads still fall back to the old path so existing installations keep working
- * until their next save migrates them.
+ * Keduanya kini memakai aturan yang sama (lihat lib/runtime-config.ts): baca
+ * salinan runtime bila ada, jatuh ke seed image bila belum pernah disimpan,
+ * dan selalu tulis ke volume permanen. Worker Python memakai urutan pencarian
+ * yang identik, sehingga daemon membaca berkas yang sama dengan aplikasi web.
  */
-const RUNTIME_CONFIG_DIR = process.env.WIOM_RUNTIME_CONFIG_DIR?.trim()
-  ? path.resolve(process.env.WIOM_RUNTIME_CONFIG_DIR.trim())
-  : path.join(DB_DIR, "runtime-config");
+const CONFIG_BASENAME = "superset-sync.json";
 const SECRETS_BASENAME = ".superset-sync.secrets.json";
 const LEGACY_SECRETS_FILE = path.join(CONFIG_DIR, SECRETS_BASENAME);
-const RUNTIME_SECRETS_FILE = path.join(RUNTIME_CONFIG_DIR, SECRETS_BASENAME);
 
-/** Runtime location for writes; whichever exists for reads (runtime wins). */
+const syncConfigFile = (forWrite = false) => resolveConfigFile(CONFIG_BASENAME, forWrite);
+
+/** Lokasi tulis runtime; untuk pembacaan yang mana pun yang ada (runtime menang). */
 function secretsFile(forWrite = false): string {
-  if (forWrite || fs.existsSync(RUNTIME_SECRETS_FILE)) return RUNTIME_SECRETS_FILE;
+  const runtime = runtimeConfigFile(SECRETS_BASENAME);
+  if (forWrite || fs.existsSync(runtime)) return runtime;
   return LEGACY_SECRETS_FILE;
 }
 const STATUS_FILE = path.join(DB_DIR, ".superset-sync-status.json");
@@ -291,11 +294,12 @@ function writeJsonAtomic(file: string, value: unknown, mode?: number): void {
 }
 
 export function getSupersetSyncConfig(): SupersetSyncConfig {
-  const parsed = SupersetSyncConfigSchema.safeParse(readJson(CONFIG_FILE));
+  const configFile = syncConfigFile();
+  const parsed = SupersetSyncConfigSchema.safeParse(readJson(configFile));
   if (!parsed.success) {
     throw new Error(
       parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ")
-      || `Konfigurasi Superset tidak ditemukan di ${CONFIG_FILE}.`,
+      || `Konfigurasi Superset tidak ditemukan di ${configFile}.`,
     );
   }
   return parsed.data;
@@ -376,7 +380,7 @@ export function writeSupersetSyncSettings(input: unknown) {
     if (value?.trim()) stored.auth[key] = value.trim();
   }
 
-  writeJsonAtomic(CONFIG_FILE, validated);
+  writeJsonAtomic(syncConfigFile(true), validated);
   writeJsonAtomic(secretsFile(true), stored, 0o600);
   return {
     ...getSupersetSyncSettings(),

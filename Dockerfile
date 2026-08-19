@@ -51,6 +51,13 @@ RUN rm -rf node_modules/@img node_modules/sharp \
            node_modules/typescript node_modules/@types \
            db/*.duckdb db/*.duckdb.wal \
   && node -e "require.resolve('duckdb'); console.log('duckdb binding OK')"
+# /app/db WAJIB berupa penyimpanan permanen: history DuckDB, state alert, akun,
+# DAN konfigurasi runtime (db/runtime-config) hidup di sana. Selama folder ini
+# bertahan, semua yang disimpan admin selamat dari deploy ulang.
+#
+# /app/config hanya berisi NILAI AWAL bawaan image. Ia tetap didaftarkan sebagai
+# volume agar instalasi lama yang masih menyimpan kebijakan di sana terbaca dan
+# ikut dipindahkan ke db/runtime-config pada start pertama image ini.
 VOLUME ["/app/db", "/app/config"]
 EXPOSE 3000
 HEALTHCHECK --start-period=30s --interval=15s --timeout=5s --retries=4 \
@@ -86,6 +93,13 @@ RUN rm -rf node_modules/@img node_modules/sharp \
   && node --version \
   && python3 -c "import ssl, duckdb, pandas, requests; print('ssl', ssl.OPENSSL_VERSION)"
 # db/*.duckdb TIDAK di-copy — mount sebagai volume (lihat docker-compose.yml)
+# /app/db WAJIB berupa penyimpanan permanen: history DuckDB, state alert, akun,
+# DAN konfigurasi runtime (db/runtime-config) hidup di sana. Selama folder ini
+# bertahan, semua yang disimpan admin selamat dari deploy ulang.
+#
+# /app/config hanya berisi NILAI AWAL bawaan image. Ia tetap didaftarkan sebagai
+# volume agar instalasi lama yang masih menyimpan kebijakan di sana terbaca dan
+# ikut dipindahkan ke db/runtime-config pada start pertama image ini.
 VOLUME ["/app/db", "/app/config"]
 EXPOSE 3000
 HEALTHCHECK --start-period=30s --interval=15s --timeout=5s --retries=4 \

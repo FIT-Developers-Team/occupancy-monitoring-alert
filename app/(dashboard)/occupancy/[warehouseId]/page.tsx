@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { getWarehouseSummaries, getZoneSummary, getRecentMovements } from "@/lib/queries";
 import { thresholdsFor } from "@/lib/config";
 import { getBasisMode, pickPct, pickStatus } from "@/lib/basis";
-import { fmtNum, fmtPct, fmtHours, fmtDateTime } from "@/lib/utils";
+import { fmtCbm, fmtNum, fmtPct, fmtHours, fmtDateTime } from "@/lib/utils";
 import { getT } from "@/lib/i18n";
 import Section from "@/components/ui/section";
 import KpiCard from "@/components/ui/kpi-card";
@@ -12,8 +12,17 @@ import OccupancyZoneBrowser from "@/components/domain/occupancy-zone-browser";
 import SlocExplorer from "@/components/domain/sloc-explorer";
 import ExportExcelButton from "@/components/domain/export-excel-button";
 import PageHeader from "@/components/ui/page-header";
+import CapacityStandardNote from "@/components/domain/capacity-standard-note";
+import { STATUS_TONE } from "@/lib/status-tone";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata(
+  { params }: { params: Promise<{ warehouseId: string }> },
+) {
+  const { warehouseId } = await params;
+  return { title: warehouseId.toUpperCase() };
+}
 
 export default async function WarehouseDetail(
   { params }: { params: Promise<{ warehouseId: string }> }
@@ -48,22 +57,39 @@ export default async function WarehouseDetail(
 
       <div className="metric-strip metric-strip-four">
         <KpiCard label={tr("common.occupancy")} value={fmtPct(raw)}
-          tone={shownStatus === null ? undefined : shownStatus === "NORMAL" ? "normal" : shownStatus === "MONITOR" ? "monitor" : shownStatus === "WARNING" ? "warning" : "critical"}
-          sub={`ambang ${t.monitor}/${t.warning}/${t.critical}/${t.breach}`} />
+          tone={shownStatus === null ? undefined : STATUS_TONE[shownStatus]}
+          sub={`${tr("occ.thresholdLadder")} ${t.monitor}/${t.warning}/${t.critical}/${t.breach}`} />
         <KpiCard label={tr("occ.slocOccupied")} value={fmtNum(w.sloc_occupied)} tone="accent"
           sub={`${fmtPct(w.pct_bin)} · ${fmtNum(w.sloc_total)} ${tr("common.active")}`} />
         <KpiCard label={tr("occ.emptySloc")} value={fmtNum(w.sloc_empty)}
           sub={`${fmtPct(100 - w.pct_bin)} ${tr("common.empty").toLowerCase()}`} />
         <KpiCard label={tr("fc.to95")} value={fmtHours(w.hours_to_95)}
           tone={w.hours_to_95 !== null && w.hours_to_95 < 12 ? "critical" : "accent"}
-          sub={`laju ${w.rate_pct_per_hour >= 0 ? "+" : ""}${w.rate_pct_per_hour}%/jam`} />
+          sub={`${tr("fc.rate")} ${w.rate_pct_per_hour >= 0 ? "+" : ""}${fmtNum(w.rate_pct_per_hour, 3)}${tr("fc.ratePerHour")}`} />
       </div>
 
       <div className="occ-basis-strip card">
-        <div><span className="eyebrow">Qty</span><strong className="num">{fmtPct(w.pct_qty)}</strong><small>{fmtNum(w.occ_qty)} / {fmtNum(w.cap_qty)} unit</small></div>
-        <div><span className="eyebrow">CBM</span><strong className="num">{fmtPct(w.pct_cbm)}</strong><small>{w.occ_cbm} / {w.cap_cbm} m³</small></div>
-        <div><span className="eyebrow">Bin</span><strong className="num">{fmtPct(w.pct_bin)}</strong><small>{fmtNum(w.sloc_occupied)} / {fmtNum(w.sloc_total)} SLOC</small></div>
+        <div>
+          <span className="eyebrow">Qty</span>
+          <strong className="num">{fmtPct(w.pct_qty)}</strong>
+          <small>{fmtNum(w.occ_qty)} / {fmtNum(w.cap_qty)} {tr("common.unit")}</small>
+        </div>
+        {/* Angka mentah tanpa pemformat pernah tampil di sini sebagai
+            "1234.5678901" — satu-satunya kolom di aplikasi yang tidak
+            mengikuti format lokal. */}
+        <div>
+          <span className="eyebrow">{tr("heat.cbmEffective")}</span>
+          <strong className="num">{fmtPct(w.pct_cbm)}</strong>
+          <small title={tr("heat.capCbmHint")}>{fmtCbm(w.occ_cbm)} / {fmtCbm(w.cap_cbm)} m³</small>
+        </div>
+        <div>
+          <span className="eyebrow">Bin</span>
+          <strong className="num">{fmtPct(w.pct_bin)}</strong>
+          <small>{fmtNum(w.sloc_occupied)} / {fmtNum(w.sloc_total)} SLOC</small>
+        </div>
       </div>
+
+      <CapacityStandardNote warehouse={code} />
 
       <Section eyebrow={`${zones.length} ${tr("common.zone").toLowerCase()} · ${tr("occ.zoneHint")}`} title={tr("occ.byZone")}>
         <OccupancyZoneBrowser rows={zones} mode={mode} thresholds={{ [code]: t }} fixedWarehouse={code} />

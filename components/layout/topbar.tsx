@@ -7,34 +7,61 @@ import BasisSwitch from "@/components/ui/basis-switch";
 import LangSwitch from "@/components/ui/lang-switch";
 import { useT } from "@/lib/i18n-client";
 
-// A full server refresh re-runs dashboard DuckDB queries. Keep it operationally
-// fresh without doing that work every minute in every background tab.
-const INTERVAL_MS = 600_000;
+// Halaman dimuat ulang saat snapshot benar-benar berganti (lihat pemungutan
+// status di bawah), jadi timer ini bukan lagi cara utama layar tetap segar —
+// ia jaring pengaman untuk keadaan di mana sinyal versi tidak pernah tiba,
+// misalnya endpoint status tak dapat dihubungi dari tab ini.
+const FALLBACK_REFRESH_MS = 600_000;
+// Indikator sinkronisasi sekaligus pembawa sinyal "ada snapshot baru".
+const STATUS_POLL_MS = 60_000;
+
+interface DataStatus {
+  state: string;
+  updatedAt?: string | null;
+  workerOnline: boolean;
+  hasSnapshot: boolean;
+  dataVersion?: string | null;
+}
 
 export default function Topbar({
-  userName, role, onOpenMobileNav,
-}: { userName: string; role: string; onOpenMobileNav: () => void }) {
+  userName, role, dataVersion, onOpenMobileNav,
+}: { userName: string; role: string; dataVersion: string; onOpenMobileNav: () => void }) {
   const router = useRouter();
   const { t } = useT();
   const [paused, setPaused] = useState(false);
-  const [dataStatus, setDataStatus] = useState<{
-    state: string; updatedAt?: string | null; workerOnline: boolean; hasSnapshot: boolean;
-  } | null>(null);
-  const nextRefresh = useRef(Date.now() + INTERVAL_MS);
+  const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
+  const nextRefresh = useRef(Date.now() + FALLBACK_REFRESH_MS);
   const roleLabel = t(`shell.role.${role}`, role);
+
+  // Snapshot yang menghasilkan HTML yang sedang tampil. Prop-nya ikut berubah
+  // setiap kali server merender ulang, sehingga patokan ini menyusul sendiri
+  // begitu sebuah refresh benar-benar terpasang.
+  const renderedVersion = useRef(dataVersion);
+  // Versi yang sudah pernah memicu refresh dari tab ini. Tanpa penanda ini,
+  // satu refresh yang gagal membawa data baru akan diulang tiap pemungutan.
+  const requestedVersion = useRef<string | null>(null);
+  // Dibaca dari dalam pemungut yang hanya dipasang sekali, jadi keduanya harus
+  // lewat ref: menaruhnya di daftar dependensi akan membongkar-pasang interval
+  // 60 detik itu setiap kali tombol jeda ditekan.
+  const pausedRef = useRef(paused);
+  const refreshRef = useRef<() => void>(() => {});
 
   const refresh = useCallback(() => {
     router.refresh();
-    nextRefresh.current = Date.now() + INTERVAL_MS;
+    nextRefresh.current = Date.now() + FALLBACK_REFRESH_MS;
   }, [router]);
+
+  useEffect(() => { renderedVersion.current = dataVersion; }, [dataVersion]);
+  useEffect(() => { pausedRef.current = paused; }, [paused]);
+  useEffect(() => { refreshRef.current = refresh; }, [refresh]);
 
   useEffect(() => {
     if (paused) return undefined;
-    nextRefresh.current = Date.now() + INTERVAL_MS;
+    nextRefresh.current = Date.now() + FALLBACK_REFRESH_MS;
     const refreshIfDue = () => {
       if (!document.hidden && Date.now() >= nextRefresh.current) refresh();
     };
-    const timer = window.setInterval(refreshIfDue, INTERVAL_MS);
+    const timer = window.setInterval(refreshIfDue, FALLBACK_REFRESH_MS);
     document.addEventListener("visibilitychange", refreshIfDue);
     return () => {
       window.clearInterval(timer);
@@ -42,20 +69,56 @@ export default function Topbar({
     };
   }, [paused, refresh]);
 
+  // Indikator sinkronisasi hanya berarti bagi mata yang sedang melihatnya.
+  // Sebelumnya ia tetap memanggil endpoint tiap menit di setiap tab latar yang
+  // dibiarkan terbuka seharian — pekerjaan server yang tidak pernah terlihat
+  // siapa pun. Pemungutan berhenti saat tab tersembunyi dan langsung menyusul
+  // sekali begitu tab kembali aktif, sehingga yang dilihat pengguna saat
+  // kembali tetap kondisi terkini.
+  //
+  // Jawaban yang sama juga memberi tahu versi snapshot yang berlaku, dan itu
+  // sudah tiba tiap 60 detik. Sebelumnya kabar itu dibiarkan lewat: halaman
+  // menunggu timer sepuluh menitnya sendiri meski sudah tahu ada data baru.
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
     const read = async () => {
+      if (document.hidden) return;
       try {
-        const response = await fetch("/api/data-status", { cache: "no-store" });
-        const body = await response.json();
-        if (active) setDataStatus(body);
-      } catch {
-        if (active) setDataStatus(null);
+        const response = await fetch("/api/data-status", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const body = (await response.json()) as DataStatus;
+        if (!active) return;
+        setDataStatus(body);
+
+        const version = typeof body?.dataVersion === "string" ? body.dataVersion : null;
+        if (
+          version
+          && !pausedRef.current
+          && version !== renderedVersion.current
+          && version !== requestedVersion.current
+        ) {
+          // Satu refresh per versi per tab. Pemungutan berikutnya tidak
+          // mengulanginya, dan patokan di atas ikut bergeser sendiri begitu
+          // server selesai merender snapshot yang baru.
+          requestedVersion.current = version;
+          refreshRef.current();
+        }
+      } catch (error) {
+        if (active && (error as { name?: string })?.name !== "AbortError") setDataStatus(null);
       }
     };
     void read();
-    const timer = window.setInterval(read, 60_000);
-    return () => { active = false; window.clearInterval(timer); };
+    const timer = window.setInterval(read, STATUS_POLL_MS);
+    document.addEventListener("visibilitychange", read);
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", read);
+    };
   }, []);
 
   async function logout() {

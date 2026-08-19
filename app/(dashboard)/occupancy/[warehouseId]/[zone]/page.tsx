@@ -11,21 +11,23 @@ import ExportExcelButton from "@/components/domain/export-excel-button";
 import SlocExplorer from "@/components/domain/sloc-explorer";
 import ZoneDetailTable from "@/components/domain/zone-detail-table";
 import type { OccupancyStatus } from "@/types";
+import { STATUS_COLOR, STATUS_TONE } from "@/lib/status-tone";
 import PageHeader from "@/components/ui/page-header";
+import CapacityStandardNote from "@/components/domain/capacity-standard-note";
 
 export const dynamic = "force-dynamic";
 
-const stColor: Record<string, string> = {
-  NORMAL: "var(--st-normal-fg)", MONITOR: "var(--st-monitor-fg)",
-  WARNING: "var(--st-warning-fg)", CRITICAL: "var(--st-critical-fg)", BREACH: "var(--st-critical-fg)",
-};
+export async function generateMetadata(
+  { params }: { params: Promise<{ warehouseId: string; zone: string }> },
+) {
+  const { warehouseId, zone } = await params;
+  return { title: `${warehouseId.toUpperCase()} · ${decodeURIComponent(zone).toUpperCase()}` };
+}
+
+const stColor: Record<string, string> = STATUS_COLOR;
 
 function toneFor(status: OccupancyStatus | null) {
-  if (status === "NORMAL") return "normal" as const;
-  if (status === "MONITOR") return "monitor" as const;
-  if (status === "WARNING") return "warning" as const;
-  if (status === "CRITICAL" || status === "BREACH") return "critical" as const;
-  return undefined;
+  return status === null ? undefined : STATUS_TONE[status];
 }
 
 export default async function ZoneDetailPage(
@@ -96,9 +98,9 @@ export default async function ZoneDetailPage(
           <small>{fmtNum(z.occ_qty)} / {fmtNum(z.cap_qty)} {t("common.unit")}</small>
         </div>
         <div>
-          <span className="eyebrow">CBM</span>
+          <span className="eyebrow">{t("heat.cbmEffective")}</span>
           <strong className="num">{fmtPct(z.pct_cbm)}</strong>
-          <small>{fmtCbm(z.occ_cbm)} / {fmtCbm(z.cap_cbm)} m³</small>
+          <small title={t("heat.capCbmHint")}>{fmtCbm(z.occ_cbm)} / {fmtCbm(z.cap_cbm)} m³</small>
         </div>
         <div>
           <span className="eyebrow">Bin</span>
@@ -106,6 +108,8 @@ export default async function ZoneDetailPage(
           <small>{fmtNum(z.sloc_occupied)} / {fmtNum(z.sloc_total)} SLOC</small>
         </div>
       </div>
+
+      <CapacityStandardNote warehouse={code} />
 
       <Section
         eyebrow={`${fmtNum(lines.length)} ${t("common.of")} ${fmtNum(detail.total)} ${t("occ.rows")} · ${code}/${zone}`}

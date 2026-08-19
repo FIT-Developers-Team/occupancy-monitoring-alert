@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { getWarehouseOccupancySummary, getZoneSummary } from "@/lib/queries";
 import { thresholdsFor } from "@/lib/config";
 import { getBasisMode, pickPct, pickStatus } from "@/lib/basis";
@@ -11,8 +10,12 @@ import OccupancyZoneBrowser from "@/components/domain/occupancy-zone-browser";
 import SlocExplorer from "@/components/domain/sloc-explorer";
 import ExportExcelButton from "@/components/domain/export-excel-button";
 import PageHeader from "@/components/ui/page-header";
+import PrefetchLink from "@/components/ui/prefetch-link";
+import CapacityStandardNote from "@/components/domain/capacity-standard-note";
+import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
+export const generateMetadata = pageTitle("nav.occupancy");
 
 export default async function OccupancyPage() {
   const [mode, t] = await Promise.all([getBasisMode(), getT()]);
@@ -39,6 +42,8 @@ export default async function OccupancyPage() {
         }
       />
 
+      <CapacityStandardNote />
+
       <div className="occ-summary-strip">
         <div className="occ-summary-item"><span className="eyebrow">{t("occ.activeSloc")}</span><strong className="num">{fmtNum(totalActive)}</strong><span>{sums.length} {t("common.warehouse").toLowerCase()}</span></div>
         <div className="occ-summary-item"><span className="eyebrow">{t("occ.slocOccupied")}</span><strong className="num">{fmtNum(totalOccupied)}</strong><span>{totalActive ? fmtPct(totalOccupied / totalActive * 100) : "0%"}</span></div>
@@ -52,7 +57,7 @@ export default async function OccupancyPage() {
           const raw = pickPct(w, mode);
           const shownStatus = raw === null ? null : pickStatus(w, mode);
           return (
-            <Link key={w.code} href={`/occupancy/${w.code}`} prefetch={false} className="occ-warehouse-card">
+            <PrefetchLink key={w.code} href={`/occupancy/${w.code}`} className="occ-warehouse-card">
               <div className="occ-warehouse-head">
                 <div className="min-w-0">
                   <strong className="num">{w.code}</strong>
@@ -77,7 +82,7 @@ export default async function OccupancyPage() {
                 <span>{t("common.empty")} <b className="num">{fmtNum(w.sloc_empty)}</b></span>
                 <span>{t("common.total")} <b className="num">{fmtNum(w.sloc_total)}</b></span>
               </div>
-            </Link>
+            </PrefetchLink>
           );
         })}
         </div>

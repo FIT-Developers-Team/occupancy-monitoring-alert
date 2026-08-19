@@ -101,6 +101,11 @@ function slocColumns(t: TFn): XlsxColumn[] {
     { key: "cap_qty", header: t("export.capQty"), type: "number", width: 14 },
     { key: "occ_cbm", header: t("export.occCbm"), type: "number", width: 14 },
     { key: "cap_cbm", header: t("export.capCbm"), type: "number", width: 14 },
+    // Kapasitas nominal + faktor utilisasi ikut diekspor supaya berkas Excel
+    // dapat direkonsiliasi langsung dengan angka di halaman Pengaturan:
+    // cap_cbm = max_cbm × utilisasi/100.
+    { key: "cap_cbm_nominal", header: t("export.capCbmNominal"), type: "number", width: 16 },
+    { key: "utilization_pct", header: t("export.utilizationPct"), type: "number", width: 14 },
     { key: "sku_count", header: t("dens.skuCount"), type: "integer", width: 12 },
     { key: "basis", header: t("export.policyBasis"), width: 12 },
   ];
@@ -114,6 +119,7 @@ function slocSheetRow(row: SlocExplorerRow, t: TFn) {
     // "kapasitasnya nol", bukan "kapasitasnya belum diketahui".
     cap_qty: row.qty_valid ? row.cap_qty : null,
     cap_cbm: row.cbm_valid ? row.cap_cbm : null,
+    cap_cbm_nominal: row.cbm_valid ? row.cap_cbm_nominal : null,
     basis: row.basis.toUpperCase(),
   };
 }

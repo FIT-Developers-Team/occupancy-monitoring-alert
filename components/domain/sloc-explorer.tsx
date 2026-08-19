@@ -10,7 +10,8 @@
 // bukan satu halaman.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import type { BasisMode, StockLine } from "@/types";
+import type { BasisMode, OccupancyStatus, StockLine } from "@/types";
+import { STATUS_COLOR } from "@/lib/status-tone";
 import type { SlocExplorerRow, SlocExplorerSummary, SlocFacets } from "@/lib/queries";
 import {
   EMPTY_SLOC_FILTER,
@@ -23,7 +24,8 @@ import {
   type SlocSort,
   type SlocStatusFilter,
 } from "@/lib/sloc-filter";
-import { fmtCbm, fmtNum } from "@/lib/utils";
+import { fmtCapCbm, fmtCbm, fmtNum } from "@/lib/utils";
+import { trapFocus } from "@/lib/focus-trap";
 import { useT } from "@/lib/i18n-client";
 import { StatusBadge } from "@/components/ui/badges";
 import ExportExcelButton from "@/components/domain/export-excel-button";
@@ -64,6 +66,18 @@ const EMPTY_SUMMARY: SlocExplorerSummary = {
   total: 0, occupied: 0, empty: 0, by_status: {},
   occ_qty: 0, cap_qty: 0, occ_cbm: 0, cap_cbm: 0, sku_count: 0,
 };
+
+/**
+ * Warna angka okupansi = warna statusnya.
+ *
+ * Baris yang belum punya kapasitas sahih tetap netral: "belum diketahui" bukan
+ * salah satu tingkat pada tangga status.
+ */
+function rowColor(row: SlocExplorerRow): string {
+  if (row.view_pct === null) return "var(--text-muted)";
+  const status = row.status as OccupancyStatus;
+  return STATUS_COLOR[status] ?? "var(--text)";
+}
 
 function statusTone(status: string): string {
   if (status === "OCCUPIED") return "badge badge-monitor";
@@ -202,6 +216,16 @@ export default function SlocExplorer({
         if (!controller.signal.aborted) setStockLoading(false);
       });
     return () => controller.abort();
+  }, [selected]);
+
+  // Halaman di belakang panel tidak boleh ikut bergulir: pada layar sentuh,
+  // menggulir isi panel sampai mentok memindahkan tabel di belakangnya, dan
+  // posisi baca hilang begitu panel ditutup.
+  useEffect(() => {
+    if (!selected) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
   }, [selected]);
 
   const patch = useCallback((next: Partial<SlocFilter>) => {
@@ -465,7 +489,10 @@ export default function SlocExplorer({
           <i>{t("occ.emptySloc")}</i><b className="num">{summary.empty.toLocaleString(locale)}</b>
         </span>
         <span><i>Qty</i><b className="num">{fmtNum(summary.occ_qty)} / {fmtNum(summary.cap_qty)}</b></span>
-        <span><i>CBM</i><b className="num">{fmtCbm(summary.occ_cbm)} / {fmtCbm(summary.cap_cbm)}</b></span>
+        <span title={t("heat.capCbmHint")}>
+          <i>{t("heat.cbmEffective")}</i>
+          <b className="num">{fmtCbm(summary.occ_cbm)} / {fmtCbm(summary.cap_cbm)}</b>
+        </span>
         <span><i>{t("common.sku")}</i><b className="num">{summary.sku_count.toLocaleString(locale)}</b></span>
         {!isDefaultSlocFilter(filter) && (
           <button type="button" className="btn btn-ghost btn-sm slocx-reset" onClick={reset}>
@@ -534,11 +561,11 @@ export default function SlocExplorer({
                     <td className="num text-right">{pctText(row.pct_cbm)}</td>
                     <td className="num text-right">{row.pct_bin}%</td>
                     <td className="num text-right">{row.sku_count}</td>
-                    <td className="num text-right font-semibold" style={{
-                      color: row.view_pct === null ? "var(--text-muted)"
-                        : row.view_pct >= 100 ? "var(--st-critical-fg)"
-                        : row.view_pct >= 90 ? "var(--st-warning-fg)" : "var(--text)",
-                    }}>
+                    {/* Warna angka mengikuti status baris ini, bukan ambang
+                        tetap 90/100. Ambang berbeda per gudang, jadi versi lama
+                        bisa memberi angka warna oranye pada baris yang
+                        lencananya masih Warning. */}
+                    <td className="num text-right font-semibold" style={{ color: rowColor(row) }}>
                       {pctText(row.view_pct)}
                     </td>
                   </tr>
@@ -563,10 +590,9 @@ export default function SlocExplorer({
                     <strong className="num">{row.sloc_code}</strong>
                     <small>{row.wh} · {row.zone} · {row.rack_zone || "—"}</small>
                   </span>
-                  <strong className="num" style={{
-                    color: row.view_pct !== null && row.view_pct >= 100
-                      ? "var(--st-critical-fg)" : "var(--text)",
-                  }}>{pctText(row.view_pct)}</strong>
+                  <strong className="num" style={{ color: rowColor(row) }}>
+                    {pctText(row.view_pct)}
+                  </strong>
                 </div>
                 <div className="slocx-mobile-metrics">
                   <span>{t("common.status")} <b>{t(`heat.legendStatus.${row.status}`)}</b></span>
@@ -603,16 +629,17 @@ export default function SlocExplorer({
       </div>
 
       {selected && (
-        <div className="anim-fade fixed inset-0 z-40 flex justify-end"
-          style={{ background: "rgba(8,12,24,0.5)" }}
+        <div className="heat-detail-backdrop"
           onMouseDown={(event) => { if (event.currentTarget === event.target) closeRow(); }}>
           <aside
-            className="h-full w-full max-w-sm overflow-y-auto p-4"
+            className="heat-detail-drawer"
             role="dialog"
             aria-modal="true"
             aria-labelledby="slocx-detail-title"
-            style={{ background: "var(--surface-raised)", borderLeft: "1px solid var(--border)" }}
-            onKeyDown={(event) => { if (event.key === "Escape") closeRow(); }}
+            onKeyDown={(event) => {
+              trapFocus(event);
+              if (event.key === "Escape") closeRow();
+            }}
           >
             <div className="mb-3 flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -632,6 +659,9 @@ export default function SlocExplorer({
                 {t("heat.title")} →
               </Link>
             </div>
+            {/* Penyebut CBM adalah kapasitas efektif (max_cbm x utilisasi).
+                Nilai konfigurasinya ikut ditampilkan supaya angka di layar
+                dapat dicocokkan langsung dengan halaman Pengaturan. */}
             <div className="occ-basis-strip card mb-3">
               <div>
                 <span className="eyebrow">Qty</span>
@@ -639,9 +669,14 @@ export default function SlocExplorer({
                 <small>{fmtNum(selected.occ_qty)} / {selected.qty_valid ? fmtNum(selected.cap_qty) : "—"}</small>
               </div>
               <div>
-                <span className="eyebrow">CBM</span>
+                <span className="eyebrow">{t("heat.cbmEffective")}</span>
                 <strong className="num">{pctText(selected.pct_cbm)}</strong>
                 <small>{fmtCbm(selected.occ_cbm)} / {selected.cbm_valid ? fmtCbm(selected.cap_cbm) : "—"}</small>
+                <small className="metric-formula num" title={t("heat.capCbmHint")}>
+                  {selected.cbm_valid
+                    ? `${t("heat.capConfigured")} ${fmtCapCbm(selected.cap_cbm_nominal)} × ${selected.utilization_pct}%`
+                    : t("heat.capUnknown")}
+                </small>
               </div>
               <div>
                 <span className="eyebrow">Bin</span>

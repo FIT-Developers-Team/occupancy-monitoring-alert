@@ -22,6 +22,10 @@ export interface SlocOccupancy {
   cap_qty: number;
   occ_cbm: number;
   cap_cbm: number;     // sudah dikali utilisasi
+  /** max_cbm persis seperti di konfigurasi, sebelum faktor utilisasi volume. */
+  cap_cbm_nominal: number;
+  /** Faktor utilisasi volume yang berlaku pada lokasi ini (%). */
+  utilization_pct: number;
   qty_valid: boolean;  // kapasitas qty layak (master >1 atau di-override)
   cbm_valid: boolean;
   pct_qty: number | null;

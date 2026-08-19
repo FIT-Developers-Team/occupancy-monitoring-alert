@@ -7,8 +7,11 @@ import Section from "@/components/ui/section";
 import KpiCard from "@/components/ui/kpi-card";
 import SlocExplorer from "@/components/domain/sloc-explorer";
 import PageHeader from "@/components/ui/page-header";
+import CapacityStandardNote from "@/components/domain/capacity-standard-note";
+import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
+export const generateMetadata = pageTitle("nav.density");
 
 /**
  * Halaman ini dulu hanya menampilkan lokasi di atas satu ambang. Filternya kini
@@ -78,6 +81,8 @@ export default async function DensityPage(
           sub={t("basis.binHint")}
         />
       </div>
+
+      <CapacityStandardNote warehouse={filter.wh || undefined} />
 
       <Section
         eyebrow={`${t("slocx.hint")} · ${t("dens.clickDetail")}`}

@@ -9,15 +9,20 @@ import RunTickButton from "@/components/domain/run-tick-button";
 import AlertBoard, { type AlertEvent } from "@/components/domain/alert-board";
 import ExportExcelButton from "@/components/domain/export-excel-button";
 import PageHeader from "@/components/ui/page-header";
+import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
+export const generateMetadata = pageTitle("nav.alerts");
 
 const RULE_HINT_IDS = [
   "R01", "R02", "R03", "R04", "R05", "R06", "R07",
   "R08", "R09", "R10", "R11", "R12", "R13", "R14",
 ] as const;
 const OCCUPANCY_RULE_IDS = [
-  "OCC-MONITOR", "OCC-WARNING", "OCC-CRITICAL", "OCC-BREACH", "OCC-ZONE-BREACH",
+  "OCC-MONITOR", "OCC-WARNING", "OCC-CRITICAL", "OCC-BREACH",
+  // OCC-SLOC-BREACH sebelumnya tidak terdaftar, jadi setiap alert lokasi jatuh
+  // ke teks fallback generik alih-alih penjelasan aturannya sendiri.
+  "OCC-ZONE-BREACH", "OCC-SLOC-BREACH",
 ] as const;
 
 export default async function AlertsPage(

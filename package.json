@@ -5,7 +5,7 @@
   "description": "FIT Occupancy Alert and Monitoring — warehouse occupancy, capacity, and alert monitoring",
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/clean-next.mjs && next build --webpack",
+    "build": "node scripts/clean-next.mjs && next build --webpack && node scripts/prune-standalone.mjs",
     "start": "node scripts/start-production.mjs",
     "secret:generate": "node scripts/generate-secret.mjs",
     "seed": "node scripts/seed.mjs",

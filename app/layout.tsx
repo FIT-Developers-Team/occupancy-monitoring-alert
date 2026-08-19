@@ -4,7 +4,12 @@ import { getLang } from "@/lib/i18n";
 import { I18nProvider } from "@/lib/i18n-client";
 
 export const metadata: Metadata = {
-  title: "FIT Occupancy Alert and Monitoring",
+  // Judul per halaman (lihat lib/page-metadata.ts) mengisi %s; halaman tanpa
+  // judul sendiri jatuh ke nama produk lengkap.
+  title: {
+    template: "%s · FIT Occupancy",
+    default: "FIT Occupancy Alert and Monitoring",
+  },
   description: "Pemantauan okupansi, kapasitas, dan alert gudang untuk Fulfillment Intelligence Team.",
 };
 

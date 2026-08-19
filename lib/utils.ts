@@ -13,6 +13,19 @@ export const fmtCbm = (n: number | null | undefined): string => {
   return n.toLocaleString("id-ID", { maximumFractionDigits: d, minimumFractionDigits: 0 });
 };
 
+/**
+ * Kapasitas CBM yang berasal dari konfigurasi, apa adanya.
+ *
+ * Berbeda dari `fmtCbm`, format ini tidak pernah memotong ke tiga desimal.
+ * Nilai seperti 0,0336 harus tampil persis seperti yang diketik admin di
+ * Pengaturan; membulatkannya menjadi 0,034 menimbulkan pertanyaan yang sama
+ * dengan yang ingin dijawab baris ini.
+ */
+export const fmtCapCbm = (n: number | null | undefined): string =>
+  n === null || n === undefined || Number.isNaN(n)
+    ? "—"
+    : n.toLocaleString("id-ID", { maximumFractionDigits: 4, minimumFractionDigits: 0 });
+
 export const fmtPct = (n: number | null | undefined, digits = 1): string =>
   n === null || n === undefined || Number.isNaN(n) ? "—" : `${fmtNum(n, digits)}%`;
 

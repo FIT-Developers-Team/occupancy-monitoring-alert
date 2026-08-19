@@ -155,16 +155,23 @@
   --accent-soft: #EFF5FF;
   --teal-soft: #F0FDFA;
 
-  --st-normal-bg: #DCFCE7;   --st-normal-fg: #15803D;
-  --st-monitor-bg: #FEF9C3;  --st-monitor-fg: #A16207;
-  --st-warning-bg: #FFEDD5;  --st-warning-fg: #C2410C;
-  --st-critical-bg: #FEE2E2; --st-critical-fg: #B91C1C;
-  --st-breach-bg: #0F172A;   --st-breach-fg: #F8FAFC;
+  /* Tangga status: Normal hijau -> Monitor biru -> Warning kuning ->
+     Critical oranye -> Breach merah. Setiap pasangan latar/teks diverifikasi
+     >= 4.5:1 (WCAG AA) di kedua tema; angka rasio ada di catatan commit.
+
+     Monitor memakai keluarga sky, bukan biru FIT (--accent #3C83F6): satu-satunya
+     hal lain di aplikasi ini yang berwarna biru FIT adalah elemen yang bisa
+     diklik, dan status tidak boleh terlihat seperti tautan. */
+  --st-normal-bg: #DCFCE7;   --st-normal-fg: #15803D;   /* 4.57:1 */
+  --st-monitor-bg: #E0F2FE;  --st-monitor-fg: #0369A1;  /* 5.17:1 */
+  --st-warning-bg: #FEF9C3;  --st-warning-fg: #A16207;  /* 4.58:1 */
+  --st-critical-bg: #FFEDD5; --st-critical-fg: #C2410C; /* 4.52:1 */
+  --st-breach-bg: #FEE2E2;   --st-breach-fg: #B91C1C;   /* 5.30:1 */
   --heat-normal: #22C55E;
-  --heat-monitor: #FACC15;
-  --heat-warning: #FB923C;
-  --heat-critical: #B91C1C;
-  --heat-breach: #7F1D1D;
+  --heat-monitor: #0EA5E9;
+  --heat-warning: #FACC15;
+  --heat-critical: #F97316;
+  --heat-breach: #DC2626;
 }
 .dark {
   --surface: #0B1120;
@@ -180,16 +187,16 @@
   --accent-soft: #14213D;
   --teal-soft: #0C2723;
 
-  --st-normal-bg: #052E16;   --st-normal-fg: #4ADE80;
-  --st-monitor-bg: #2E2405;  --st-monitor-fg: #FACC15;
-  --st-warning-bg: #331206;  --st-warning-fg: #FB923C;
-  --st-critical-bg: #360A0A; --st-critical-fg: #F87171;
-  --st-breach-bg: #E2E8F0;   --st-breach-fg: #0F172A;
+  --st-normal-bg: #052E16;   --st-normal-fg: #4ADE80;   /* 8.55:1 */
+  --st-monitor-bg: #082F49;  --st-monitor-fg: #38BDF8;  /* 6.48:1 */
+  --st-warning-bg: #2E2405;  --st-warning-fg: #FACC15;  /* 10.0:1 */
+  --st-critical-bg: #331206; --st-critical-fg: #FB923C; /* 7.54:1 */
+  --st-breach-bg: #360A0A;   --st-breach-fg: #F87171;   /* 6.30:1 */
   --heat-normal: #4ADE80;
-  --heat-monitor: #FACC15;
-  --heat-warning: #FB923C;
-  --heat-critical: #B91C1C;
-  --heat-breach: #7F1D1D;
+  --heat-monitor: #38BDF8;
+  --heat-warning: #FACC15;
+  --heat-critical: #FB923C;
+  --heat-breach: #EF4444;
 }
 
 @layer base {
@@ -206,6 +213,17 @@
   h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   ::selection { background: color-mix(in oklab, var(--accent) 25%, transparent); }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  /* Tersembunyi sampai di-Tab, lalu menjadi tombol nyata di pojok kiri atas. */
+  .skip-link {
+    position: fixed; top: 8px; left: 8px; z-index: 100;
+    padding: 8px 14px; border: 1px solid var(--border-strong); border-radius: 8px;
+    background: var(--surface-raised); color: var(--text);
+    font-size: 12.5px; font-weight: 650;
+    box-shadow: 0 8px 24px rgba(8, 12, 24, .18);
+    transform: translateY(-200%);
+  }
+  .skip-link:focus-visible { transform: none; }
+  #main-content:focus { outline: none; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   }
@@ -284,10 +302,15 @@
   .badge-monitor  { background: var(--st-monitor-bg);  color: var(--st-monitor-fg); }
   .badge-warning  { background: var(--st-warning-bg);  color: var(--st-warning-fg); }
   .badge-critical { background: var(--st-critical-bg); color: var(--st-critical-fg); }
+  /* Breach dulu berupa chip gelap terbalik; kini merah seperti sisa tangga.
+     Garis diagonalnya dipertahankan sebagai penanda kedua di luar warna,
+     sehingga puncak tangga tetap dikenali pada cetakan hitam-putih maupun oleh
+     mata yang sulit membedakan oranye dari merah. */
   .badge-breach   {
     background: var(--st-breach-bg); color: var(--st-breach-fg);
     background-image: repeating-linear-gradient(
-      -45deg, transparent 0 6px, color-mix(in oklab, var(--st-breach-fg) 18%, transparent) 6px 8px);
+      -45deg, transparent 0 5px, color-mix(in oklab, var(--st-breach-fg) 22%, transparent) 5px 7px);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--st-breach-fg) 40%, transparent);
   }
 
   .chip {
@@ -368,6 +391,22 @@
     display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px;
     padding: 8px 1px; color: var(--text-muted); font-size: 11.5px;
   }
+  /* Pernyataan kebijakan yang membentuk angka di halaman ini. Sengaja tenang:
+     ia harus selalu dapat dibaca tanpa pernah bersaing dengan datanya. */
+  .standard-note {
+    display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: 8px 16px; padding: 9px 12px;
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 8px; background: var(--surface-raised);
+  }
+  .standard-note-main { min-width: 0; flex: 1 1 380px; display: grid; gap: 2px; }
+  .standard-note-main p {
+    margin: 0; color: var(--text-muted); font-size: 11.5px; line-height: 1.45;
+  }
+  .standard-note-main b { color: var(--text); }
+  .standard-note-chips { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px; }
+  .standard-note-chips .chip { font-size: 10.5px; }
+  .standard-note-chips .chip b { margin-left: 3px; color: var(--text); }
   .context-bar {
     display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 7px;
     padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px;
@@ -422,13 +461,62 @@
   .account-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text-muted); font-size: 12px; }
   .account-basis { display: none; gap: 5px; }
   .account-logout { width: 100%; justify-content: center; border-color: var(--border); }
+  /* ---- Alert -------------------------------------------------------------
+     Satu bahasa warna dipakai di seluruh papan: kelas .severity-* memberi warna
+     tangga status ke pita baris, chip filter, dan tepi dialog, sehingga tingkat
+     keparahan terbaca dari bentuk halaman, bukan hanya dari lencananya. */
+  .severity-normal   { --sv: var(--st-normal-fg);   --sv-bg: var(--st-normal-bg); }
+  .severity-monitor  { --sv: var(--st-monitor-fg);  --sv-bg: var(--st-monitor-bg); }
+  .severity-warning  { --sv: var(--st-warning-fg);  --sv-bg: var(--st-warning-bg); }
+  .severity-critical { --sv: var(--st-critical-fg); --sv-bg: var(--st-critical-bg); }
+  .severity-breach   { --sv: var(--st-breach-fg);   --sv-bg: var(--st-breach-bg); }
+
+  .severity-filter { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .severity-filter-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border: 1px solid var(--border-strong); border-radius: 999px;
+    background: var(--surface-raised); color: var(--text);
+    font-size: 11.5px; font-weight: 600;
+    transition: border-color 120ms ease, background-color 120ms ease;
+  }
+  .severity-filter-item i {
+    width: 9px; height: 9px; flex: none; border-radius: 3px; background: var(--sv);
+  }
+  .severity-filter-item b { color: var(--sv); font-size: 12px; }
+  .severity-filter-item:hover { border-color: var(--sv); }
+  .severity-filter-item.is-active {
+    border-color: var(--sv); background: var(--sv-bg); color: var(--sv);
+  }
+
   .alert-list { border-top: 1px solid var(--border); }
   .alert-list li { border-bottom: 1px solid var(--border); }
   .alert-row {
-    display: block; width: 100%; padding: 10px 2px; color: var(--text);
-    text-align: left; transition: background-color 120ms ease, color 120ms ease;
+    display: block; width: 100%; padding: 10px 2px 10px 12px; color: var(--text);
+    border-left: 3px solid var(--sv, transparent);
+    text-align: left; transition: background-color 120ms ease, border-color 120ms ease;
   }
-  .alert-row:hover { color: var(--accent-ink); }
+  .alert-row:hover { background: var(--surface-sunken); }
+  /* Dua baris penuh, bukan satu baris terpotong: kalimat detail memuat angka
+     Qty dan CBM, dan memotongnya di tengah menghilangkan justru bagian yang
+     membuat baris ini layak dibuka. */
+  .alert-row-detail {
+    display: -webkit-box; overflow: hidden; margin-top: 2px;
+    color: var(--text-muted); font-size: 11px; line-height: 1.45;
+    -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  }
+  .alert-dialog-backdrop {
+    position: fixed; inset: 0; z-index: 50; display: flex;
+    align-items: flex-end; justify-content: center; padding: 0;
+    background: rgba(8, 12, 24, .55); animation: fadeIn .2s ease both;
+  }
+  .alert-dialog {
+    width: 100%; max-width: 560px; max-height: 92dvh; overflow-y: auto;
+    border-top: 3px solid var(--sv, var(--border-strong));
+  }
+  @media (min-width: 768px) {
+    .alert-dialog-backdrop { align-items: center; padding: 16px; }
+  }
+  .alert-detail-body { color: var(--text); line-height: 1.55; }
   .alert-detail-metrics {
     display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px;
     overflow: hidden; border: 1px solid var(--border); border-radius: 8px;
@@ -441,10 +529,39 @@
   }
   .settings-tabbar::-webkit-scrollbar { display: none; }
   .settings-tabbar .btn { flex: none; }
+  .overflow-severity-grid { display: grid; gap: 1px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--border); }
+  .overflow-severity-row {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 10px 12px; background: var(--surface-raised);
+  }
+  .overflow-severity-row strong { font-size: 12.5px; }
+  .overflow-severity-row p { margin: 2px 0 0; max-width: 62ch; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+  .overflow-severity-pick { display: flex; flex: none; align-items: center; gap: 8px; }
+  @media (max-width: 640px) {
+    .overflow-severity-pick { width: 100%; justify-content: space-between; }
+  }
   .settings-message {
     margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px;
     background: var(--surface-sunken); color: var(--text-muted); font-size: 12px;
   }
+  /* Hanya dipakai untuk memperingatkan bahwa penyimpanan tidak dapat ditulis.
+     Jalur normal tidak menampilkan apa pun. */
+  .config-storage-note {
+    display: grid; gap: 2px; padding: 9px 11px;
+    border: 1px solid color-mix(in oklab, var(--st-breach-fg) 34%, var(--border));
+    border-left: 3px solid var(--st-breach-fg);
+    border-radius: 7px; background: var(--st-breach-bg);
+  }
+  .config-storage-note p {
+    margin: 0; color: var(--st-breach-fg); font-size: 11.5px; line-height: 1.45;
+  }
+  /* Legenda tangga status: lencana asli, bukan tiruan berwarna, supaya panduan
+     memakai komponen yang persis sama dengan yang dilihat di layar lain. */
+  .status-ladder-legend { display: grid; gap: 5px; margin-top: 8px; }
+  .status-ladder-legend li {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .status-ladder-legend .num { color: var(--text-muted); font-size: 11.5px; }
   .forecast-table-wrap { max-width: 100%; overflow: auto; }
   .forecast-table { min-width: 820px; }
   .guide-diagram-scroll { max-width: 100%; overflow-x: auto; }
@@ -768,12 +885,22 @@
   .heat-cell-coordinate .heat-cell-swatch { width: 100%; height: 100%; gap: 0; padding: 2px; }
   .heat-cell-coordinate .heat-cell-swatch b { font-size: 9px; line-height: 1.1; }
   .heat-cell-coordinate .heat-cell-swatch small { font-size: 7.5px; line-height: 1.1; }
+  /* Warna teks mengikuti terang-gelap kotaknya, bukan tingkat keparahannya.
+     Critical kini oranye: teks putih di atasnya hanya 2,8:1, sedangkan teks
+     gelap 6,7:1. Hanya Breach yang cukup gelap untuk teks putih (4,8:1). */
   .heat-cell-coordinate .heat-cell-normal,
   .heat-cell-coordinate .heat-cell-monitor,
   .heat-cell-coordinate .heat-cell-warning,
-  .heat-cell-coordinate .heat-cell-occupied { color: #0B1120; }
   .heat-cell-coordinate .heat-cell-critical,
+  .heat-cell-coordinate .heat-cell-occupied { color: #0B1120; }
   .heat-cell-coordinate .heat-cell-breach { color: #FFF; }
+  /* Penanda kedua untuk puncak tangga, sama seperti pada badge. Kotak heatmap
+     tidak memuat teks status, jadi tanpa ini Breach hanya dibedakan oleh
+     pergeseran oranye ke merah. */
+  .heat-cell-breach {
+    background-image: repeating-linear-gradient(
+      -45deg, transparent 0 4px, rgba(255, 255, 255, .3) 4px 6px);
+  }
   .heat-cell-empty { border-style: dashed; border-color: var(--border-strong); color: var(--text-muted); }
   .heat-cell-button:hover .heat-cell-swatch,
   .heat-cell-button:focus-visible .heat-cell-swatch {
@@ -932,6 +1059,12 @@
     border: 1px solid var(--border); border-radius: 8px; text-align: center;
   }
   .heat-detail-metrics strong { overflow: hidden; font-size: 11.5px; text-overflow: ellipsis; }
+  /* Baris rumus di bawah angka: menerjemahkan kapasitas efektif kembali ke
+     nilai yang benar-benar diketik admin di Pengaturan. */
+  .metric-formula {
+    overflow: hidden; color: var(--text-muted); font-size: 9.5px; line-height: 1.3;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
   .heat-detail-section + .heat-detail-section { margin-top: 16px; }
   .heat-detail-section > .eyebrow { margin-bottom: 6px; }
   .heat-detail-list { display: grid; gap: 5px; }
@@ -973,6 +1106,7 @@
     .metric-strip-seven { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .metric-strip-five > .metric-card:last-child { grid-column: 1 / -1; }
     .context-note { align-items: flex-start; flex-direction: column; gap: 4px; }
+    .standard-note { align-items: flex-start; flex-direction: column; gap: 8px; }
     .section-head { padding: 11px 12px 9px; }
     .section-body { padding: 12px; }
     .section-plain .section-head { padding: 0 1px 8px; }
@@ -1363,10 +1497,13 @@
   max-width: 68ch; margin: 5px 0 0; color: var(--text-muted); font-size: 11.5px; line-height: 1.55;
 }
 .zone-scope-status { display: grid; flex: none; justify-items: end; gap: 7px; }
+/* Dipindahkan dari token Monitor ke Warning saat tangga status digeser: Monitor
+   kini biru, dan "zona sudah tidak ada di data master" adalah peringatan yang
+   perlu perhatian — bukan catatan informasi. */
 .zone-scope-count-off {
-  border-color: color-mix(in oklab, var(--st-monitor-fg) 45%, var(--border));
-  background: color-mix(in oklab, var(--st-monitor-fg) 12%, transparent);
-  color: var(--st-monitor-fg);
+  border-color: color-mix(in oklab, var(--st-warning-fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--st-warning-fg) 12%, transparent);
+  color: var(--st-warning-fg);
 }
 .zone-scope-legend {
   display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 12px;
@@ -1376,7 +1513,7 @@
 .zone-scope-legend i { width: 7px; height: 7px; flex: none; border-radius: 999px; }
 .zone-dot-on { background: var(--st-normal-fg); }
 .zone-dot-off { background: transparent; box-shadow: inset 0 0 0 1px var(--border-strong); }
-.zone-dot-orphan { background: var(--st-monitor-fg); }
+.zone-dot-orphan { background: var(--st-warning-fg); }
 .zone-scope-empty,
 .zone-scope-none { margin: 0; color: var(--text-muted); font-size: 11px; }
 /* No inner scroller: the settings page already scrolls, and nesting a second
@@ -1412,8 +1549,8 @@
 .zone-chip.is-off i { background: transparent; box-shadow: inset 0 0 0 1px var(--border-strong); }
 /* A zone the sync no longer returns: still switchable so it can be cleaned up,
    but marked so nobody mistakes it for a live area. */
-.zone-chip.is-orphan { border-color: color-mix(in oklab, var(--st-monitor-fg) 45%, var(--border)); }
-.zone-chip.is-orphan i { background: var(--st-monitor-fg); }
+.zone-chip.is-orphan { border-color: color-mix(in oklab, var(--st-warning-fg) 45%, var(--border)); }
+.zone-chip.is-orphan i { background: var(--st-warning-fg); }
 @media (max-width: 760px) {
   .zone-scope-status { justify-items: start; }
   .zone-scope-legend { justify-content: flex-start; }

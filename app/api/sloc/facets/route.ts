@@ -11,10 +11,24 @@ import { getSlocFacets } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Daftar ini hanya berubah ketika data master berubah — jauh lebih jarang
+ * daripada sekali per pembukaan halaman. Cache privat singkat membuat kembali
+ * ke halaman yang sama, atau memuat dua penjelajah SLOC pada satu layar, tidak
+ * lagi menembus DuckDB dua kali. `stale-while-revalidate` menjaga dropdown
+ * tetap terisi sementara salinan barunya diambil di belakang layar.
+ */
+const FACET_CACHE = "private, max-age=120, stale-while-revalidate=600";
+
 export async function GET() {
   try {
-    return NextResponse.json(await getSlocFacets());
+    return NextResponse.json(await getSlocFacets(), {
+      headers: { "Cache-Control": FACET_CACHE },
+    });
   } catch (error) {
-    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+    return NextResponse.json(
+      { error: (error as Error).message },
+      { status: 500, headers: { "Cache-Control": "no-store" } },
+    );
   }
 }

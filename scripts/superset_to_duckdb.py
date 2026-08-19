@@ -277,8 +277,38 @@ def _write_json_atomic(path: str, value: Dict[str, Any]) -> None:
     os.replace(temp, path)
 
 
+def runtime_config_dir(config_path: str) -> str:
+    """Folder konfigurasi runtime yang sama dengan lib/runtime-config.ts.
+
+    Aplikasi web menulis setiap konfigurasi yang bisa diubah admin ke volume
+    `db/` yang permanen, karena `config/` ikut dibangun ke dalam image dan
+    kembali ke nilai bawaan setiap kali image dibangun ulang. Worker harus
+    memakai urutan pencarian yang persis sama supaya daemon dan aplikasi web
+    tidak pernah membaca dua berkas yang berbeda.
+    """
+    explicit = (os.getenv("WIOM_RUNTIME_CONFIG_DIR") or "").strip()
+    if explicit:
+        return os.path.abspath(explicit)
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+    # Sudah menunjuk ke folder runtime (mis. dipanggil ulang oleh daemon).
+    if os.path.basename(config_dir) == "runtime-config":
+        return config_dir
+    return os.path.join(os.path.dirname(config_dir), "db", "runtime-config")
+
+
+def resolve_config_path(config_path: str) -> str:
+    """Salinan runtime bila ada; kalau tidak, nilai bawaan dari image."""
+    runtime = os.path.join(
+        runtime_config_dir(config_path), os.path.basename(config_path)
+    )
+    if os.path.abspath(runtime) != os.path.abspath(config_path) and os.path.isfile(runtime):
+        return runtime
+    return config_path
+
+
 def load_runtime_config(config_path: str) -> Dict[str, Any]:
     """Load public settings and merge credentials from an ignored sidecar/env."""
+    config_path = resolve_config_path(config_path)
     config = _read_json(config_path)
     if not config:
         raise ValueError(f"Konfigurasi sync tidak valid atau tidak ditemukan: {config_path}")
@@ -292,9 +322,7 @@ def load_runtime_config(config_path: str) -> Dict[str, Any]:
     if secret_ref:
         config_dir = os.path.dirname(os.path.abspath(config_path))
         secret_ref = str(secret_ref)
-        runtime_dir = (os.getenv("WIOM_RUNTIME_CONFIG_DIR") or "").strip()
-        if not runtime_dir:
-            runtime_dir = os.path.join(os.path.dirname(config_dir), "db", "runtime-config")
+        runtime_dir = runtime_config_dir(config_path)
         candidates = []
         if os.path.isabs(secret_ref):
             candidates.append(secret_ref)

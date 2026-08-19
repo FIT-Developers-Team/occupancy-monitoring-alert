@@ -5,8 +5,11 @@ import HeatmapGrid from "@/components/domain/heatmap-grid";
 import SlocExplorer from "@/components/domain/sloc-explorer";
 import Section from "@/components/ui/section";
 import PageHeader from "@/components/ui/page-header";
+import CapacityStandardNote from "@/components/domain/capacity-standard-note";
+import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
+export const generateMetadata = pageTitle("nav.heatmap");
 
 export default async function HeatmapPage(
   { searchParams }: { searchParams: Promise<{ wh?: string; sloc?: string; zone?: string }> }
@@ -18,6 +21,7 @@ export default async function HeatmapPage(
   return (
     <div className="dashboard-page">
       <PageHeader eyebrow={t("heat.hint")} title={t("heat.title")} />
+      <CapacityStandardNote warehouse={initial} />
       <HeatmapGrid warehouses={codes} initialWh={initial} initialSloc={sloc} />
 
       {/* Grid menjawab "di mana", tabel menjawab "yang mana" — termasuk mencari

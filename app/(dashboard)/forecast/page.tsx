@@ -5,8 +5,10 @@ import Section from "@/components/ui/section";
 import WhatIfPanel from "@/components/domain/what-if-panel";
 import PageHeader from "@/components/ui/page-header";
 import ExportExcelButton from "@/components/domain/export-excel-button";
+import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
+export const generateMetadata = pageTitle("nav.forecast");
 
 const sign = (n: number, d = 1) => `${n >= 0 ? "+" : ""}${fmtNum(n, d)}`;
 

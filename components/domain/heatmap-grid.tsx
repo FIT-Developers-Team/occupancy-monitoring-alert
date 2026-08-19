@@ -11,9 +11,10 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import type { BasisMode, RackZoneSummary, SlocOccupancy, StockLine, ZoneSummary } from "@/types";
-import { fmtCbm, fmtNum } from "@/lib/utils";
+import { fmtCapCbm, fmtCbm, fmtNum } from "@/lib/utils";
 import { pickViewPct, pickViewStatus } from "@/lib/occupancy-view";
 import { useT } from "@/lib/i18n-client";
+import { trapFocus } from "@/lib/focus-trap";
 import ExportExcelButton from "@/components/domain/export-excel-button";
 
 type HeatStatus =
@@ -113,25 +114,6 @@ function shownPct(row: ZoneSummary, basis: BasisMode) {
 
 function pctText(value: number | null) {
   return value === null ? "—" : `${Math.round(value * 10) / 10}%`;
-}
-
-function trapFocus(event: ReactKeyboardEvent<HTMLElement>) {
-  if (event.key !== "Tab") return;
-  const focusable = Array.from(
-    event.currentTarget.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter((element) => !element.hasAttribute("hidden"));
-  if (!focusable.length) return;
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
 }
 
 function navigatePreviewGrid(event: ReactKeyboardEvent<HTMLElement>) {
@@ -1067,22 +1049,37 @@ export default function HeatmapGrid({
               <span className="chip">{selectedCell.product_count} {t("common.sku")}</span>
             </div>
 
+            {/* Penyebut CBM adalah kapasitas EFEKTIF (max_cbm x utilisasi
+                volume), sedangkan yang diketik admin di Pengaturan adalah
+                max_cbm. Tanpa baris kedua ini, "max CBM 0,0336" terbaca
+                "0,029" di layar dan tampak seolah konfigurasi tidak berlaku. */}
             <div className="heat-detail-metrics">
               <div>
                 <span className="eyebrow">{t("heat.qty")}</span>
                 <strong className="num">
                   {fmtNum(selectedCell.occ_qty)}/{selectedCell.qty_valid ? fmtNum(selectedCell.cap_qty) : "—"}
                 </strong>
+                <small className="metric-formula">{t("heat.capQtyNote")}</small>
               </div>
               <div>
-                <span className="eyebrow">CBM</span>
+                <span className="eyebrow">{t("heat.cbmEffective")}</span>
                 <strong className="num">
                   {fmtCbm(selectedCell.occ_cbm)}/{selectedCell.cbm_valid ? fmtCbm(selectedCell.cap_cbm) : "—"}
                 </strong>
+                <small className="metric-formula num" title={t("heat.capCbmHint")}>
+                  {selectedCell.cbm_valid
+                    ? `${t("heat.capConfigured")} ${fmtCapCbm(selectedCell.cap_cbm_nominal)} × ${selectedCell.utilization_pct}%`
+                    : t("heat.capUnknown")}
+                </small>
               </div>
               <div>
                 <span className="eyebrow">Bin</span>
                 <strong>{selectedCell.occupied ? t("heat.binFilled") : t("heat.binEmpty")}</strong>
+                {/* Basis kebijakan lokasi ini — yang menentukan status pada
+                    tangga ambang, apa pun basis tampilan yang sedang dipilih. */}
+                <small className="metric-formula" title={t("basis.hint")}>
+                  {t("basis.label")}: {t(`basis.${selectedCell.basis}`)}
+                </small>
               </div>
             </div>
 

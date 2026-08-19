@@ -11,8 +11,12 @@ services:
       WIOM_EMBEDDED_SYNC: "0"
       WIOM_SYNC_REQUIRED: "0"
     volumes:
-      - ./db:/app/db            # history + state DuckDB hidup di host
-      - ./config:/app/config    # kebijakan bisa diedit tanpa rebuild
+      # WAJIB permanen: history + state DuckDB DAN db/runtime-config, tempat
+      # setiap konfigurasi yang disimpan dari halaman Pengaturan mendarat.
+      - ./db:/app/db
+      # Nilai awal bawaan image; boleh diedit langsung, tetapi penyimpanan dari
+      # UI selalu jatuh ke db/runtime-config agar tahan deploy ulang.
+      - ./config:/app/config
     depends_on:
       sync:
         condition: service_healthy

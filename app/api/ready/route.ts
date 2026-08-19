@@ -7,6 +7,7 @@ import {
   getSupersetSyncStatus,
 } from "@/lib/superset-sync";
 import { accountStoreStatus } from "@/lib/account-store";
+import { configStorageInfo } from "@/lib/runtime-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +25,15 @@ export async function GET() {
     ? { status: "error", error: accounts.error }
     : { status: accounts.ready ? "ok" : "error", active_admins: accounts.activeAdmins };
   ready = ready && accounts.ready;
+
+  // Deployment yang tidak dapat menyimpan konfigurasi secara permanen akan
+  // kehilangan setiap penyetelan admin pada rilis berikutnya. Itu kondisi tidak
+  // siap, bukan sekadar catatan — ditandai di sini agar ketahuan saat deploy.
+  const configStorage = configStorageInfo();
+  checks.config_storage = configStorage.writable
+    ? { status: "ok", persisted: configStorage.persisted.length }
+    : { status: "error", reason: configStorage.reason };
+  ready = ready && configStorage.writable;
 
   try {
     const config = getSupersetSyncConfig();

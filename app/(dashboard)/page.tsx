@@ -3,15 +3,19 @@ import { getWarehouseDashboard, getIntegrity, getOccupancyScopeQuality } from "@
 import { listAlerts, activeCountsBySeverity } from "@/lib/alerts/store";
 import { getBasisMode } from "@/lib/basis";
 import { getT } from "@/lib/i18n";
-import { fmtNum, fmtPct, fmtHours, fmtDateTime } from "@/lib/utils";
+import { fmtCbm, fmtNum, fmtPct, fmtHours, fmtDateTime } from "@/lib/utils";
 import KpiCard from "@/components/ui/kpi-card";
 import Section from "@/components/ui/section";
 import { StatusBadge, SeverityBadge } from "@/components/ui/badges";
 import TrendChart from "@/components/charts/trend-chart-lazy";
 import WarehouseOverviewTable from "@/components/domain/warehouse-overview-table";
 import PageHeader from "@/components/ui/page-header";
+import PrefetchLink from "@/components/ui/prefetch-link";
+import { SEVERITY_TONE } from "@/lib/status-tone";
+import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
+export const generateMetadata = pageTitle("nav.exec");
 
 const STATUS_RANK = { BREACH: 0, CRITICAL: 1, WARNING: 2, MONITOR: 3, NORMAL: 4 } as const;
 
@@ -47,8 +51,16 @@ export default async function ExecutivePage() {
     return r !== 0 ? r : (a.hours_to_95 ?? 1e9) - (b.hours_to_95 ?? 1e9);
   }).slice(0, 4);
 
+  // KPI jaringan memakai tangga yang sama dengan sisa aplikasi, termasuk
+  // tingkat teratasnya: 100% ke atas berarti kapasitas terlampaui dan harus
+  // tampil merah, bukan berhenti di oranye seperti sebelumnya.
   const tone = (p: number | null) =>
-    p === null ? undefined : p >= 95 ? "critical" : p >= 85 ? "warning" : p >= 70 ? "monitor" : "normal";
+    p === null ? undefined
+    : p >= 100 ? "breach" as const
+    : p >= 95 ? "critical" as const
+    : p >= 85 ? "warning" as const
+    : p >= 70 ? "monitor" as const
+    : "normal" as const;
 
   return (
     <div className="dashboard-page">
@@ -57,13 +69,14 @@ export default async function ExecutivePage() {
       <div className="metric-strip metric-strip-five">
         <KpiCard label={t("exec.qtyOcc")} value={netQ === null ? "—" : fmtPct(netQ)} tone={tone(netQ)}
           sub={`${fmtNum(qOcc)} / ${fmtNum(qCap)} ${t("common.unit")}`} />
+        {/* Penyebutnya kapasitas efektif (sudah dikali utilisasi volume);
+            pembagian dengan fmtNum(…, 0) juga membuang seluruh desimal m³. */}
         <KpiCard label={t("exec.cbmOcc")} value={netV === null ? "—" : fmtPct(netV)} tone={tone(netV)}
-          sub={`${fmtNum(vOcc)} / ${fmtNum(vCap)} m³`} />
+          sub={`${fmtCbm(vOcc)} / ${fmtCbm(vCap)} m³ · ${t("heat.cbmEffective")}`} />
         <KpiCard label={t("exec.binOcc")} value={fmtPct(netBin)} tone={tone(netBin)}
           sub={`${fmtNum(slocFilled)} / ${fmtNum(slocTotal)} ${t("common.sloc").toLowerCase()}`} />
         <KpiCard label={t("exec.activeAlerts")} value={fmtNum(totalActive)}
-          tone={worstSev === "EMERGENCY" || worstSev === "CRITICAL" ? "critical"
-            : worstSev === "HIGH" ? "warning" : totalActive ? "monitor" : "normal"}
+          tone={worstSev ? SEVERITY_TONE[worstSev] : "normal"}
           sub={worstSev ? worstSev : t("common.none")} />
         <KpiCard label={t("exec.integrity")} value={integrityAvg === null ? "—" : fmtPct(integrityAvg)}
           tone={integrityAvg !== null && integrityAvg < 95 ? "warning" : "teal"}
@@ -83,7 +96,7 @@ export default async function ExecutivePage() {
         <Section eyebrow={`${sums.length} ${t("common.warehouse").toLowerCase()}`} title={t("exec.netOccupancy")}>
           <div className="list-rows">
             {topRisk.map((w) => (
-              <Link key={w.code} href={`/occupancy/${w.code}`} prefetch={false} className="list-row">
+              <PrefetchLink key={w.code} href={`/occupancy/${w.code}`} className="list-row">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="num text-sm font-semibold">{w.code}</span>
@@ -99,7 +112,7 @@ export default async function ExecutivePage() {
                     {fmtHours(w.hours_to_95)}
                   </div>
                 </div>
-              </Link>
+              </PrefetchLink>
             ))}
           </div>
         </Section>
@@ -114,7 +127,7 @@ export default async function ExecutivePage() {
             <ul className="list-rows">
               {active.map((a) => (
                 <li key={a.alert_id}>
-                  <Link href={`/alerts?id=${a.alert_id}`} prefetch={false} className="list-row">
+                  <PrefetchLink href={`/alerts?id=${a.alert_id}`} className="list-row">
                     <div className="min-w-0">
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate text-[12.5px] font-semibold">{a.rule_name}</span>
@@ -124,7 +137,7 @@ export default async function ExecutivePage() {
                         {a.warehouse_code}{a.sloc_code ? ` · ${a.sloc_code}` : ""} · {fmtDateTime(a.created_at)}
                       </div>
                     </div>
-                  </Link>
+                  </PrefetchLink>
                 </li>
               ))}
             </ul>
