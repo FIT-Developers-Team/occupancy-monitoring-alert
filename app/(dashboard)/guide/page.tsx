@@ -310,8 +310,10 @@ export default async function GuidePage() {
     { status: "NORMAL", range: `< ${ladder.monitor}%` },
     { status: "MONITOR", range: `${ladder.monitor}–${ladder.warning - 1}%` },
     { status: "WARNING", range: `${ladder.warning}–${ladder.critical - 1}%` },
-    { status: "CRITICAL", range: `${ladder.critical}–${ladder.breach - 1}%` },
-    { status: "BREACH", range: `≥ ${ladder.breach}%` },
+    // Tepat di ambang breach masih Kritis; Breach hanya untuk yang melewatinya
+    // (cermin lib/occupancy.ts dan lib/alerts/severity.ts).
+    { status: "CRITICAL", range: `${ladder.critical}–${ladder.breach}%` },
+    { status: "BREACH", range: `> ${ladder.breach}%` },
   ];
   const roles = [
     [t("guide.role.viewer"), "view", t("guide.role.viewer.description")],

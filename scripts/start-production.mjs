@@ -112,15 +112,80 @@ function prepareSessionSecret() {
 
 prepareSessionSecret();
 
+function cronSecretFilePath() {
+  const stateDb = process.env.DUCKDB_STATE_PATH?.trim() || "./db/app_state.duckdb";
+  return path.join(path.dirname(path.resolve(stateDb)), ".wiom-cron-secret");
+}
+
+/**
+ * Siapkan CRON_SECRET tanpa langkah manual.
+ *
+ * Tanpa secret ini scheduler bawaan mati, dan alert tidak pernah dievaluasi
+ * sama sekali — persis yang terjadi pada deployment terakhir ("CRON_SECRET
+ * belum diisi; evaluasi alert terjadwal dinonaktifkan"). Karena secret ini
+ * hanya dipakai untuk memanggil endpoint cron milik sendiri di 127.0.0.1,
+ * nilainya tidak perlu dipilih manusia; yang penting ia SAMA antara pemanggil
+ * dan handler, dan tetap sama setelah deploy ulang.
+ *
+ * Disimpan di sebelah state DuckDB, mengikuti pola secret sesi: satu volume
+ * permanen, satu keputusan path. Operator yang punya cron eksternal tetap
+ * memakai CRON_SECRET dari environment dan nilainya tidak pernah diganggu.
+ */
+function prepareCronSecret() {
+  const explicit = clean(process.env.CRON_SECRET);
+  if (explicit) {
+    process.env.WIOM_CRON_SECRET_ORIGIN = "environment";
+    return;
+  }
+  const file = cronSecretFilePath();
+  try {
+    const persisted = readSecret(file) || createPersistentSecret(file);
+    process.env.CRON_SECRET = persisted;
+    process.env.WIOM_CRON_SECRET_ORIGIN = "persistent-file";
+    console.info(`[WIOM] CRON_SECRET disiapkan otomatis dari penyimpanan server: ${file}`);
+  } catch (error) {
+    console.warn(
+      `[WIOM] CRON_SECRET tidak dapat disiapkan (${error.message}); ` +
+      "evaluasi alert terjadwal dinonaktifkan sampai CRON_SECRET diisi manual."
+    );
+  }
+}
+
+prepareCronSecret();
+
 function embeddedSyncEnabled() {
   const value = process.env.WIOM_EMBEDDED_SYNC?.trim().toLowerCase();
   return !["0", "false", "off", "disabled"].includes(value || "");
 }
 
+/**
+ * Seberapa keras worker Superset dituntut sebelum server web boleh menyala.
+ *
+ *   "off"      — worker opsional.
+ *   "required" — worker dinyalakan dan ditunggu, tetapi kegagalannya TIDAK
+ *                mematikan server web.
+ *   "strict"   — kegagalan worker membatalkan start-up (perilaku lama).
+ *
+ * Bawaan image adalah "required". Sebelumnya nilai `1` berarti "strict", dan
+ * itu membuat satu worker data — yang sudah punya supervisor dengan retry
+ * sendiri — dapat menjatuhkan seluruh aplikasi web pada saat deploy. Satu
+ * cookie Superset kedaluwarsa tidak boleh berarti dashboard, halaman
+ * Pengaturan, dan alert ikut mati.
+ */
+function syncRequirement() {
+  if (process.argv.includes("--sync-optional")) return "off";
+  const value = process.env.WIOM_SYNC_REQUIRED?.trim().toLowerCase() || "";
+  if (["strict", "block", "enforce"].includes(value)) return "strict";
+  if (["1", "true", "on", "required"].includes(value)) return "required";
+  return "off";
+}
+
 function embeddedSyncRequired() {
-  if (process.argv.includes("--sync-optional")) return false;
-  const value = process.env.WIOM_SYNC_REQUIRED?.trim().toLowerCase();
-  return ["1", "true", "on", "required"].includes(value || "");
+  return syncRequirement() !== "off";
+}
+
+function embeddedSyncBlocksStartup() {
+  return syncRequirement() === "strict";
 }
 
 function findPython() {
@@ -204,12 +269,18 @@ function delay(milliseconds) {
 }
 
 function startSyncSupervisor() {
-  const required = embeddedSyncRequired();
+  // Hanya mode "strict" yang boleh membatalkan start-up. Pada mode "required"
+  // kegagalan dicatat keras lalu server web tetap menyala, karena aplikasi yang
+  // hidup dengan data usang jauh lebih berguna — dan jauh lebih dapat
+  // diperbaiki lewat halaman Pengaturan — daripada container yang menolak
+  // menyala dan digulung balik orkestrator.
+  const blocks = embeddedSyncBlocksStartup();
   if (!embeddedSyncEnabled()) {
-    if (required) {
-      throw new Error(
-        "WIOM_SYNC_REQUIRED aktif tetapi WIOM_EMBEDDED_SYNC dinonaktifkan."
-      );
+    const message = "WIOM_SYNC_REQUIRED aktif tetapi WIOM_EMBEDDED_SYNC dinonaktifkan.";
+    if (embeddedSyncRequired()) {
+      if (blocks) throw new Error(message);
+      console.warn(`[WIOM] ${message} Worker Superset dianggap dijalankan terpisah.`);
+      return undefined;
     }
     console.info("[WIOM] Worker Superset terpisah dipilih; embedded sync dinonaktifkan.");
     return undefined;
@@ -218,7 +289,7 @@ function startSyncSupervisor() {
   const script = path.join(process.cwd(), "scripts", "superset_to_duckdb.py");
   if (!fs.existsSync(script)) {
     const message = "Worker Superset tidak dimulai: script sinkronisasi tidak tersedia.";
-    if (required) throw new Error(message);
+    if (blocks) throw new Error(message);
     console.warn(`[WIOM] ${message}`);
     return undefined;
   }
@@ -227,7 +298,7 @@ function startSyncSupervisor() {
     const message =
       "Worker Superset tidak dimulai: Python 3 atau dependency " +
       "duckdb/pandas/requests tidak tersedia.";
-    if (required) throw new Error(message);
+    if (blocks) throw new Error(message);
     console.warn(`[WIOM] ${message} Gunakan image Docker terbaru atau service sync terpisah.`);
     return undefined;
   }
@@ -249,7 +320,7 @@ function startSyncSupervisor() {
     const message = runtimeCheck.error
       ? `Preflight worker Superset gagal: ${runtimeCheck.error.message}`
       : `Preflight worker Superset gagal (exit ${runtimeCheck.status ?? "?"}).`;
-    if (required) throw new Error(message);
+    if (blocks) throw new Error(message);
     console.warn(`[WIOM] ${message}`);
     return undefined;
   }
@@ -403,6 +474,13 @@ function acquireWebInstanceLock(port) {
 }
 
 function startScheduler(port) {
+  // Opt-out eksplisit untuk deployment yang memakai cron eksternal
+  // (deploy/crontab.example) dan tidak ingin dua penjadwal berjalan bersamaan.
+  const schedulerFlag = process.env.WIOM_SCHEDULER?.trim().toLowerCase();
+  if (["0", "false", "off", "disabled"].includes(schedulerFlag || "")) {
+    console.info("[WIOM] Scheduler bawaan dinonaktifkan (WIOM_SCHEDULER=0).");
+    return undefined;
+  }
   const secret = clean(process.env.CRON_SECRET);
   if (!secret) {
     console.warn("[WIOM] CRON_SECRET belum diisi; evaluasi alert terjadwal dinonaktifkan.");
@@ -414,9 +492,15 @@ function startScheduler(port) {
   let stopping = false;
   const timers = [];
 
+  // Gerbangnya adalah liveness, bukan /api/health.
+  //
+  // /api/health ikut menuntut snapshot yang segar (≤ 30 menit). Menjadikannya
+  // syarat tick berarti evaluasi alert berhenti tepat ketika sinkronisasi
+  // bermasalah — saat gudang justru paling tidak terpantau. Kesegaran data
+  // tetap dilaporkan endpoint itu; ia bukan izin untuk menjalankan tick.
   async function healthy() {
     try {
-      const response = await fetch(`${base}/api/health`, {
+      const response = await fetch(`${base}/api/live`, {
         cache: "no-store",
         signal: AbortSignal.timeout(10_000),
       });
@@ -489,6 +573,72 @@ function startScheduler(port) {
   };
 }
 
+/**
+ * Cetak diagnosis kesiapan ke log deployment, sekali, setelah server menyala.
+ *
+ * Ini menutup lubang yang membuat kegagalan deploy 2026-08-20 mahal: Docker
+ * hanya mencatat `ExitCode 1` dengan `Output: ""`, sehingga tidak ada satu pun
+ * petunjuk kenapa container dianggap tidak sehat. Kondisi sebenarnya sudah
+ * lama dihitung /api/ready; yang kurang hanyalah menaruhnya di tempat yang
+ * dibaca operator, yaitu `docker logs` dan panel deployment Coolify.
+ *
+ * Satu sumber kebenaran: laporan ini murni membaca /api/ready, tidak
+ * menghitung ulang apa pun.
+ */
+function announceRuntimeState(port) {
+  const base = `http://127.0.0.1:${port}`;
+  void (async () => {
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      let body;
+      try {
+        const response = await fetch(`${base}/api/ready`, {
+          cache: "no-store",
+          signal: AbortSignal.timeout(8_000),
+        });
+        body = await response.json();
+      } catch {
+        await delay(2_000);
+        continue;
+      }
+      const checks = body?.checks || {};
+      const storage = checks.config_storage || {};
+      if (body?.status === "ready") {
+        console.info(
+          "[WIOM] Kesiapan: READY — konfigurasi tersimpan permanen " +
+          `(${storage.persisted ?? 0} berkas di volume).`
+        );
+        return;
+      }
+      console.warn("[WIOM] Kesiapan: BELUM SIAP. Server web tetap melayani trafik.");
+      if (storage.status === "error") {
+        console.warn(
+          `[WIOM]   Penyimpanan konfigurasi: ${storage.code || "TIDAK_DURABLE"}. ` +
+          `${storage.fix || ""}`
+        );
+        console.warn(
+          "[WIOM]   Selama ini belum diperbaiki, setiap penyetelan di halaman " +
+          "Pengaturan akan hilang saat container diganti (deploy ulang)."
+        );
+      }
+      const accounts = checks.accounts || {};
+      if (accounts.status === "error") {
+        console.warn(
+          `[WIOM]   Akun: belum ada admin aktif${accounts.error ? ` (${accounts.error})` : ""}.`
+        );
+      }
+      const worker = checks.superset_worker || {};
+      if (worker.required && !worker.ready) {
+        console.warn(
+          `[WIOM]   Worker Superset: belum siap${worker.error ? ` — ${worker.error}` : ""}.`
+        );
+      }
+      return;
+    }
+    console.warn("[WIOM] Kesiapan tidak dapat dibaca dalam 2 menit; periksa /api/ready manual.");
+  })();
+}
+
 const port = commandLineValue("--port") || process.env.PORT?.trim() || "3000";
 if (!/^\d{2,5}$/.test(port) || Number(port) > 65_535) {
   throw new Error(`Port tidak valid: ${port}`);
@@ -499,13 +649,29 @@ process.on("exit", () => webInstanceLock.release());
 let syncSupervisor;
 try {
   syncSupervisor = startSyncSupervisor();
-  if (embeddedSyncRequired()) {
-    await syncSupervisor.waitUntilReady();
-    console.info("[WIOM] Worker Superset siap; web server dapat menerima trafik.");
-  }
 } catch (error) {
   webInstanceLock.release();
   throw error;
+}
+
+if (syncSupervisor && embeddedSyncRequired()) {
+  try {
+    await syncSupervisor.waitUntilReady();
+    console.info("[WIOM] Worker Superset siap; web server dapat menerima trafik.");
+  } catch (error) {
+    if (embeddedSyncBlocksStartup()) {
+      syncSupervisor.stop();
+      webInstanceLock.release();
+      throw error;
+    }
+    // Worker punya supervisor dengan backoff sendiri dan akan terus mencoba.
+    // Menahan server web di sini hanya menambah satu kegagalan deploy pada
+    // masalah yang sudah punya jalur pemulihannya sendiri.
+    console.warn(
+      `[WIOM] ${error.message} Server web tetap dinyalakan; worker terus dicoba ulang ` +
+      "dan statusnya dilaporkan di /api/ready serta halaman Pengaturan."
+    );
+  }
 }
 
 const standaloneServer = path.join(process.cwd(), "server.js");
@@ -535,6 +701,7 @@ const child = spawn(
 );
 webInstanceLock.setWebPid(child.pid);
 const scheduler = startScheduler(port);
+announceRuntimeState(port);
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {

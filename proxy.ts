@@ -9,6 +9,7 @@ const PUBLIC_PREFIXES = [
   "/api/auth/signup",
   "/api/auth/signup-settings",
   "/api/auth/password-reset",
+  "/api/live",                        // healthcheck container — wajib publik
   "/api/health",
   "/api/ready",
   "/api/cron",                        // dilindungi CRON_SECRET di handler

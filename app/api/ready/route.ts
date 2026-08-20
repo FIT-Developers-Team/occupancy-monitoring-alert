@@ -29,6 +29,10 @@ export async function GET() {
   // Deployment yang tidak dapat menyimpan konfigurasi secara permanen akan
   // kehilangan setiap penyetelan admin pada rilis berikutnya. Itu kondisi tidak
   // siap, bukan sekadar catatan — ditandai di sini agar ketahuan saat deploy.
+  //
+  // Endpoint ini TIDAK dipakai healthcheck container (lihat /api/live). Ia
+  // boleh menjawab 503 sekeras-kerasnya tanpa membuat container digulung balik,
+  // sehingga diagnosisnya dapat dibaca justru saat deployment bermasalah.
   const configStorage = configStorageInfo();
   checks.config_storage = configStorage.durable
     ? {
@@ -46,6 +50,12 @@ export async function GET() {
         writable: configStorage.writable,
         persistent_mount: configStorage.persistentMount,
         mount_required: configStorage.durabilityRequired,
+        mount_enforced: configStorage.durabilityEnforced,
+        // Satu kalimat tindakan, bukan sekadar status: inilah yang dibaca
+        // operator di log deploy ketika sesuatu tidak beres.
+        fix: configStorage.writable
+          ? "Pasang penyimpanan permanen ke /app/db (Coolify: Storages → Add → Mount Path /app/db), lalu deploy ulang."
+          : "Folder konfigurasi tidak dapat ditulis; periksa izin volume /app/db.",
         reason: configStorage.reason,
       };
   ready = ready && configStorage.durable;

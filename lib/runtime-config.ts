@@ -130,19 +130,46 @@ export function writeConfigJsonAtomic(file: string, value: unknown, mode = 0o600
 }
 
 /**
- * Jangan biarkan API Settings sukses menulis ke filesystem container yang
- * diketahui ephemeral. Readiness tetap memberi diagnosis; guard ini mencegah
- * false-success bila trafik masih sempat mencapai container yang tidak sehat.
+ * Seberapa keras deployment ini menuntut bukti penyimpanan permanen.
+ *
+ *   "off"      — tidak dituntut (checkout dev, non-Docker).
+ *   "required" — dituntut dan dilaporkan keras, tetapi aplikasi tetap jalan.
+ *   "strict"   — penyimpanan konfigurasi ditolak selama mount belum terbukti.
+ *
+ * Bawaan image adalah "required", BUKAN "strict", dan itu perbedaan yang
+ * pernah menjatuhkan satu deployment: dengan "strict", container tanpa volume
+ * tidak dapat menulis apa pun — termasuk bootstrap akun admin pertama — jadi
+ * readiness tidak pernah hijau, Coolify menggulung balik, dan satu-satunya
+ * tempat memperbaiki keadaan (halaman Pengaturan) ikut mati bersamanya.
+ * Aplikasi yang hidup dengan peringatan keras selalu lebih dapat diperbaiki
+ * daripada aplikasi yang menolak menyala.
+ *
+ * "strict" tetap tersedia untuk operator yang memang ingin deploy gagal
+ * daripada berjalan di atas penyimpanan sementara.
+ */
+export type PersistenceMode = "off" | "required" | "strict";
+
+export function persistenceMode(): PersistenceMode {
+  const raw = process.env.WIOM_REQUIRE_PERSISTENT_STORAGE?.trim().toLowerCase() || "";
+  if (["strict", "block", "enforce"].includes(raw)) return "strict";
+  if (["1", "true", "on", "required", "warn"].includes(raw)) return "required";
+  return "off";
+}
+
+/**
+ * Tolak penyimpanan hanya pada mode "strict".
+ *
+ * Pada mode "required" penyimpanan tetap dilanjutkan: nilainya benar-benar
+ * tersimpan dan langsung berlaku, hanya belum tahan terhadap penggantian
+ * container. Kondisi itu dilaporkan configStorageInfo(), /api/ready, banner
+ * halaman Pengaturan, dan log start-up — bukan disembunyikan.
  */
 export function assertDurableConfigStorage(): void {
-  const required = ["1", "true", "on", "required"].includes(
-    process.env.WIOM_REQUIRE_PERSISTENT_STORAGE?.trim().toLowerCase() || "",
+  if (persistenceMode() !== "strict") return;
+  if (detectPersistentMount() === true) return;
+  throw new Error(
+    "Penyimpanan persisten belum terpasang. Pasang named volume atau bind mount ke /app/db sebelum menyimpan konfigurasi.",
   );
-  if (required && detectPersistentMount() !== true) {
-    throw new Error(
-      "Penyimpanan persisten belum terpasang. Pasang named volume atau bind mount ke /app/db sebelum menyimpan konfigurasi.",
-    );
-  }
 }
 
 export interface ConfigStorageInfo {
@@ -158,6 +185,8 @@ export interface ConfigStorageInfo {
   persistentMount: boolean | null;
   /** Deployment ini mewajibkan bukti mount persisten (image Docker produksi). */
   durabilityRequired: boolean;
+  /** Penyimpanan ditolak selama mount belum terbukti (mode "strict"). */
+  durabilityEnforced: boolean;
   /** Storage siap dipakai tanpa risiko reset container yang diketahui. */
   durable: boolean;
   /** Berkas yang sudah tersimpan permanen (aman terhadap deploy ulang). */
@@ -210,6 +239,128 @@ const PRIVATE_FILES = new Set([
   "accounts.json",
 ]);
 
+// ---- Cadangan konfigurasi ---------------------------------------------------
+//
+// KENAPA ADA
+// ----------
+// Volume permanen tetap merupakan jawaban yang benar, tetapi memasangnya pada
+// aplikasi yang sudah berjalan dulu menuntut akses Docker: `docker cp` untuk
+// menyelamatkan isi container lama sebelum mount kosong menutupinya. Operator
+// yang hanya memegang panel Coolify tidak punya jalan itu, sehingga satu-satunya
+// pilihan yang tersisa adalah mengetik ulang seluruh Pengaturan setelah setiap
+// deploy — persis keluhan "sangat manual dan ribet".
+//
+// Dua jalur di bawah menghapus ketergantungan itu:
+//   1. Unduh/pulihkan berkas cadangan langsung dari halaman Pengaturan.
+//   2. `WIOM_CONFIG_BUNDLE` — nilai cadangan yang sama disimpan sebagai
+//      environment variable. Environment Coolify bertahan melewati deploy,
+//      sehingga konfigurasi ikut pulih sendiri bahkan tanpa volume sama sekali.
+//
+// Keduanya memakai satu format yang sama, dan keduanya tidak pernah menimpa
+// berkas runtime yang sudah ada kecuali pemulihan diminta secara eksplisit.
+
+/** Nama environment variable berisi cadangan konfigurasi (JSON atau base64). */
+export const CONFIG_BUNDLE_ENV = "WIOM_CONFIG_BUNDLE";
+
+export interface ConfigBundle {
+  version: 1;
+  created_at: string;
+  files: Record<string, unknown>;
+}
+
+function decodeBundleText(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error("Cadangan konfigurasi kosong.");
+  // Nilai environment lebih aman dalam bentuk base64 (satu baris, tanpa kutip
+  // yang perlu di-escape), tetapi berkas unduhan tetap JSON biasa agar dapat
+  // dibaca manusia. Keduanya diterima.
+  if (trimmed.startsWith("{")) return JSON.parse(trimmed);
+  return JSON.parse(Buffer.from(trimmed, "base64").toString("utf8"));
+}
+
+/**
+ * Validasi cadangan sebelum satu byte pun ditulis.
+ *
+ * Nama berkas TIDAK pernah dipercaya apa adanya: hanya nama yang ada pada
+ * daftar terkelola yang diterima, sehingga cadangan yang dibuat-buat tidak
+ * dapat menulis ke path lain melalui `..` atau nama tak dikenal.
+ */
+export function parseConfigBundle(input: unknown): ConfigBundle {
+  const raw = typeof input === "string" ? decodeBundleText(input) : input;
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Cadangan konfigurasi tidak dapat dibaca.");
+  }
+  const candidate = raw as Partial<ConfigBundle>;
+  if (candidate.version !== 1 || !candidate.files || typeof candidate.files !== "object") {
+    throw new Error("Format cadangan konfigurasi tidak dikenal.");
+  }
+  const files: Record<string, unknown> = {};
+  for (const [basename, value] of Object.entries(candidate.files)) {
+    if (!MANAGED_FILES.includes(basename)) continue;
+    if (!value || typeof value !== "object") {
+      throw new Error(`Isi ${basename} pada cadangan tidak valid.`);
+    }
+    files[basename] = value;
+  }
+  if (!Object.keys(files).length) {
+    throw new Error("Cadangan tidak memuat satu pun berkas konfigurasi yang dikenal.");
+  }
+  return {
+    version: 1,
+    created_at: typeof candidate.created_at === "string" ? candidate.created_at : new Date().toISOString(),
+    files,
+  };
+}
+
+/** Kumpulkan konfigurasi yang sedang BERLAKU, bukan hanya yang sudah permanen. */
+export function exportConfigBundle(): ConfigBundle {
+  const files: Record<string, unknown> = {};
+  for (const basename of MANAGED_FILES) {
+    const file = resolveConfigFile(basename);
+    try {
+      files[basename] = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      // Berkas yang belum pernah ada (mis. akun pada instalasi baru) memang
+      // tidak punya apa pun untuk dicadangkan.
+    }
+  }
+  return { version: 1, created_at: new Date().toISOString(), files };
+}
+
+/** Nilai satu baris untuk ditempel ke environment variable deployment. */
+export function encodeConfigBundle(bundle: ConfigBundle): string {
+  return Buffer.from(JSON.stringify(bundle), "utf8").toString("base64");
+}
+
+/** Pulihkan cadangan ke penyimpanan runtime; menimpa berkas yang ada. */
+export function importConfigBundle(input: unknown): string[] {
+  const bundle = parseConfigBundle(input);
+  const restored: string[] = [];
+  for (const [basename, value] of Object.entries(bundle.files)) {
+    writeConfigJsonAtomic(
+      runtimeConfigFile(basename),
+      value,
+      PRIVATE_FILES.has(basename) ? 0o600 : 0o644,
+    );
+    restored.push(basename);
+  }
+  return restored;
+}
+
+/** Isi cadangan dari environment, atau kosong bila tidak ada/tidak sahih. */
+function envBundleFiles(): Record<string, unknown> {
+  const raw = process.env[CONFIG_BUNDLE_ENV]?.trim();
+  if (!raw) return {};
+  try {
+    return parseConfigBundle(raw).files;
+  } catch (error) {
+    // Cadangan yang rusak tidak boleh menghentikan start-up: aplikasi tetap
+    // menyala memakai nilai bawaan, dan alasannya tercatat di log deploy.
+    console.warn(`[WIOM] ${CONFIG_BUNDLE_ENV} diabaikan: ${(error as Error).message}`);
+    return {};
+  }
+}
+
 let seeded = false;
 
 /**
@@ -236,18 +387,37 @@ export function ensureRuntimeConfigSeeded(): void {
     // Pengaturan menampilkan peringatan lewat configStorageInfo().
     return;
   }
-  for (const basename of MIGRATABLE_FILES) {
+  // Urutan sumber, dari yang paling berhak:
+  //   berkas runtime yang sudah ada > cadangan environment > konfigurasi
+  //   legacy > default bawaan image.
+  //
+  // Cadangan environment berada di atas legacy dan default karena ia adalah
+  // hasil penyimpanan admin yang sengaja diawetkan untuk melewati deploy;
+  // menaruhnya di bawah default berarti ia tidak pernah terpakai.
+  const fromEnv = envBundleFiles();
+  const wanted = [...new Set([...MIGRATABLE_FILES, ...Object.keys(fromEnv)])];
+  for (const basename of wanted) {
     const runtime = runtimeConfigFile(basename);
+    if (fs.existsSync(runtime)) continue;
+    // `flag: "wx"` supaya dua proses yang start bersamaan tidak saling timpa.
+    // Berkas yang memuat webhook/kredensial memakai 0o600; kebijakan publik
+    // memakai 0o644 agar deployment service terpisah tetap dapat membacanya.
+    const mode = PRIVATE_FILES.has(basename) ? 0o600 : 0o644;
+    const envValue = fromEnv[basename];
+    if (envValue !== undefined) {
+      try {
+        fs.writeFileSync(runtime, `${JSON.stringify(envValue, null, 2)}\n`, { flag: "wx", mode });
+        console.info(`[WIOM] Konfigurasi ${basename} dipulihkan dari ${CONFIG_BUNDLE_ENV}`);
+        continue;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+        console.warn(`[WIOM] ${basename} tidak dapat dipulihkan dari ${CONFIG_BUNDLE_ENV}: ${(error as Error).message}`);
+      }
+    }
     const source = bootstrapConfigFile(basename);
-    if (fs.existsSync(runtime) || !fs.existsSync(source)) continue;
+    if (!fs.existsSync(source)) continue;
     try {
-      // `flag: "wx"` supaya dua proses yang start bersamaan tidak saling timpa.
-      // Berkas yang memuat webhook/kredensial memakai 0o600; kebijakan publik
-      // memakai 0o644 agar deployment service terpisah tetap dapat membacanya.
-      fs.writeFileSync(runtime, fs.readFileSync(source), {
-        flag: "wx",
-        mode: PRIVATE_FILES.has(basename) ? 0o600 : 0o644,
-      });
+      fs.writeFileSync(runtime, fs.readFileSync(source), { flag: "wx", mode });
       console.info(`[WIOM] Konfigurasi ${basename} dipindahkan ke penyimpanan permanen ${runtime}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
@@ -272,9 +442,8 @@ export function configStorageInfo(): ConfigStorageInfo {
   }
   const probe = probeWritable();
   const persistentMount = detectPersistentMount();
-  const durabilityRequired = ["1", "true", "on", "required"].includes(
-    process.env.WIOM_REQUIRE_PERSISTENT_STORAGE?.trim().toLowerCase() || "",
-  );
+  const mode = persistenceMode();
+  const durabilityRequired = mode !== "off";
   return {
     runtimeDir: RUNTIME_CONFIG_DIR,
     seedDir: SEED_CONFIG_DIR,
@@ -282,6 +451,7 @@ export function configStorageInfo(): ConfigStorageInfo {
     writable: probe.writable,
     persistentMount,
     durabilityRequired,
+    durabilityEnforced: mode === "strict",
     durable: probe.writable && (!durabilityRequired || persistentMount === true),
     persisted,
     usingSeed,
@@ -347,9 +517,9 @@ function detectPersistentMount(): boolean | null {
 /**
  * Uji tulis, disimpan sebentar.
  *
- * Healthcheck container memanggil `/api/ready` tiap 15 detik. Menulis dan
+ * Monitoring memanggil `/api/ready` sesering healthcheck. Menulis dan
  * menghapus berkas uji sesering itu menambah I/O pada volume tanpa memberi
- * informasi baru — izin folder tidak berubah tiap 15 detik. Satu menit cukup
+ * informasi baru — izin folder tidak berubah tiap belasan detik. Satu menit cukup
  * cepat untuk menangkap volume yang berubah menjadi read-only, dan cukup jarang
  * untuk tidak terasa.
  */

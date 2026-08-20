@@ -86,7 +86,8 @@ Langkah (mode default `superset_dataset` — **tanpa SQL Lab, tanpa Google Sheet
    Compose memakai service `sync` terpisah dan menonaktifkan worker tertanam
    agar tidak ada dua penulis. Dependency Python dipasang saat build, bukan
    saat container restart.
-7. Verifikasi `GET /api/ready` untuk kesiapan runtime/worker dan
+7. Verifikasi `GET /api/live` (harus 200 — inilah yang dipakai healthcheck
+   container), `GET /api/ready` untuk kesiapan runtime/worker, dan
    `GET /api/health` untuk kesehatan data. Pada `/api/health`,
    `snapshot_age_minutes` harus sesuai SLA operasional.
 
@@ -129,11 +130,53 @@ mount `/app/config`, pertahankan mount itu pada **upgrade pertama** agar isi lam
 dimigrasikan; setelah `db/runtime-config/` terisi dan backup diverifikasi, mount
 legacy tersebut tidak lagi diperlukan.
 
+### Cadangan konfigurasi — tanpa akses Docker
+
+Memasang volume pada aplikasi yang sudah berjalan dulu menuntut `docker cp`
+untuk menyelamatkan isi container lama sebelum mount kosong menutupinya.
+Operator yang hanya memegang panel Coolify tidak punya jalan itu. **Pengaturan →
+Cadangan konfigurasi** menggantikan seluruh langkah tersebut dengan tiga tombol:
+
+| Tombol | Gunanya |
+|---|---|
+| **Unduh cadangan** | Satu berkas JSON berisi ambang, kapasitas, gudang, eskalasi, Superset (termasuk kredensialnya), dan akun. |
+| **Salin nilai environment** | Isi yang sama dalam satu baris base64 untuk ditempel sebagai `WIOM_CONFIG_BUNDLE`. |
+| **Pulihkan dari berkas** | Menimpa seluruh konfigurasi runtime dengan isi berkas cadangan, lalu memuat ulang halaman. |
+
+Urutan yang disarankan untuk memasang volume pada instalasi yang sudah hidup:
+**Unduh cadangan → pasang Persistent Storage `/app/db` → redeploy → Pulihkan
+dari berkas.** Setelah itu volume mengambil alih dan pemulihan manual tidak
+diperlukan lagi.
+
+`WIOM_CONFIG_BUNDLE` adalah jaring pengaman untuk deployment yang benar-benar
+tidak dapat memasang volume: environment variable Coolify bertahan melewati
+deploy, sehingga konfigurasi memulihkan dirinya sendiri saat container baru
+menyala. Urutan sumbernya:
+
+```text
+berkas runtime yang sudah ada  >  WIOM_CONFIG_BUNDLE  >  /app/config legacy  >  default image
+```
+
+Berkas runtime yang sudah ada selalu menang, jadi nilai environment tidak
+pernah menimpa penyetelan yang lebih baru di volume — ia hanya mengisi yang
+kosong. Cadangan yang rusak diabaikan dengan peringatan di log, bukan
+menggagalkan start-up. Perbarui nilainya setiap kali Pengaturan berubah, karena
+ia adalah salinan beku, bukan cermin otomatis.
+
+Endpoint di baliknya (`GET`/`POST /api/config/backup`) khusus admin, tidak
+pernah di-cache, dan setiap pengunduhan maupun pemulihan tercatat di Audit
+Trail. Isinya memuat kredensial, jadi perlakukan berkas dan nilai environment
+itu seperti secret.
+
 ### Upgrade Coolify tanpa kehilangan konfigurasi lama
 
-Sebelum menambahkan atau mengganti mount pada aplikasi yang sudah berjalan,
-periksa container lama dari terminal server. Perintah berikut hanya membaca
-metadata dan nama berkas; ia tidak menampilkan isi secret:
+**Tanpa akses server:** Pengaturan → **Unduh cadangan** sebelum mengubah mount,
+lalu **Pulihkan dari berkas** setelah redeploy. Itu sudah cukup, dan bagian di
+bawah ini tidak diperlukan.
+
+**Bila Anda punya akses terminal server**, periksa container lama lebih dulu.
+Perintah berikut hanya membaca metadata dan nama berkas; ia tidak menampilkan
+isi secret:
 
 ```bash
 docker inspect CONTAINER_LAMA --format '{{json .Mounts}}'
@@ -150,19 +193,57 @@ docker exec CONTAINER_LAMA sh -lc 'find /app/db/runtime-config -maxdepth 1 -type
   pulihkan data lama ke volume tersebut, baru redeploy. Menambahkan mount kosong
   langsung akan menutupi folder `/app/db` yang berada di image/container.
 
-Healthcheck image memakai `curl --fail-with-body` ke `/api/ready`. Jika gagal,
-body JSON sekarang terlihat di deployment log. Kode
-`PERSISTENT_STORAGE_MISSING` berarti aplikasi dan worker sudah hidup, tetapi
-Coolify belum memasang storage eksternal ke `/app/db`; guard ini sengaja tidak
-diturunkan karena melewatinya akan membuat Settings kembali hilang saat rolling
-update.
+### Healthcheck: liveness, bukan kesiapan operasional
+
+Healthcheck image memakai `curl --fail-with-body` ke **`/api/live`** — endpoint
+tanpa dependensi yang menjawab 200 selama server web melayani HTTP.
+
+Sebelumnya healthcheck menunjuk `/api/ready`, dan itu menjatuhkan deployment
+yang sebenarnya sehat: `/api/ready` ikut menilai keberadaan akun admin, volume
+permanen, dan kesiapan worker Superset, sehingga satu cookie Superset yang
+kedaluwarsa atau satu volume yang belum dipasang membuat Docker menandai
+container tidak sehat dan Coolify menggulungnya balik — sementara satu-satunya
+cara memperbaiki keadaan itu (halaman Pengaturan) ikut dibuang bersama
+container tersebut. Pembagiannya sekarang tegas:
+
+| Endpoint | Menjawab | Dipakai |
+|---|---|---|
+| `GET /api/live` | Proses hidup dan melayani HTTP | Healthcheck container/orkestrator |
+| `GET /api/ready` | Kesiapan operasional lengkap + kode masalah | Operator dan monitoring |
+| `GET /api/health` | Kesehatan data (kesegaran snapshot) | Monitoring |
+
+Interval healthcheck juga dipersempit (`--start-period=20s --interval=10s
+--retries=6`) karena Coolify hanya menunggu 4 × 15 detik setelah start-period
+sebelum menyerah; sukses pertama langsung menandai container sehat.
+
+Diagnosis tetap sampai ke deployment log: setelah server menyala, supervisor
+membaca `/api/ready` sekali dan mencetak ringkasannya, termasuk baris tindakan
+seperti `Penyimpanan konfigurasi: PERSISTENT_STORAGE_MISSING`.
+
+Kode `PERSISTENT_STORAGE_MISSING` berarti aplikasi hidup tetapi `/app/db` belum
+berupa storage eksternal — **penyetelan Settings akan hilang pada redeploy
+berikutnya**. Aplikasi tetap dapat dipakai supaya keadaannya dapat diperbaiki
+dari dalam; peringatannya muncul di log start-up, di `/api/ready`, dan sebagai
+banner merah di halaman Pengaturan. Operator yang lebih memilih deploy gagal
+daripada berjalan di atas penyimpanan sementara dapat menyetel
+`WIOM_REQUIRE_PERSISTENT_STORAGE=strict`, yang mengembalikan perilaku menolak
+setiap penyimpanan konfigurasi selama mount belum terbukti.
 
 Pesan `auth.mode='cookie' tetapi cookie kosong` tidak membuat proses web mati,
 tetapi sync data tidak akan berhasil. Setelah volume terpasang, isi melalui
 **Pengaturan → Superset Sync** (tersimpan di `db/runtime-config`) atau environment
-`SUPERSET_COOKIE_HEADER`/`SUPERSET_SESSION_COOKIE`. Pesan `CRON_SECRET belum
-diisi` juga bukan kegagalan healthcheck, tetapi evaluasi alert terjadwal tetap
-nonaktif sampai secret tersebut dikonfigurasi.
+`SUPERSET_COOKIE_HEADER`/`SUPERSET_SESSION_COOKIE`. Worker yang belum siap juga
+tidak lagi membatalkan start-up: `WIOM_SYNC_REQUIRED=1` berarti worker
+dinyalakan, ditunggu, dan kegagalannya dilaporkan — bukan mematikan server web
+yang sehat. `WIOM_SYNC_REQUIRED=strict` mengembalikan perilaku lama bila memang
+diinginkan.
+
+`CRON_SECRET` tidak perlu diisi manual lagi. Bila environment tidak
+menyediakannya, supervisor membuat satu secret acak dan menyimpannya di
+`/app/db/.wiom-cron-secret`, sehingga evaluasi alert terjadwal langsung aktif
+dan tetap memakai nilai yang sama setelah deploy ulang. Secret dari environment
+selalu menang, dan `WIOM_SCHEDULER=0` mematikan scheduler bawaan untuk
+deployment yang memakai cron eksternal (`deploy/crontab.example`).
 
 Untuk Coolify self-hosted, buka **Servers → localhost → Advanced → Builds** dan
 atur **Deployment timeout (sec)** minimal `1800` (`3600` dianjurkan). Nilai ini
@@ -200,13 +281,26 @@ Switch **Kebijakan/Qty/CBM/Bin** di topbar mengubah metrik, bar, dan warna yang 
 Tangga status memakai satu bahasa warna di seluruh aplikasi — lencana, bar
 okupansi, sel heatmap, KPI, dan papan alert:
 
-| Status | Warna | Severity alert yang sepadan |
-|---|---|---|
-| Normal | Hijau | `INFO` |
-| Monitor | Biru | `WARNING` |
-| Warning | Kuning | `HIGH` |
-| Critical | Oranye | `CRITICAL` |
-| Breach | Merah | `EMERGENCY` |
+| Status | Rentang (ambang bawaan) | Warna | Severity alert yang sepadan |
+|---|---|---|---|
+| Normal | < 70% | Hijau | `INFO` |
+| Monitor | 70–84% | Biru | `WARNING` |
+| Warning | 85–94% | Kuning | `HIGH` |
+| Critical | 95–**100%** | Oranye | `CRITICAL` |
+| Breach | **> 100%** | Merah | `EMERGENCY` |
+
+**Tepat di kapasitas maksimum adalah Critical, bukan Breach.** Batas atas
+tangga ini memakai `>` (melewati ambang), bukan `>=` (mencapai ambang), karena
+ia satu-satunya rungs yang menandai batas fisik: lokasi dengan Qty 12/12 dan
+CBM 0,034/0,034 memang penuh dan harus berhenti menerima inbound, tetapi belum
+ada satu unit pun yang tidak punya tempat. Aturan yang sama persis dipakai
+mesin alert (§Alert), sehingga badge di heatmap dan severity alert tidak dapat
+berbeda pada angka yang sama. Ambang di bawahnya tetap memakai `>=` karena
+Pantau/Waspada/Kritis adalah batas operasional yang boleh disentuh.
+
+Kontraknya dijaga tiga tempat sekaligus: `lib/occupancy.ts` (statusFor),
+`lib/queries.ts` (cermin SQL untuk tabel & ekspor), dan
+`tests/occupancy-status.test.mjs`.
 
 Setiap pasangan latar/teks diverifikasi ≥ 4,5:1 (WCAG AA) di tema terang dan
 gelap. Monitor memakai keluarga *sky*, bukan biru FIT `--accent`: satu-satunya
@@ -398,10 +492,18 @@ wajib agar semua instance memakai key yang sama.
 
 Verifikasi setelah deploy:
 
-- `GET /api/ready` harus HTTP 200 dengan `status = "ready"`.
+- `GET /api/live` harus HTTP 200 dengan `status = "live"` — ini syarat container
+  dinyatakan sehat oleh Docker/Coolify, dan satu-satunya yang menentukan apakah
+  deployment digulung balik.
+- `GET /api/ready` harus HTTP 200 dengan `status = "ready"`. Bila 503, bacalah
+  `checks` — setiap masalah menyertakan kode dan kalimat tindakan.
+- `checks.config_storage.status` harus `"ok"`. Nilai
+  `PERSISTENT_STORAGE_MISSING` berarti konfigurasi Settings akan hilang pada
+  redeploy berikutnya; pasang storage ke `/app/db` lebih dulu.
 - `GET /api/health` harus menampilkan
   `checks.authentication.status = "ok"` tanpa membocorkan nilai secret.
 - Log startup harus memuat `Worker Superset siap; web server dapat menerima trafik.`
+  dan `Kesiapan: READY`.
 
 ---
 

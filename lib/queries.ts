@@ -46,6 +46,19 @@ let versionMemo: {
   value: string;
 } | null = null;
 
+/**
+ * Revisi kontrak perhitungan read model.
+ *
+ * Sidik jari di bawah hanya mencakup DATA dan KEBIJAKAN. Perubahan pada cara
+ * menghitungnya tidak mengubah keduanya, sehingga hasil lama di
+ * `db/read-model-cache/` tetap tersaji setelah deploy — persis yang akan
+ * terjadi pada perbaikan tangga status ini: lokasi tepat 100% akan tetap
+ * terbaca "Breach" dari cache walau kodenya sudah benar.
+ *
+ * Naikkan nilai ini setiap kali makna atau bentuk kolom hasil hitungan berubah.
+ */
+const READ_MODEL_REVISION = "2026-08-20-capacity-boundary";
+
 function readModelVersion(): string {
   const db = String(historyDbVersion());
   const warehouses = getWarehouses();
@@ -59,6 +72,7 @@ function readModelVersion(): string {
     && versionMemo.thresholds === thresholds
   ) return versionMemo.value;
   const value = createHash("sha1")
+    .update(READ_MODEL_REVISION)
     .update(db)
     .update(JSON.stringify(warehouses))
     .update(JSON.stringify(capacity))
@@ -1769,10 +1783,18 @@ export async function getDenseSlocs(
 // memfilter, mengurutkan, dan menghitung ringkasan, sehingga ekspor "sesuai
 // filter" benar-benar berarti sesuai filter yang sedang tampil.
 
-/** Tangga status per gudang sebagai ekspresi SQL (cermin statusFor()). */
+/**
+ * Tangga status per gudang sebagai ekspresi SQL (cermin statusFor()).
+ *
+ * Perbandingan batas atasnya harus identik dengan lib/occupancy.ts: `>` untuk
+ * BREACH, bukan `>=`. Tabel kepadatan dan ekspor Excel memakai ekspresi ini,
+ * sedangkan heatmap dan kartu zona memakai statusFor(); satu tanda yang
+ * berbeda saja membuat lokasi yang sama tampil "Breach" di satu halaman dan
+ * "Kritis" di halaman lain.
+ */
 function statusLadderSQL(pctExpr: string, whExpr: string): string {
   const ladder = (t: { monitor: number; warning: number; critical: number; breach: number }) =>
-    `CASE WHEN ${pctExpr} >= ${t.breach} THEN 'BREACH'
+    `CASE WHEN ${pctExpr} > ${t.breach + CAPACITY_MATCH_TOLERANCE_PCT} THEN 'BREACH'
           WHEN ${pctExpr} >= ${t.critical} THEN 'CRITICAL'
           WHEN ${pctExpr} >= ${t.warning} THEN 'WARNING'
           WHEN ${pctExpr} >= ${t.monitor} THEN 'MONITOR'

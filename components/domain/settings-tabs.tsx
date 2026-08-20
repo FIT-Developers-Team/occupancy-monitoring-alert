@@ -98,6 +98,134 @@ interface CapMeta {
 
 const TKEYS = ["monitor", "warning", "critical", "breach", "hysteresis_buffer"] as const;
 
+/**
+ * Cadangan konfigurasi — unduh, pulihkan, dan salin sebagai environment.
+ *
+ * Sebelum ini, memindahkan Pengaturan dari container lama ke volume permanen
+ * hanya mungkin lewat `docker cp` di terminal server. Admin yang hanya
+ * memegang panel deployment terpaksa mengetik ulang semuanya setelah setiap
+ * deploy. Tiga tombol di bawah menggantikan seluruh langkah itu.
+ */
+function ConfigBackupPanel({ durable }: { durable: boolean }) {
+  const { t } = useT();
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [envValue, setEnvValue] = useState("");
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  async function download() {
+    setBusy(true); setNote("");
+    try {
+      const response = await fetch("/api/config/backup", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `wiom-config-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setNote("set.ui.backup.downloaded");
+    } catch (error) {
+      setNote((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyEnv() {
+    setBusy(true); setNote("");
+    try {
+      const response = await fetch("/api/config/backup?format=env", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const value = await response.text();
+      setEnvValue(value);
+      // Clipboard API hanya tersedia pada konteks aman; nilainya tetap
+      // ditampilkan agar tetap dapat disalin manual bila ditolak browser.
+      try {
+        await navigator.clipboard.writeText(value);
+        setNote("set.ui.backup.copied");
+      } catch {
+        setNote("set.ui.backup.copyManual");
+      }
+    } catch (error) {
+      setNote((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function restore(file: File) {
+    if (!window.confirm(t("set.ui.backup.restoreConfirm"))) return;
+    setBusy(true); setNote("");
+    try {
+      const response = await fetch("/api/config/backup", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: await file.text(),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+      setNote("set.ui.backup.restored");
+      // Seluruh tab memegang salinan konfigurasi di state; memuat ulang jauh
+      // lebih jujur daripada menambal sebagiannya.
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (error) {
+      setNote((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card card-pad space-y-3">
+      <div>
+        <div className="panel-title">{t("set.ui.backup.title")}</div>
+        <p className="mt-1 text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+          {t(durable ? "set.ui.backup.intro" : "set.ui.backup.introEphemeral")}
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className="btn btn-sm" disabled={busy} onClick={download}>
+          {t("set.ui.backup.download")}
+        </button>
+        <button type="button" className="btn btn-sm" disabled={busy} onClick={copyEnv}>
+          {t("set.ui.backup.copyEnv")}
+        </button>
+        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => fileRef.current?.click()}>
+          {t("set.ui.backup.restore")}
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json,.json"
+          className="sr-only"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) void restore(file);
+          }}
+        />
+      </div>
+      {envValue && (
+        <label className="block space-y-1">
+          <span className="eyebrow">{t("set.ui.backup.envHint")}</span>
+          <textarea
+            className="input num"
+            readOnly
+            rows={3}
+            value={envValue}
+            onFocus={(event) => event.currentTarget.select()}
+          />
+        </label>
+      )}
+      {note && <p className="settings-message" role="status">{t(note, note)}</p>}
+    </div>
+  );
+}
+
 export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
   const { t } = useT();
   const [tab, setTab] = useState<"accounts" | "sync" | "thresholds" | "capacity" | "recipients">("accounts");
@@ -286,6 +414,10 @@ export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
           <p>{t(storage.writable ? "set.ui.storage.notPersistent" : "set.ui.storage.readOnly")}</p>
         </div>
       )}
+
+      {/* Selalu tampil, bukan hanya saat storage bermasalah: cadangan yang
+          berguna adalah cadangan yang dibuat SEBELUM ada yang hilang. */}
+      <ConfigBackupPanel durable={storage.durable} />
 
       {tab === "sync" && <SupersetSyncSettings />}
 

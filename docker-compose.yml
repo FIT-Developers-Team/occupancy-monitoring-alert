@@ -1,5 +1,12 @@
 # WIOM Control Tower — web app + sync loop
 # Jalankan: docker compose up -d
+#
+# CATATAN COOLIFY: deployment berbasis Dockerfile TIDAK memakai berkas ini.
+# Coolify membangkitkan compose-nya sendiri di /artifacts, sehingga volume di
+# bawah tidak ikut terpasang. Pada Coolify, storage permanen untuk /app/db
+# wajib ditambahkan sekali lewat Configuration → Persistent Storage (lihat
+# README §Deploy). Tanpa itu seluruh isi /app/db — database, akun, secret sesi,
+# dan konfigurasi halaman Pengaturan — hilang setiap container diganti.
 services:
   web:
     build:

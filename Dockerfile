@@ -66,11 +66,29 @@ RUN set -eux \
 # bertahan, semua yang disimpan admin selamat dari deploy ulang.
 #
 # Tidak ada instruksi VOLUME anonim. Hosting wajib memasang named volume/bind
-# mount yang bernama tetap ke /app/db; readiness menolak filesystem container.
+# mount yang bernama tetap ke /app/db. Bila belum terpasang, aplikasi TETAP
+# menyala — supaya keadaannya masih dapat diperbaiki dari halaman Pengaturan —
+# tetapi /api/ready, log start-up, dan banner Pengaturan menyatakan konfigurasi
+# akan hilang pada deploy berikutnya. WIOM_REQUIRE_PERSISTENT_STORAGE=strict
+# mengubahnya menjadi penolakan keras bila operator memang menghendaki.
 # /app/config lama boleh tetap terpasang pada upgrade pertama untuk migrasi.
 EXPOSE 3000
-HEALTHCHECK --start-period=30s --interval=15s --timeout=8s --retries=4 \
-  CMD curl --fail-with-body --silent --show-error --max-time 7 http://127.0.0.1:3000/api/ready || exit 1
+# Healthcheck menguji LIVENESS, bukan kesiapan operasional.
+#
+# Versi sebelumnya menunjuk ke /api/ready, yang ikut menilai keberadaan akun
+# admin, volume permanen, dan worker Superset. Pada 2026-08-20 container
+# menyalakan Next.js dengan benar tetapi /api/ready menjawab 503 karena volume
+# belum terpasang, Docker menahan status "starting", dan Coolify menggulung
+# balik deployment yang sebenarnya sehat. Kondisi operasional tetap dilaporkan
+# /api/ready untuk manusia dan monitoring — bukan untuk orkestrator.
+#
+# Jendela waktunya juga dipersempit: Coolify hanya menunggu 4 x 15 detik
+# setelah start-period sebelum menyerah, sedangkan konfigurasi lama baru
+# menyatakan sehat/tidak sehat setelah ~90 detik. Sukses pertama menandai
+# container sehat seketika, jadi probe yang lebih rapat membuat deployment yang
+# baik lolos jauh di dalam jendela Coolify.
+HEALTHCHECK --start-period=20s --interval=10s --timeout=5s --retries=6 \
+  CMD curl --fail-with-body --silent --show-error --max-time 4 "http://127.0.0.1:${PORT:-3000}/api/live" || exit 1
 CMD ["node", "scripts/start-production.mjs"]
 
 FROM sync AS web
@@ -111,9 +129,27 @@ RUN rm -rf node_modules/@img node_modules/sharp \
 # bertahan, semua yang disimpan admin selamat dari deploy ulang.
 #
 # Tidak ada instruksi VOLUME anonim. Hosting wajib memasang named volume/bind
-# mount yang bernama tetap ke /app/db; readiness menolak filesystem container.
+# mount yang bernama tetap ke /app/db. Bila belum terpasang, aplikasi TETAP
+# menyala — supaya keadaannya masih dapat diperbaiki dari halaman Pengaturan —
+# tetapi /api/ready, log start-up, dan banner Pengaturan menyatakan konfigurasi
+# akan hilang pada deploy berikutnya. WIOM_REQUIRE_PERSISTENT_STORAGE=strict
+# mengubahnya menjadi penolakan keras bila operator memang menghendaki.
 # Seluruh state baru hanya punya satu destination persisten.
 EXPOSE 3000
-HEALTHCHECK --start-period=30s --interval=15s --timeout=8s --retries=4 \
-  CMD curl --fail-with-body --silent --show-error --max-time 7 http://127.0.0.1:3000/api/ready || exit 1
+# Healthcheck menguji LIVENESS, bukan kesiapan operasional.
+#
+# Versi sebelumnya menunjuk ke /api/ready, yang ikut menilai keberadaan akun
+# admin, volume permanen, dan worker Superset. Pada 2026-08-20 container
+# menyalakan Next.js dengan benar tetapi /api/ready menjawab 503 karena volume
+# belum terpasang, Docker menahan status "starting", dan Coolify menggulung
+# balik deployment yang sebenarnya sehat. Kondisi operasional tetap dilaporkan
+# /api/ready untuk manusia dan monitoring — bukan untuk orkestrator.
+#
+# Jendela waktunya juga dipersempit: Coolify hanya menunggu 4 x 15 detik
+# setelah start-period sebelum menyerah, sedangkan konfigurasi lama baru
+# menyatakan sehat/tidak sehat setelah ~90 detik. Sukses pertama menandai
+# container sehat seketika, jadi probe yang lebih rapat membuat deployment yang
+# baik lolos jauh di dalam jendela Coolify.
+HEALTHCHECK --start-period=20s --interval=10s --timeout=5s --retries=6 \
+  CMD curl --fail-with-body --silent --show-error --max-time 4 "http://127.0.0.1:${PORT:-3000}/api/live" || exit 1
 CMD ["node", "scripts/start-production.mjs"]
