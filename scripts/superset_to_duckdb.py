@@ -434,14 +434,14 @@ class SupersetClient:
             self.s.headers["Authorization"] = f"Bearer {auth['access_token']}"
         elif mode == "cookie":
             if not has_cookies:
-                # The secrets file is excluded from the deployment image on
-                # purpose (.dockerignore), so in a container this mode only
-                # works when the cookie arrives through the environment.
+                # The secrets file is excluded from the immutable image. The
+                # web Settings page writes its runtime copy to persistent
+                # db/runtime-config; environment variables remain an option.
                 raise AuthConfigurationError(
                     "auth.mode='cookie' tetapi cookie kosong. Pada deployment container "
-                    "file config/.superset-sync.secrets.json sengaja tidak ikut ke image, "
-                    "jadi cookie harus datang dari environment: isi SUPERSET_COOKIE_HEADER "
-                    "(seluruh nilai header Cookie dari DevTools) atau SUPERSET_SESSION_COOKIE. "
+                    "isi ulang lewat Pengaturan > Superset Sync agar tersimpan di volume "
+                    "db/runtime-config, atau gunakan environment SUPERSET_COOKIE_HEADER "
+                    "(seluruh nilai header Cookie dari DevTools) / SUPERSET_SESSION_COOKIE. "
                     "Untuk deployment yang tidak dijaga, auth.mode='auto' + "
                     "SUPERSET_USERNAME/SUPERSET_PASSWORD lebih tahan lama karena cookie kedaluwarsa.")
         elif mode in ("login", "auto"):
@@ -2530,9 +2530,9 @@ def run_runtime_check(config: Dict[str, Any], require_auth: bool = False) -> Non
             "(SUPERSET_USERNAME + SUPERSET_PASSWORD).")
     if require_auth and mode == "cookie" and not has_cookie:
         raise AuthConfigurationError(
-            "Mode cookie membutuhkan cookie Superset. Pada deployment container isi "
-            "SUPERSET_COOKIE_HEADER atau SUPERSET_SESSION_COOKIE — file secrets lokal "
-            "sengaja tidak ikut ke image.")
+            "Mode cookie membutuhkan cookie Superset. Isi lewat Pengaturan > Superset Sync "
+            "agar sidecar tersimpan di db/runtime-config, atau gunakan "
+            "SUPERSET_COOKIE_HEADER / SUPERSET_SESSION_COOKIE pada environment deployment.")
     if require_auth and mode == "bearer" and not has_bearer:
         raise AuthConfigurationError(
             "Mode bearer membutuhkan access token Superset (SUPERSET_ACCESS_TOKEN).")

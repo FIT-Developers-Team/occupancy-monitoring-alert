@@ -129,6 +129,41 @@ mount `/app/config`, pertahankan mount itu pada **upgrade pertama** agar isi lam
 dimigrasikan; setelah `db/runtime-config/` terisi dan backup diverifikasi, mount
 legacy tersebut tidak lagi diperlukan.
 
+### Upgrade Coolify tanpa kehilangan konfigurasi lama
+
+Sebelum menambahkan atau mengganti mount pada aplikasi yang sudah berjalan,
+periksa container lama dari terminal server. Perintah berikut hanya membaca
+metadata dan nama berkas; ia tidak menampilkan isi secret:
+
+```bash
+docker inspect CONTAINER_LAMA --format '{{json .Mounts}}'
+docker exec CONTAINER_LAMA sh -lc 'find /app/db/runtime-config -maxdepth 1 -type f -printf "%f\n" 2>/dev/null | sort'
+```
+
+- Bila `/app/db` sudah menunjuk ke Docker volume/bind mount, gunakan kembali
+  source volume yang sama di Coolify; jangan membuat volume kosong baru.
+- Bila `/app/db` tidak mempunyai mount, konfigurasi masih berada di writable
+  layer container lama. Backup **sebelum** container itu dihapus, misalnya
+  `docker cp CONTAINER_LAMA:/app/db /root/wiom-db-before-volume` dan, bila ada,
+  `docker cp CONTAINER_LAMA:/app/config /root/wiom-config-before-volume`.
+- Setelah backup aman, pasang Volume Mount Coolify bernama tetap ke `/app/db`,
+  pulihkan data lama ke volume tersebut, baru redeploy. Menambahkan mount kosong
+  langsung akan menutupi folder `/app/db` yang berada di image/container.
+
+Healthcheck image memakai `curl --fail-with-body` ke `/api/ready`. Jika gagal,
+body JSON sekarang terlihat di deployment log. Kode
+`PERSISTENT_STORAGE_MISSING` berarti aplikasi dan worker sudah hidup, tetapi
+Coolify belum memasang storage eksternal ke `/app/db`; guard ini sengaja tidak
+diturunkan karena melewatinya akan membuat Settings kembali hilang saat rolling
+update.
+
+Pesan `auth.mode='cookie' tetapi cookie kosong` tidak membuat proses web mati,
+tetapi sync data tidak akan berhasil. Setelah volume terpasang, isi melalui
+**Pengaturan → Superset Sync** (tersimpan di `db/runtime-config`) atau environment
+`SUPERSET_COOKIE_HEADER`/`SUPERSET_SESSION_COOKIE`. Pesan `CRON_SECRET belum
+diisi` juga bukan kegagalan healthcheck, tetapi evaluasi alert terjadwal tetap
+nonaktif sampai secret tersebut dikonfigurasi.
+
 Untuk Coolify self-hosted, buka **Servers → localhost → Advanced → Builds** dan
 atur **Deployment timeout (sec)** minimal `1800` (`3600` dianjurkan). Nilai ini
 membatasi keseluruhan job deployment, termasuk kompilasi dan ekspor layer Docker;

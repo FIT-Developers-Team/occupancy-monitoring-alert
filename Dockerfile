@@ -14,7 +14,7 @@ FROM ${PYTHON_IMAGE} AS sync
 WORKDIR /app
 RUN set -eux \
   && apt-get update \
-  && apt-get install -y --no-install-recommends libssl3 openssl ca-certificates \
+  && apt-get install -y --no-install-recommends libssl3 openssl ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 COPY scripts/requirements.txt ./scripts/requirements.txt
 RUN pip install --no-cache-dir -r scripts/requirements.txt
@@ -53,7 +53,11 @@ COPY --from=build /app/config ./config
 COPY --from=build /app/config ./default-config
 COPY --from=build /app/db/schema.sql ./db/schema.sql
 COPY --from=build /app/scripts/start-production.mjs ./scripts/start-production.mjs
-RUN rm -rf node_modules/@img node_modules/sharp \
+RUN set -eux \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && rm -rf node_modules/@img node_modules/sharp \
            node_modules/typescript node_modules/@types \
            db/*.duckdb db/*.duckdb.wal \
   && node -e "require.resolve('duckdb'); console.log('duckdb binding OK')"
@@ -65,8 +69,8 @@ RUN rm -rf node_modules/@img node_modules/sharp \
 # mount yang bernama tetap ke /app/db; readiness menolak filesystem container.
 # /app/config lama boleh tetap terpasang pada upgrade pertama untuk migrasi.
 EXPOSE 3000
-HEALTHCHECK --start-period=30s --interval=15s --timeout=5s --retries=4 \
-  CMD node -e "fetch('http://127.0.0.1:3000/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HEALTHCHECK --start-period=30s --interval=15s --timeout=8s --retries=4 \
+  CMD curl --fail-with-body --silent --show-error --max-time 7 http://127.0.0.1:3000/api/ready || exit 1
 CMD ["node", "scripts/start-production.mjs"]
 
 FROM sync AS web
@@ -110,6 +114,6 @@ RUN rm -rf node_modules/@img node_modules/sharp \
 # mount yang bernama tetap ke /app/db; readiness menolak filesystem container.
 # Seluruh state baru hanya punya satu destination persisten.
 EXPOSE 3000
-HEALTHCHECK --start-period=30s --interval=15s --timeout=5s --retries=4 \
-  CMD node -e "fetch('http://127.0.0.1:3000/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HEALTHCHECK --start-period=30s --interval=15s --timeout=8s --retries=4 \
+  CMD curl --fail-with-body --silent --show-error --max-time 7 http://127.0.0.1:3000/api/ready || exit 1
 CMD ["node", "scripts/start-production.mjs"]

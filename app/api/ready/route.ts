@@ -38,6 +38,11 @@ export async function GET() {
       }
     : {
         status: "error",
+        code: !configStorage.writable
+          ? "CONFIG_STORAGE_NOT_WRITABLE"
+          : configStorage.durabilityRequired && configStorage.persistentMount !== true
+            ? "PERSISTENT_STORAGE_MISSING"
+            : "CONFIG_STORAGE_NOT_DURABLE",
         writable: configStorage.writable,
         persistent_mount: configStorage.persistentMount,
         mount_required: configStorage.durabilityRequired,

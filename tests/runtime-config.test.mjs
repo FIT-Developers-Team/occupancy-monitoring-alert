@@ -159,6 +159,7 @@ test("atomic writes leave one complete target and no temporary file", () => {
 test("deployment assets keep one persistent destination and shared account storage", () => {
   const dockerfile = readFileSync(new URL("../Dockerfile", import.meta.url), "utf8");
   const compose = readFileSync(new URL("../docker-compose.yml", import.meta.url), "utf8");
+  const readyRoute = readFileSync(new URL("../app/api/ready/route.ts", import.meta.url), "utf8");
   const accounts = readFileSync(new URL("../lib/account-store.ts", import.meta.url), "utf8");
   const supervisor = readFileSync(new URL("../scripts/start-production.mjs", import.meta.url), "utf8");
   const worker = readFileSync(new URL("../scripts/superset_to_duckdb.py", import.meta.url), "utf8");
@@ -166,6 +167,10 @@ test("deployment assets keep one persistent destination and shared account stora
   assert.match(dockerfile, /COPY --from=build \/app\/config \.\/default-config/);
   assert.doesNotMatch(dockerfile, /^VOLUME\s/m);
   assert.match(dockerfile, /WIOM_REQUIRE_PERSISTENT_STORAGE=1/);
+  assert.match(dockerfile, /apt-get install[^\n]+curl/);
+  assert.match(dockerfile, /HEALTHCHECK[\s\S]+curl --fail-with-body[\s\S]+\/api\/ready/);
+  assert.doesNotMatch(dockerfile, /HEALTHCHECK[\s\S]+node -e "fetch\(/);
+  assert.match(readyRoute, /PERSISTENT_STORAGE_MISSING/);
   assert.doesNotMatch(compose, /\.\/config:\/app\/config/);
   assert.match(accounts, /runtimeConfigFile\("accounts\.json"\)/);
   assert.match(source, /writeConfigJsonAtomic[\s\S]+assertDurableConfigStorage\(\)/);
