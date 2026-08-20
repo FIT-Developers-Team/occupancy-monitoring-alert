@@ -59,17 +59,51 @@ const ThresholdSchema = z.object({
    * lokasinya memang benar-benar penuh, dan itu tidak boleh berbagi tingkat
    * keparahan dengan kasus pertama.
    *
-   * Dibuat dapat diatur, bukan ditanam di kode, karena batas antara "perlu
-   * dirapikan" dan "hentikan inbound" adalah keputusan operasional yang berbeda
-   * di setiap gudang.
+   * Dua sumbu dinilai bersama, sehingga tingkatannya membentuk tangga:
+   *
+   *   |            | tepat di kapasitas | melebihi kapasitas |
+   *   | satu basis | HIGH               | CRITICAL           |
+   *   | dua basis  | CRITICAL           | EMERGENCY          |
+   *
+   * Severity kondisi lain dapat diatur karena batas antara "perlu dirapikan"
+   * dan "hentikan inbound" adalah keputusan operasional yang berbeda di setiap
+   * gudang. Hanya kontrak dua basis tepat di max = Critical yang dikunci.
    */
   overflow_severity: z.object({
-    /** Persentase yang dianggap "melebihi kapasitas". 100 = tepat di kapasitas. */
-    over_pct: z.number().min(100).max(1000).default(100),
+    /**
+     * Batas fisik kapasitas selalu 100% dari max_qty/max_cbm efektif.
+     *
+     * Versi lama membolehkan admin menggeser angka ini sampai 1.000%. Itu
+     * membuat lokasi yang Qty dan CBM-nya sudah persis sama dengan nilai max
+     * tidak lagi Critical, sehingga arti "max" berubah menurut konfigurasi
+     * alert. Nilai lama tetap diterima agar deployment tidak gagal start, lalu
+     * dinormalisasi ke 100 pada pembacaan/penyimpanan berikutnya.
+     */
+    over_pct: z.number().min(100).max(1000).default(100).transform(() => 100 as const),
     /** Qty ATAU CBM melebihi kapasitas, sementara keduanya terukur. */
     single_basis: SeverityEnum.default("CRITICAL"),
     /** Qty DAN CBM sama-sama melebihi kapasitas. */
     dual_basis: SeverityEnum.default("EMERGENCY"),
+    /**
+     * Qty DAN CBM sama-sama TEPAT di kapasitas maksimum, tidak melebihinya.
+     *
+     * Kondisi ini terpisah dari "sama-sama melebihi" karena tindakannya
+     * berbeda: isinya persis sama dengan angka maksimum yang disetel, jadi
+     * lokasinya memang penuh dan harus berhenti menerima inbound, tetapi belum
+     * ada satu unit pun yang tidak punya tempat dan angka masternya masih
+     * konsisten dengan kenyataan. Bawaan Critical — satu tingkat di bawah
+     * Breach yang dipakai saat kapasitas benar-benar terlampaui.
+     */
+    // Invariant bisnis: dua basis tepat di max selalu Critical. Nilai lama
+    // tetap diterima untuk migrasi, tetapi tidak boleh mengubah kategorinya.
+    dual_at_capacity: SeverityEnum.default("CRITICAL").transform(() => "CRITICAL" as const),
+    /**
+     * Satu basis tepat di kapasitas maksimum sementara basis lainnya masih
+     * longgar. Bawaannya sengaja di bawah "tepat di kapasitas pada keduanya":
+     * satu pengukuran yang pas di angka maksimum belum membuktikan lokasinya
+     * penuh.
+     */
+    single_at_capacity: SeverityEnum.default("HIGH"),
     /**
      * Hanya satu dari dua basis yang punya kapasitas sahih.
      *
@@ -343,6 +377,8 @@ const CapacitySchema = z.object({
 });
 
 export type ThresholdConfig = z.infer<typeof ThresholdSchema>;
+/** Kebijakan penerjemah kondisi kapasitas → severity (lib/alerts/severity.ts). */
+export type OverflowSeverityConfig = ThresholdConfig["overflow_severity"];
 export type RulesConfig = z.infer<typeof RulesSchema>;
 export type RecipientsConfig = z.infer<typeof RecipientsSchema>;
 export type GoogleChatRouteConfig = z.infer<typeof GoogleChatRouteSchema>;
@@ -419,10 +455,10 @@ export function writeSection(section: ConfigSection, data: unknown): unknown {
   }
   // Penulisan atomik: berkas kebijakan yang terpotong karena proses mati di
   // tengah tulis akan membuat aplikasi gagal start pada restart berikutnya.
-  // 0o644: worker sinkronisasi Python membaca folder yang sama dan pada
-  // sebagian deployment berjalan sebagai pengguna berbeda dari aplikasi web.
-  // Berkas rahasia tidak lewat jalur ini — ia ditulis dengan 0o600 tersendiri.
-  writeConfigJsonAtomic(sectionFile(section, true), parsed, 0o644);
+  // Recipients memuat URL webhook aktif, sehingga hak aksesnya harus sama
+  // ketat dengan sidecar kredensial Superset. Seksi kebijakan lain tidak
+  // menyimpan secret dan tetap dapat dibaca worker/service terpisah.
+  writeConfigJsonAtomic(sectionFile(section, true), parsed, section === "recipients" ? 0o600 : 0o644);
   cache.delete(section);
   return parsed;
 }

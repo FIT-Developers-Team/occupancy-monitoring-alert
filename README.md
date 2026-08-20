@@ -114,10 +114,20 @@ perlu Python 3 dan `scripts/requirements.txt`; executable khusus dapat diatur
 lewat `WIOM_SYNC_PYTHON`. `WIOM_EMBEDDED_SYNC=0` hanya dipakai bila worker
 dijalankan sebagai service terpisah.
 
-Pada deployment single-image, pasang storage persisten ke `/app/db` dan
-`/app/config`. Dockerfile sudah mendeklarasikan kedua volume; pada panel hosting,
-pastikan volume yang sama dipakai kembali ketika redeploy agar database,
-SESSION_SECRET persisten, konfigurasi, dan kredensial Superset tidak hilang.
+Pada deployment single-image, pasang **satu storage persisten bernama tetap** ke
+`/app/db`. Folder ini memuat database, SESSION_SECRET persisten, akun,
+konfigurasi Settings, webhook, dan kredensial Superset. `/app/config` bukan lagi
+storage aktif; ia hanya dibaca untuk migrasi deployment lama. Default versi
+aplikasi yang tidak boleh tertutup volume disimpan di `/app/default-config`.
+
+Untuk Coolify berbasis Dockerfile, konfigurasi satu kali di **Configuration →
+Persistent Storage → Add → Volume Mount**: isi nama misalnya `wiom-data`,
+biarkan Source Path kosong, dan isi Destination Path `/app/db`, lalu redeploy.
+Gunakan volume resource yang sama pada setiap update dan jangan mengaktifkan
+cleanup unused volumes untuk volume produksi. Untuk instalasi yang sudah punya
+mount `/app/config`, pertahankan mount itu pada **upgrade pertama** agar isi lama
+dimigrasikan; setelah `db/runtime-config/` terisi dan backup diverifikasi, mount
+legacy tersebut tidak lagi diperlukan.
 
 Untuk Coolify self-hosted, buka **Servers → localhost → Advanced → Builds** dan
 atur **Deployment timeout (sec)** minimal `1800` (`3600` dianjurkan). Nilai ini
@@ -246,23 +256,30 @@ daftar alert sama sekali bila basis kebijakannya Qty dan Qty-nya masih longgar.
 - **Cron**: `deploy/crontab.example` (sync → tick → ringkasan harian 08:00 WIB `POST /api/cron/daily-summary`).
 - **Google Chat (real-time)**: buat *incoming webhook* di Space (Space → Apps & integrations → Webhooks → Add), lalu buat rute di **Pengaturan → Eskalasi**. Setiap rute memiliki nama, level, cakupan satu/beberapa WH, URL webhook, status aktif, serta daftar user ID untuk auto-tag. Masukkan `all` hanya bila seluruh Space harus ditag. Gunakan **Uji koneksi** sebelum menyimpan. Alert terkirim saat breach zona tercipta dan tiap eskalasi; alert yang sama tergabung satu thread (`threadKey = dedup_key`). Set `APP_BASE_URL` agar kartu membuka detail alert. Referensi format mention: `<users/USER_ID>` pada [dokumentasi Google Chat](https://developers.google.com/workspace/chat/format-messages).
 - **Penyimpanan konfigurasi (tahan deploy ulang)**: setiap perubahan dari halaman
-  Pengaturan — ambang, kapasitas, gudang, eskalasi, dan Superset Sync — ditulis ke
-  `db/runtime-config/` pada volume `/app/db`, bukan ke `config/`. Isi `config/`
-  ikut dibangun ke dalam image, jadi apa pun yang disimpan di sana kembali ke
-  nilai bawaan pada build berikutnya; `db/` bertahan. Aturannya:
-  - **Baca**: salinan runtime bila ada, jatuh ke `config/*.json` bila belum pernah disimpan.
+  Pengaturan — akun/signup, ambang, kapasitas, gudang, eskalasi, dan Superset
+  Sync beserta kredensialnya — ditulis ke `db/runtime-config/` pada volume
+  `/app/db`. Aturannya:
+  - **Baca**: salinan runtime bila ada; saat upgrade pertama, konfigurasi legacy
+    di `config/` menang atas default immutable di `default-config/`.
   - **Tulis**: selalu ke `db/runtime-config/`.
   - **Start pertama**: konfigurasi yang sedang berlaku disalin sekali ke folder
-    runtime, sehingga penyetelan instalasi lama ikut terselamatkan.
+    runtime, termasuk sidecar secret Superset, sehingga penyetelan instalasi
+    lama ikut terselamatkan.
+  - **Redeploy berikutnya**: file runtime yang sudah ada tidak pernah ditimpa
+    seed image. Runtime selalu memiliki precedence tertinggi.
   - **Kembali ke bawaan**: hapus berkas terkait dari `db/runtime-config/`.
-  - Lokasi folder dapat dipindah dengan `WIOM_RUNTIME_CONFIG_DIR`.
+  - Lokasi runtime otomatis mengikuti folder `DUCKDB_STATE_PATH`; override khusus
+    tetap tersedia melalui `WIOM_RUNTIME_CONFIG_DIR`.
   - Worker Python memakai urutan pencarian yang sama, jadi daemon dan aplikasi web
     selalu membaca `superset-sync.json` yang sama.
-  - Verifikasi: **Pengaturan → Ambang/Kapasitas** menampilkan folder penyimpanan
-    yang aktif, dan `GET /api/health` serta `GET /api/ready` melaporkan
+  - Verifikasi: halaman **Pengaturan** menampilkan peringatan bila storage tidak
+    dapat ditulis, sedangkan `GET /api/health` dan `GET /api/ready` melaporkan
     `config_storage`. `/api/ready` mengembalikan 503 bila folder itu tidak dapat
-    ditulis — sehingga deployment yang akan kehilangan setelan gagal lebih awal,
-    bukan diam-diam.
+    ditulis — sehingga deployment yang tidak dapat menyimpan setelan gagal lebih
+    awal, bukan diam-diam.
+  - **Backup**: backup seluruh volume `/app/db`, bukan hanya berkas `.duckdb`;
+    persistent storage melindungi dari pergantian container, tetapi bukan dari
+    penghapusan volume, disk rusak, atau kesalahan operator.
 - **Penerima lain**: kolom *Webhook Lain* per level menerima URL apa pun yang mau di-POST JSON alert (n8n, Apps Script, sistem tiket).
 - **Email**: `SMTP_*` di `.env` (kosong = dilewati).
 - **Docker**: `docker compose up -d --build` = dua service: web Node-only + managed sync. Scheduler tick/summary sudah menyatu di supervisor web, jadi tidak memerlukan container ketiga.

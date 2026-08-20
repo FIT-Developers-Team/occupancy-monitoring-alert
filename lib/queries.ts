@@ -13,6 +13,7 @@ import {
   getCapacity, getThresholds, getWarehouses, thresholdsFor, whMapSQL, whNameByCode,
 } from "@/lib/config";
 import { clearReadModelMemory, readModelCached } from "@/lib/read-model-cache";
+import { CAPACITY_LIMIT_PCT, CAPACITY_MATCH_TOLERANCE_PCT } from "@/lib/alerts/severity";
 import { DRIFT_TYPES, type SlocFilter, type SlocSort } from "@/lib/sloc-filter";
 import type {
   SlocOccupancy, WarehouseSummary, ZoneSummary, RackZoneSummary, TrendPoint, ForecastRow, StockLine, Basis, BasisMode,
@@ -1532,8 +1533,35 @@ interface DenseAggregateRow {
  * daftar sama sekali bila basis kebijakannya Qty dan Qty-nya masih longgar.
  * Mode ini tidak diekspos ke UI: ia menjawab "mana yang paling parah pada basis
  * apa pun", bukan "apa yang sedang saya lihat".
+ *
+ * Mode ini juga MENGURUTKAN berbeda: lihat `overflowReachSQL()`.
  */
 export type DenseRanking = BasisMode | "worst";
+
+/**
+ * Berapa banyak basis kapasitas yang sudah dicapai lokasi ini (0, 1, atau 2).
+ *
+ * Anggaran alert per pass dibatasi `sloc_alerts.max_alerts`, jadi URUTAN daftar
+ * menentukan lokasi mana yang benar-benar diberitakan. Mengurutkan pada
+ * persentase saja membelanjakan seluruh anggaran itu pada angka terbesar —
+ * padahal justru angka terbesar (satu basis 5.000% penuh) yang paling sering
+ * berarti kapasitas master salah, sementara lokasi yang Qty DAN CBM-nya
+ * sama-sama pas di kapasitas maksimum — dua pengukuran independen yang sepakat,
+ * dan kondisi paling layak ditindak — terdampar di dasar daftar dan tidak
+ * pernah muncul sama sekali di gudang yang memang kronis penuh.
+ *
+ * Peringkat ini hanya URUTAN, bukan perhitungan severity: tingkat keparahan
+ * tetap ditentukan sepenuhnya oleh classifyOverflow() supaya tidak ada dua
+ * sumber kebenaran yang bisa menyimpang. Keduanya berbagi satu tombol yang
+ * sama, batas fisik 100%, dan toleransi kesetaraan yang sama.
+ */
+function overflowReachSQL(): string {
+  const cut = CAPACITY_LIMIT_PCT - CAPACITY_MATCH_TOLERANCE_PCT;
+  // pct NULL (kapasitas basis itu tidak sahih) menghasilkan CASE NULL → 0,
+  // sehingga lokasi tanpa kapasitas CBM tidak pernah terhitung "dua basis".
+  return `(CASE WHEN pct_qty >= ${cut} THEN 1 ELSE 0 END`
+    + ` + CASE WHEN pct_cbm >= ${cut} THEN 1 ELSE 0 END)`;
+}
 
 async function loadDenseSlocs(
   wh?: string, minPct = 90, limit = 200, view: DenseRanking = "policy"
@@ -1551,6 +1579,9 @@ async function loadDenseSlocs(
     // kapasitas sahih tetap dinilai dari basis itu alih-alih hilang.
     : view === "worst" ? "greatest(pct_qty, pct_cbm)"
     : "pct";
+  // Basis tampilan tetap diurut murni pada persentasenya; hanya mesin alert
+  // yang mendahulukan kesepakatan dua basis (lihat overflowReachSQL()).
+  const rankExpression = view === "worst" ? overflowReachSQL() : "0";
   const params: unknown[] = scope.wh ? [scope.wh, safeMinimum, safeLimit] : [safeMinimum, safeLimit];
 
   // Rank at source instead of materialising every operational SLOC in Node.
@@ -1600,7 +1631,7 @@ async function loadDenseSlocs(
               ) AS pct
        FROM percentages
      ), view_scored AS (
-       SELECT *, ${viewExpression} AS view_pct
+       SELECT *, ${viewExpression} AS view_pct, ${rankExpression} AS overflow_rank
        FROM policy_scored
      )
      SELECT sloc_code, wh, zone, storage_handling AS storage, basis,
@@ -1614,7 +1645,7 @@ async function loadDenseSlocs(
             qty_valid, cbm_valid
      FROM view_scored
      WHERE view_pct IS NOT NULL AND view_pct >= ?
-     ORDER BY view_pct DESC, wh, sloc_code
+     ORDER BY overflow_rank DESC, view_pct DESC, wh, sloc_code
      LIMIT ?`,
     params,
   );

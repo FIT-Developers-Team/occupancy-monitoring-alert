@@ -18,7 +18,7 @@ export default async function SettingsPage() {
   // folder di server bukan informasi yang membantu admin dan tidak perlu
   // ditampilkan di antarmuka; /api/health tetap melaporkannya untuk monitoring.
   const info = configStorageInfo();
-  const storage = { writable: info.writable };
+  const storage = { writable: info.writable, durable: info.durable };
   return (
     <div className="dashboard-page">
       {/* One heading, then the controls. The tab strip already names each

@@ -31,6 +31,26 @@ function configuredSecret() {
   ].find(valid);
 }
 
+/**
+ * Satukan seluruh state yang harus tahan redeploy di sekitar state DuckDB.
+ * Ini harus dilakukan sebelum worker maupun server Next dibuat agar Node dan
+ * Python menerima keputusan path yang sama lewat environment.
+ */
+function preparePersistentPaths() {
+  const stateDb = path.resolve(
+    clean(process.env.DUCKDB_STATE_PATH) || "./db/app_state.duckdb"
+  );
+  process.env.DUCKDB_STATE_PATH = stateDb;
+  if (!clean(process.env.WIOM_RUNTIME_CONFIG_DIR)) {
+    process.env.WIOM_RUNTIME_CONFIG_DIR = path.join(
+      path.dirname(stateDb),
+      "runtime-config",
+    );
+  }
+}
+
+preparePersistentPaths();
+
 function secretFilePath() {
   if (process.env.SESSION_SECRET_FILE?.trim()) {
     return path.resolve(process.env.SESSION_SECRET_FILE.trim());
@@ -137,8 +157,17 @@ function syncHeartbeatPath() {
   const configFile = path.resolve(
     clean(process.env.WIOM_SYNC_CONFIG) || "config/superset-sync.json"
   );
+  const runtimeDir = path.resolve(
+    clean(process.env.WIOM_RUNTIME_CONFIG_DIR) ||
+    path.join(path.dirname(process.env.DUCKDB_STATE_PATH), "runtime-config")
+  );
+  const runtimeConfig = path.join(runtimeDir, path.basename(configFile));
+  const effectiveConfig = fs.existsSync(runtimeConfig) ? runtimeConfig : configFile;
   try {
-    const config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    // Worker Python mengutamakan runtime-config. Supervisor harus membaca file
+    // efektif yang sama; bila tidak, path heartbeat kustom hasil simpan Settings
+    // akan terlihat offline setelah redeploy walau worker sebenarnya sehat.
+    const config = JSON.parse(fs.readFileSync(effectiveConfig, "utf8"));
     return path.resolve(
       clean(config?.control?.heartbeat_file) || "db/.superset-sync-heartbeat.json"
     );

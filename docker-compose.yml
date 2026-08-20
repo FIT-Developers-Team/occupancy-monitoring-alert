@@ -10,13 +10,12 @@ services:
     environment:
       WIOM_EMBEDDED_SYNC: "0"
       WIOM_SYNC_REQUIRED: "0"
+      DUCKDB_STATE_PATH: /app/db/app_state.duckdb
+      WIOM_RUNTIME_CONFIG_DIR: /app/db/runtime-config
     volumes:
       # WAJIB permanen: history + state DuckDB DAN db/runtime-config, tempat
       # setiap konfigurasi yang disimpan dari halaman Pengaturan mendarat.
       - ./db:/app/db
-      # Nilai awal bawaan image; boleh diedit langsung, tetapi penyimpanan dari
-      # UI selalu jatuh ke db/runtime-config agar tahan deploy ulang.
-      - ./config:/app/config
     depends_on:
       sync:
         condition: service_healthy
@@ -39,9 +38,10 @@ services:
       SUPERSET_COOKIE_HEADER: ${SUPERSET_COOKIE_HEADER:-}
       SUPERSET_SESSION_COOKIE: ${SUPERSET_SESSION_COOKIE:-}
       SUPERSET_ACCESS_TOKEN: ${SUPERSET_ACCESS_TOKEN:-}
+      DUCKDB_STATE_PATH: /app/db/app_state.duckdb
+      WIOM_RUNTIME_CONFIG_DIR: /app/db/runtime-config
     volumes:
       - ./db:/app/db
-      - ./config:/app/config
     command: ["python3", "scripts/superset_to_duckdb.py", "--config", "config/superset-sync.json", "--daemon"]
     healthcheck:
       test:

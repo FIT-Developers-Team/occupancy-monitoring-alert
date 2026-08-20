@@ -1,7 +1,14 @@
 // Alert engine fase saat ini:
 //   1. Okupansi zona dan lokasi dinilai pada KEDUA basis kapasitas, bukan hanya
-//      basis kebijakan. Satu basis melewati kapasitas -> Critical; Qty dan CBM
-//      sama-sama melewati kapasitas -> Breach. Lihat lib/alerts/severity.ts.
+//      basis kebijakan, dan dibedakan antara TEPAT di kapasitas maksimum dengan
+//      MELEBIHI kapasitas:
+//        satu basis tepat di kapasitas          -> High
+//        satu basis melebihi kapasitas          -> Critical
+//        Qty dan CBM tepat di kapasitas         -> Critical
+//        satu basis lewat + satu basis tepat     -> Breach
+//        Qty dan CBM melebihi kapasitas         -> Breach
+//      Lihat lib/alerts/severity.ts. Kondisi dua basis tepat di max dikunci
+//      Critical; tingkat kondisi lain tetap dapat diatur admin.
 //   2. Hysteresis mencegah alert berulang saat nilai berosilasi dekat ambang.
 //   3. Alert pulih otomatis setelah zona turun di bawah breach - buffer.
 //   4. Alert tanpa acknowledgement naik mengikuti level dinamis. Jam eskalasi
@@ -18,7 +25,20 @@ import {
   type DenseSloc,
 } from "@/lib/queries";
 import { dispatchThroughLevel, dispatchToLevel, type DispatchResult } from "@/lib/notify/dispatch";
-import { classifyOverflow, overflowReason, type OverflowVerdict } from "@/lib/alerts/severity";
+import {
+  basisNames,
+  CAPACITY_LIMIT_PCT,
+  CAPACITY_MATCH_TOLERANCE_PCT,
+  classifyOverflow,
+  isAtCapacityOnly,
+  isDualBasis,
+  isZoneCapacityRecovered,
+  overflowReason,
+  shouldKeepSlocCapacityAlertOpen,
+  shouldTriggerSlocCapacityAlert,
+  shouldTriggerZoneCapacityAlert,
+  type OverflowVerdict,
+} from "@/lib/alerts/severity";
 import { audit } from "@/lib/audit";
 import type { Alert, Severity, ZoneSummary } from "@/types";
 
@@ -224,17 +244,29 @@ function basisBreakdown(row: {
 
 function zoneViolation(zone: ZoneSummary, verdict: OverflowVerdict): Violation {
   const threshold = thresholdsFor(zone.wh).breach;
-  const headline = verdict.kind === "dual_basis"
-    ? `Zona ${zone.zone} di ${zone.wh} melewati kapasitas pada Qty dan CBM`
-    : verdict.over.length
-      ? `Zona ${zone.zone} di ${zone.wh} melewati kapasitas ${verdict.over[0].toUpperCase()}`
+  const dual = isDualBasis(verdict);
+  const mixed = verdict.kind === "dual_mixed";
+  // "Tepat di kapasitas" hanya berlaku bila TIDAK ADA basis yang melebihinya;
+  // begitu satu basis lewat, judulnya harus berkata lewat.
+  const exact = isAtCapacityOnly(verdict);
+  const headline =
+    dual && exact ? `Zona ${zone.zone} di ${zone.wh} tepat di kapasitas maksimum pada Qty dan CBM`
+    : mixed ? `Zona ${zone.zone} di ${zone.wh}: ${basisNames(verdict.exceeded)} melewati kapasitas, ${basisNames(verdict.at_capacity)} tepat di batas`
+    : dual ? `Zona ${zone.zone} di ${zone.wh} melewati kapasitas pada Qty dan CBM`
+    : verdict.reached.length
+      ? `Zona ${zone.zone} di ${zone.wh} ${exact ? "tepat di kapasitas maksimum" : "melewati kapasitas"} ${basisNames(verdict.reached)}`
       : `Zona ${zone.zone} di ${zone.wh} mencapai ${zone.pct}%`;
-  const action = verdict.kind === "dual_basis"
-    ? "Hentikan inbound ke zona ini dan prioritaskan outbound: dua pengukuran independen sepakat zona sudah penuh."
-    : "Tahan atau alihkan inbound zona ini, prioritaskan outbound, dan pastikan kapasitas master basis yang terlampaui memang benar.";
+  const action =
+    dual && exact
+      ? "Hentikan inbound ke zona ini dan prioritaskan outbound: Qty dan CBM sama-sama persis di angka kapasitas maksimum, jadi barang berikutnya yang masuk sudah tidak punya tempat."
+      : mixed
+        ? "Hentikan inbound dan prioritaskan outbound: Qty dan CBM sama-sama sudah mencapai batas, dan salah satunya sudah melebihi kapasitas."
+      : dual
+        ? "Hentikan inbound ke zona ini dan prioritaskan outbound: dua pengukuran independen sepakat zona sudah penuh."
+        : "Tahan atau alihkan inbound zona ini, prioritaskan outbound, dan pastikan kapasitas master basis yang mencapai batas memang benar.";
   return {
     rule_id: ZONE_BREACH_RULE,
-    rule_name: "Breach Okupansi Zona",
+    rule_name: "Kondisi Kapasitas Zona",
     severity: verdict.severity,
     warehouse_code: zone.wh,
     zone: zone.zone,
@@ -257,7 +289,7 @@ async function resolveTriggersDisabledForCurrentPhase(result: TickResult): Promi
   // existing installation switches from legacy stock rules to zone-only mode.
   await stateExec(
     `UPDATE alerts SET status = 'RESOLVED', resolved_by = 'system', resolved_at = now(),
-        resolution_note = 'Trigger dinonaktifkan pada fase saat ini; hanya breach okupansi per zona yang aktif.',
+        resolution_note = 'Trigger dinonaktifkan pada fase saat ini; hanya alert kapasitas zona dan lokasi yang aktif.',
         next_escalation_at = NULL, updated_at = now()
      WHERE status IN ${OPEN} AND rule_id NOT IN (?, ?)`,
     [ZONE_BREACH_RULE, SLOC_BREACH_RULE],
@@ -270,19 +302,10 @@ async function resolveTriggersDisabledForCurrentPhase(result: TickResult): Promi
  *
  * Pemulihan harus memakai ukuran yang sama dengan pemicunya. Karena pemicu kini
  * juga melihat basis non-kebijakan, sebuah zona tidak boleh dinyatakan pulih
- * selama masih ada basis mana pun yang melebihi kapasitas — kalau tidak, zona
+ * selama masih ada basis mana pun yang mencapai kapasitas — kalau tidak, zona
  * yang 300% penuh menurut CBM akan ditutup otomatis begitu basis kebijakan
  * Qty-nya turun di bawah ambang.
  */
-function zoneRecovered(
-  zone: ZoneSummary,
-  verdict: OverflowVerdict,
-  threshold: { breach: number; hysteresis_buffer: number },
-): boolean {
-  if (verdict.over.length) return false;
-  return zone.pct < threshold.breach - threshold.hysteresis_buffer;
-}
-
 async function evaluateZoneBreaches(result: TickResult): Promise<void> {
   const zones = await getZoneSummary();
   result.evaluated_rules.push(ZONE_BREACH_RULE);
@@ -292,10 +315,10 @@ async function evaluateZoneBreaches(result: TickResult): Promise<void> {
     const stateKey = `occ-zone-breach:${zone.wh}:${zone.zone}`;
     const armed = (await getState(stateKey)) === "1";
     const verdict = classifyOverflow(zone);
-    // Melebihi kapasitas pada basis APA PUN sudah cukup untuk beralert; ambang
+    // Mencapai kapasitas pada basis APA PUN sudah cukup untuk beralert; ambang
     // breach tetap dihormati supaya gudang yang menyetel breach di bawah 100%
     // tidak kehilangan peringatan dininya.
-    const breaching = verdict.over.length > 0 || zone.pct >= threshold.breach;
+    const breaching = shouldTriggerZoneCapacityAlert(verdict, zone.pct, threshold.breach);
     const dedupKey = `${ZONE_BREACH_RULE}:${zone.wh}:${zone.zone}`;
 
     if (breaching && !armed) {
@@ -337,13 +360,18 @@ async function evaluateZoneBreaches(result: TickResult): Promise<void> {
       continue;
     }
 
-    if (armed && zoneRecovered(zone, verdict, threshold)) {
+    if (armed && isZoneCapacityRecovered(
+      verdict,
+      zone.pct,
+      threshold.breach,
+      threshold.hysteresis_buffer,
+    )) {
       await setState(stateKey, "0");
       const open = await openAlertByKey(dedupKey);
       if (open) {
         await systemResolve(
           open.alert_id,
-          `Okupansi zona ${zone.wh}/${zone.zone} turun ke ${zone.pct}% dan tidak ada basis yang melebihi kapasitas (di bawah ${threshold.breach}% - buffer ${threshold.hysteresis_buffer}%).`,
+          `Okupansi zona ${zone.wh}/${zone.zone} turun ke ${zone.pct}% dan tidak ada basis yang mencapai kapasitas (di bawah ${threshold.breach}% - buffer ${threshold.hysteresis_buffer}%).`,
         );
         result.auto_resolved++;
       }
@@ -353,45 +381,94 @@ async function evaluateZoneBreaches(result: TickResult): Promise<void> {
 
 function slocViolation(sloc: DenseSloc, minPct: number, verdict: OverflowVerdict): Violation {
   const scope = `zona ${sloc.zone || "—"}, ${sloc.storage || "penyimpanan umum"}`;
-  const headline = verdict.kind === "dual_basis"
-    ? `${sloc.sloc_code} melebihi kapasitas Qty dan CBM`
-    : verdict.over.length
-      ? `${sloc.sloc_code} melebihi kapasitas ${verdict.over[0].toUpperCase()} (${id(sloc.ranking_pct)}%)`
+  const dual = isDualBasis(verdict);
+  const mixed = verdict.kind === "dual_mixed";
+  const exact = isAtCapacityOnly(verdict);
+  const headline =
+    dual && exact ? `${sloc.sloc_code} tepat di kapasitas maksimum Qty dan CBM`
+    : mixed ? `${sloc.sloc_code}: ${basisNames(verdict.exceeded)} melebihi kapasitas, ${basisNames(verdict.at_capacity)} tepat di batas`
+    : dual ? `${sloc.sloc_code} melebihi kapasitas Qty dan CBM`
+    : verdict.reached.length
+      ? `${sloc.sloc_code} ${exact ? "tepat di kapasitas maksimum" : "melebihi kapasitas"} ${basisNames(verdict.reached)} (${id(sloc.ranking_pct)}%)`
       : `${sloc.sloc_code} terisi ${id(sloc.ranking_pct)}% dari kapasitas`;
-  const action = verdict.kind === "dual_basis"
-    ? "Pindahkan kelebihan ke lokasi kosong terdekat: unit maupun volume sama-sama sudah melampaui kapasitas, jadi ini bukan sekadar angka master yang salah."
-    : "Periksa penempatan, pindahkan kelebihan ke lokasi kosong terdekat, atau perbarui kapasitas master pada basis yang terlampaui bila angkanya memang salah.";
+  const action =
+    dual && exact
+      ? "Berhenti menempatkan barang di lokasi ini: unit maupun volume sama-sama persis di angka kapasitas maksimum, jadi tambahan berikutnya pasti tidak muat."
+      : mixed
+        ? "Hentikan penempatan tambahan dan pindahkan kelebihan ke lokasi kosong terdekat: kedua basis sudah penuh dan salah satunya sudah melampaui kapasitas."
+      : dual
+        ? "Pindahkan kelebihan ke lokasi kosong terdekat: unit maupun volume sama-sama sudah melampaui kapasitas, jadi ini bukan sekadar angka master yang salah."
+        : "Periksa penempatan, pindahkan kelebihan ke lokasi kosong terdekat, atau perbarui kapasitas master pada basis yang mencapai batas bila angkanya memang salah.";
+  // Kalimat pemicu harus menyebut alasan yang sebenarnya. Lokasi yang Qty dan
+  // CBM-nya sama-sama mencapai kapasitas masuk daftar TANPA melewati ambang
+  // lokasi padat, jadi menyebut ambang itu di sini akan menjadi keterangan
+  // yang salah pada justru alert yang paling penting.
+  const trigger = dual
+    ? "Qty dan CBM sama-sama mencapai kapasitas"
+    : `melewati ambang lokasi padat ${minPct}%`;
   return {
     rule_id: SLOC_BREACH_RULE,
-    rule_name: "Lokasi Melebihi Kapasitas",
-    // Tingkat keparahan mengikuti berapa banyak basis yang terlampaui, bukan
-    // satu nilai tetap. Satu lokasi yang hanya lewat pada satu basis memang
-    // pekerjaan housekeeping; yang lewat pada keduanya bukan.
+    rule_name: "Kondisi Kapasitas Lokasi",
+    // Tingkat keparahan mengikuti berapa banyak basis yang mencapai kapasitas
+    // dan apakah kapasitasnya benar-benar terlampaui, bukan satu nilai tetap.
+    // Satu lokasi yang hanya lewat pada satu basis memang pekerjaan
+    // housekeeping; yang lewat pada keduanya bukan.
     severity: verdict.severity,
     warehouse_code: sloc.wh,
     zone: sloc.zone || null,
     sloc_code: sloc.sloc_code,
     sku: null,
     title: headline,
-    detail: `Lokasi ${sloc.sloc_code} (${scope}) melewati ambang ${minPct}%. ${overflowReason(verdict)} ${basisBreakdown(sloc)}. Berisi ${id(sloc.sku_count)} SKU. ${action}`,
+    detail: `Lokasi ${sloc.sloc_code} (${scope}) masuk daftar alert karena ${trigger}. ${overflowReason(verdict)} ${basisBreakdown(sloc)}. Berisi ${id(sloc.sku_count)} SKU. ${action}`,
     dedup_key: `${SLOC_BREACH_RULE}:${sloc.wh}:${sloc.sloc_code}`,
   };
 }
 
+/**
+ * Apakah lokasi ini layak beralert.
+ *
+ * `sloc_alerts.min_pct` (bawaan 110%) adalah pengendali VOLUME notifikasi:
+ * ratusan lokasi duduk sedikit di atas kapasitas Qty-nya setiap saat, dan
+ * memberitakan semuanya membuat Space tidak terbaca. Ambang itu tetap berlaku
+ * untuk kondisi satu basis.
+ *
+ * Kondisi dua basis dikecualikan dengan sengaja. Ketika Qty DAN CBM sama-sama
+ * mencapai kapasitas, dua pengukuran independen sepakat lokasinya memang penuh
+ * — tidak ada penjelasan "angka masternya salah" yang tersisa. Menahan alert
+ * itu sampai 110% berarti menuntut lokasinya kelebihan sepersepuluh dulu
+ * sebelum siapa pun diberi tahu, padahal 100% pada keduanya justru kondisi
+ * yang paling layak ditindak.
+ */
 async function evaluateSlocBreaches(result: TickResult): Promise<void> {
-  const policy = getThresholds().sloc_alerts;
+  const thresholds = getThresholds();
+  const policy = thresholds.sloc_alerts;
   if (!policy.enabled) return;
   result.evaluated_rules.push(SLOC_BREACH_RULE);
 
+  // Lantai pemindaian, BUKAN ambang alert.
+  //
+  // Daftar kandidat harus turun sampai batas kapasitas itu sendiri, kalau tidak
+  // lokasi yang Qty dan CBM-nya sama-sama tepat 100% tidak pernah terlihat oleh
+  // mesin ini sama sekali — dan aturan "dua basis di kapasitas maksimum =
+  // Critical" tidak akan pernah dapat berbunyi. Yang benar-benar diberitakan
+  // tetap disaring shouldTriggerSlocCapacityAlert() di bawah.
+  //
+  // Toleransi ikut dikurangkan karena penyaringan di SQL memakai persentase
+  // mentah sementara penilaian memakai angka yang sudah dibulatkan satu desimal
+  // seperti yang tampil di layar: tanpa ini, lokasi 99,97% yang terbaca "100,0%"
+  // tersaring keluar justru sebelum sempat dinilai.
+  const capacityFloor = CAPACITY_LIMIT_PCT - CAPACITY_MATCH_TOLERANCE_PCT;
+  const scanFloor = Math.min(policy.min_pct, capacityFloor);
   // Diperingkat pada basis TERPARAH di antara Qty dan CBM, bukan basis
   // kebijakan. Dengan pemeringkatan lama, lokasi yang 5.000% penuh menurut CBM
   // tidak pernah masuk daftar bila basis kebijakannya Qty dan Qty-nya longgar —
   // justru kasus yang paling perlu dilihat orang.
-  const slocs = await getDenseSlocs(undefined, policy.min_pct, policy.max_alerts, "worst");
+  const slocs = await getDenseSlocs(undefined, scanFloor, policy.max_alerts, "worst");
   const stillBreaching = new Set<string>();
 
   for (const sloc of slocs) {
     const verdict = classifyOverflow(sloc);
+    if (!shouldTriggerSlocCapacityAlert(verdict, policy.min_pct)) continue;
     const violation = slocViolation(sloc, policy.min_pct, verdict);
     stillBreaching.add(violation.dedup_key);
     const existing = await openAlertByKey(violation.dedup_key);
@@ -451,12 +528,14 @@ async function evaluateSlocBreaches(result: TickResult): Promise<void> {
     }
     const verdict = classifyOverflow(reading);
     const worst = verdict.worstPct ?? 0;
-    // Ambang pemulihan sama dengan ambang pemicu, dan tetap terbuka selama ada
-    // basis mana pun yang melebihi kapasitas.
-    if (verdict.over.length || worst >= policy.min_pct) continue;
+    // Alert tetap terbuka selama ada basis mana
+    // pun yang masih mencapai kapasitas, atau selama masih di atas ambang
+    // lokasi padat. Menutupnya lebih awal dari itu membuat alert yang sama
+    // terbuka dan tertutup bergantian setiap tick.
+    if (shouldKeepSlocCapacityAlertOpen(verdict, policy.min_pct)) continue;
     await systemResolve(
       alert.alert_id,
-      `Lokasi ${alert.sloc_code} turun ke ${Math.round(worst * 10) / 10}% dan tidak ada basis yang melebihi kapasitas (ambang ${policy.min_pct}%).`,
+      `Lokasi ${alert.sloc_code} turun ke ${Math.round(worst * 10) / 10}% dan tidak ada basis yang mencapai kapasitas (ambang ${policy.min_pct}%).`,
     );
     result.auto_resolved++;
   }

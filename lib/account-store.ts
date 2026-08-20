@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomBytes, scryptSync } from "node:crypto";
 import type { Role } from "@/types";
+import { runtimeConfigFile, writeConfigJsonAtomic } from "@/lib/runtime-config";
 
 export type AccountStatus = "pending" | "active" | "rejected" | "disabled";
 
@@ -56,10 +57,7 @@ export interface PublicAccount {
   reset_contact_email?: string;
 }
 
-const RUNTIME_CONFIG_DIR = process.env.WIOM_RUNTIME_CONFIG_DIR?.trim()
-  ? path.resolve(process.env.WIOM_RUNTIME_CONFIG_DIR.trim())
-  : path.join(process.cwd(), "db", "runtime-config");
-const STORE_FILE = path.join(RUNTIME_CONFIG_DIR, "accounts.json");
+const STORE_FILE = runtimeConfigFile("accounts.json");
 const LEGACY_FILE = path.join(process.cwd(), "config", "users.json");
 let cachedStore: { mtimeMs: number; value: AccountStoreFile } | null = null;
 
@@ -68,10 +66,7 @@ const normalizeUsername = (value: string) => value.trim().toLowerCase();
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 
 function atomicWrite(value: AccountStoreFile): void {
-  fs.mkdirSync(path.dirname(STORE_FILE), { recursive: true });
-  const temp = `${STORE_FILE}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(temp, STORE_FILE);
+  writeConfigJsonAtomic(STORE_FILE, value, 0o600);
   cachedStore = { mtimeMs: fs.statSync(STORE_FILE).mtimeMs, value };
 }
 

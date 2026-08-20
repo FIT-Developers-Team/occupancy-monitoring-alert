@@ -19,6 +19,8 @@ RUN set -eux \
 COPY scripts/requirements.txt ./scripts/requirements.txt
 RUN pip install --no-cache-dir -r scripts/requirements.txt
 COPY scripts/superset_to_duckdb.py ./scripts/superset_to_duckdb.py
+COPY config ./config
+COPY config ./default-config
 # The canonical schema must also live OUTSIDE /app/db: that path is a volume, so
 # an empty mount hides the copy shipped there and the sync would then invent its
 # own tables — losing the vw_sloc / vw_stock_latest views the dashboard reads.
@@ -42,9 +44,13 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV WIOM_EMBEDDED_SYNC=0
 ENV WIOM_SYNC_REQUIRED=0
+ENV WIOM_RUNTIME_CONFIG_DIR=/app/db/runtime-config
+ENV WIOM_BUNDLED_CONFIG_DIR=/app/default-config
+ENV WIOM_REQUIRE_PERSISTENT_STORAGE=1
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/config ./config
+COPY --from=build /app/config ./default-config
 COPY --from=build /app/db/schema.sql ./db/schema.sql
 COPY --from=build /app/scripts/start-production.mjs ./scripts/start-production.mjs
 RUN rm -rf node_modules/@img node_modules/sharp \
@@ -55,10 +61,9 @@ RUN rm -rf node_modules/@img node_modules/sharp \
 # DAN konfigurasi runtime (db/runtime-config) hidup di sana. Selama folder ini
 # bertahan, semua yang disimpan admin selamat dari deploy ulang.
 #
-# /app/config hanya berisi NILAI AWAL bawaan image. Ia tetap didaftarkan sebagai
-# volume agar instalasi lama yang masih menyimpan kebijakan di sana terbaca dan
-# ikut dipindahkan ke db/runtime-config pada start pertama image ini.
-VOLUME ["/app/db", "/app/config"]
+# Tidak ada instruksi VOLUME anonim. Hosting wajib memasang named volume/bind
+# mount yang bernama tetap ke /app/db; readiness menolak filesystem container.
+# /app/config lama boleh tetap terpasang pada upgrade pertama untuk migrasi.
 EXPOSE 3000
 HEALTHCHECK --start-period=30s --interval=15s --timeout=5s --retries=4 \
   CMD node -e "fetch('http://127.0.0.1:3000/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
@@ -70,6 +75,9 @@ ENV NODE_ENV=production
 ENV WIOM_EMBEDDED_SYNC=1
 ENV WIOM_SYNC_REQUIRED=1
 ENV WIOM_API_SYNC_BOOTSTRAP=1
+ENV WIOM_RUNTIME_CONFIG_DIR=/app/db/runtime-config
+ENV WIOM_BUNDLED_CONFIG_DIR=/app/default-config
+ENV WIOM_REQUIRE_PERSISTENT_STORAGE=1
 # Next standalone already contains only the traced production dependencies.
 # The final image starts from the Python sync stage, so Python is not copied
 # into another base as one large duplicate layer. Only the Node executable is
@@ -78,6 +86,7 @@ COPY --from=deps /usr/local/bin/node /usr/local/bin/node
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/config ./config
+COPY --from=build /app/config ./default-config
 COPY --from=build /app/db/schema.sql ./db/schema.sql
 COPY --from=build /app/scripts/start-production.mjs ./scripts/start-production.mjs
 COPY --from=build /app/scripts/superset_to_duckdb.py ./scripts/superset_to_duckdb.py
@@ -97,10 +106,9 @@ RUN rm -rf node_modules/@img node_modules/sharp \
 # DAN konfigurasi runtime (db/runtime-config) hidup di sana. Selama folder ini
 # bertahan, semua yang disimpan admin selamat dari deploy ulang.
 #
-# /app/config hanya berisi NILAI AWAL bawaan image. Ia tetap didaftarkan sebagai
-# volume agar instalasi lama yang masih menyimpan kebijakan di sana terbaca dan
-# ikut dipindahkan ke db/runtime-config pada start pertama image ini.
-VOLUME ["/app/db", "/app/config"]
+# Tidak ada instruksi VOLUME anonim. Hosting wajib memasang named volume/bind
+# mount yang bernama tetap ke /app/db; readiness menolak filesystem container.
+# Seluruh state baru hanya punya satu destination persisten.
 EXPOSE 3000
 HEALTHCHECK --start-period=30s --interval=15s --timeout=5s --retries=4 \
   CMD node -e "fetch('http://127.0.0.1:3000/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

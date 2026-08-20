@@ -9,6 +9,7 @@ import { configStorageInfo } from "@/lib/runtime-config";
 
 export async function GET() {
   const checks: Record<string, unknown> = { history_db: historyDbExists() };
+  let configStorageHealthy = false;
   const session = sessionSecretStatus();
   checks.authentication = session.configured
     ? {
@@ -32,10 +33,14 @@ export async function GET() {
     const storage = configStorageInfo();
     checks.config_storage = {
       writable: storage.writable,
+      durable: storage.durable,
+      persistent_mount: storage.persistentMount,
+      mount_required: storage.durabilityRequired,
       persisted: storage.persisted.length,
       using_image_defaults: storage.usingSeed.length,
       reason: storage.reason,
     };
+    configStorageHealthy = storage.durable;
   } catch (e) {
     checks.config = `error: ${(e as Error).message}`;
   }
@@ -79,6 +84,7 @@ export async function GET() {
     && session.configured
     && accounts.ready
     && checks.config === "ok"
+    && configStorageHealthy
     && checks.state_db === "ok"
     && checks.snapshot_fresh === true;
   return NextResponse.json(

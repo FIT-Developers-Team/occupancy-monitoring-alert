@@ -35,6 +35,8 @@ interface OverflowSeverity {
   over_pct: number;
   single_basis: Severity;
   dual_basis: Severity;
+  dual_at_capacity: Severity;
+  single_at_capacity: Severity;
   single_measurable: Severity;
   threshold_only: Severity;
 }
@@ -46,9 +48,14 @@ interface Thresholds {
   overflow_severity?: OverflowSeverity;
 }
 
-const OVERFLOW_ROWS: Array<{ key: keyof Omit<OverflowSeverity, "over_pct">; labelKey: string; hintKey: string }> = [
+// Urut dari yang paling berat ke yang paling ringan, sehingga tangganya
+// terbaca sebagai tangga: dua basis lewat → dua basis pas di kapasitas → satu
+// basis lewat → satu basis pas di kapasitas.
+const OVERFLOW_ROWS: Array<{ key: keyof Omit<OverflowSeverity, "over_pct">; labelKey: string; hintKey: string; locked?: boolean }> = [
   { key: "dual_basis", labelKey: "set.ui.overflow.dual", hintKey: "set.ui.overflow.dualHint" },
+  { key: "dual_at_capacity", labelKey: "set.ui.overflow.dualAt", hintKey: "set.ui.overflow.dualAtHint", locked: true },
   { key: "single_basis", labelKey: "set.ui.overflow.single", hintKey: "set.ui.overflow.singleHint" },
+  { key: "single_at_capacity", labelKey: "set.ui.overflow.singleAt", hintKey: "set.ui.overflow.singleAtHint" },
   { key: "single_measurable", labelKey: "set.ui.overflow.ambiguous", hintKey: "set.ui.overflow.ambiguousHint" },
   { key: "threshold_only", labelKey: "set.ui.overflow.thresholdOnly", hintKey: "set.ui.overflow.thresholdOnlyHint" },
 ];
@@ -80,6 +87,8 @@ interface Capacity {
 export interface ConfigStorage {
   /** Apakah penyimpanan permanen dapat ditulis pada deployment ini. */
   writable: boolean;
+  /** Apakah deployment dapat membuktikan storage tahan penggantian container. */
+  durable: boolean;
 }
 interface CapMeta {
   warehouses: string[]; zones: Record<string, string[]>;
@@ -271,10 +280,10 @@ export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
           berkasnya disimpan. Peringatan hanya muncul bila penyimpanan tidak
           dapat ditulis — di situ setiap perubahan akan hilang saat container
           dibuat ulang, dan itu harus diketahui sebelum menyimpan. */}
-      {!storage.writable && (
+      {!storage.durable && (
         <div className="config-storage-note is-error" role="alert">
           <span className="eyebrow">{t("set.ui.storage.title")}</span>
-          <p>{t("set.ui.storage.readOnly")}</p>
+          <p>{t(storage.writable ? "set.ui.storage.notPersistent" : "set.ui.storage.readOnly")}</p>
         </div>
       )}
 
@@ -700,7 +709,7 @@ export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
 
           {/* Ambang di atas menjawab "kapan sesuatu layak diberi alert". Blok
               ini menjawab "seberapa buruk" — dan itu ditentukan oleh berapa
-              banyak basis kapasitas yang terlampaui, bukan oleh satu angka. */}
+              banyak basis yang mencapai/melewati kapasitas, bukan satu angka. */}
           {overflow && (
             <div className="card card-pad space-y-3">
               <div>
@@ -709,13 +718,12 @@ export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
                   {t("set.ui.overflow.intro")}
                 </p>
               </div>
-              <label className="flex flex-wrap items-center gap-2 text-[11.5px]">
+              <div className="flex flex-wrap items-center gap-2 text-[11.5px]">
                 <span className="eyebrow">{t("set.ui.overflow.overPct")}</span>
-                <input type="number" min={100} max={1000} step={1} className="input num w-24"
-                  value={overflow.over_pct}
-                  onChange={(e) => setOverflow({ over_pct: Number(e.target.value) })} />
+                <input type="number" min={100} max={100} step={1} className="input num w-24"
+                  value={overflow.over_pct} readOnly disabled aria-label={t("set.ui.overflow.overPct")} />
                 <span style={{ color: "var(--text-muted)" }}>{t("set.ui.overflow.overPctHint")}</span>
-              </label>
+              </div>
               <div className="overflow-severity-grid">
                 {OVERFLOW_ROWS.map((row) => (
                   <div key={row.key} className="overflow-severity-row">
@@ -727,7 +735,7 @@ export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
                       <span className={`badge badge-${SEVERITY_TONE_CLASS[overflow[row.key]].replace("severity-", "")}`}>
                         {t(`severity.${overflow[row.key]}`)}
                       </span>
-                      <select className="input w-36" value={overflow[row.key]}
+                      <select className="input w-36" value={overflow[row.key]} disabled={row.locked}
                         onChange={(e) => setOverflow({ [row.key]: e.target.value as Severity })}>
                         {SEVERITIES.map((value) => (
                           <option key={value} value={value}>{t(`severity.${value}`)}</option>

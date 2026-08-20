@@ -289,6 +289,11 @@ def runtime_config_dir(config_path: str) -> str:
     explicit = (os.getenv("WIOM_RUNTIME_CONFIG_DIR") or "").strip()
     if explicit:
         return os.path.abspath(explicit)
+    state_db = (os.getenv("DUCKDB_STATE_PATH") or "").strip()
+    if state_db:
+        return os.path.join(
+            os.path.dirname(os.path.abspath(state_db)), "runtime-config"
+        )
     config_dir = os.path.dirname(os.path.abspath(config_path))
     # Sudah menunjuk ke folder runtime (mis. dipanggil ulang oleh daemon).
     if os.path.basename(config_dir) == "runtime-config":

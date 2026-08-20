@@ -10,13 +10,15 @@
 // gudang, eskalasi, Superset) hilang setelah deploy berikutnya kecuali
 // `/app/config` kebetulan dipasang sebagai volume permanen.
 //
-// `db/` sudah pasti permanen: history DuckDB, state alert, dan akun hidup di
+// `db/` adalah satu-satunya batas penyimpanan permanen aplikasi: history
+// DuckDB, state alert, akun, secret sesi, dan konfigurasi runtime hidup di
 // sana. Karena itu seluruh konfigurasi runtime ditulis ke
-// `db/runtime-config/` dan `config/` diperlakukan hanya sebagai NILAI AWAL
-// (seed) bawaan image.
+// `<folder state DuckDB>/runtime-config/`. `config/` hanya menjadi sumber
+// migrasi instalasi lama; default asli image berada di `default-config/` agar
+// volume `/app/config` lama tidak menutupi default yang ikut versi aplikasi.
 //
 // Aturan baca/tulis:
-//   baca  : file runtime bila ada, kalau tidak ada pakai seed dari `config/`
+//   baca  : runtime > konfigurasi legacy > default immutable image
 //   tulis : selalu ke folder runtime
 //
 // Efeknya: instalasi lama tetap terbaca apa adanya (fallback), penyimpanan
@@ -27,13 +29,42 @@ import path from "node:path";
 
 const ROOT = process.cwd();
 
-/** Nilai awal bawaan image — hanya dibaca, tidak pernah ditulis ulang. */
-export const SEED_CONFIG_DIR = path.join(ROOT, "config");
+/**
+ * Konfigurasi instalasi lama yang mungkin masih dipasang sebagai `/app/config`.
+ * Folder ini hanya dibaca untuk migrasi; semua penyimpanan baru masuk runtime.
+ */
+export const LEGACY_CONFIG_DIR = process.env.WIOM_LEGACY_CONFIG_DIR?.trim()
+  ? path.resolve(process.env.WIOM_LEGACY_CONFIG_DIR.trim())
+  : path.join(ROOT, "config");
 
-/** Volume permanen. Sengaja berada di dalam `db/` yang sudah pasti di-mount. */
+/** Default immutable yang dikemas bersama image mulai kontrak storage v2. */
+export const BUNDLED_CONFIG_DIR = process.env.WIOM_BUNDLED_CONFIG_DIR?.trim()
+  ? path.resolve(process.env.WIOM_BUNDLED_CONFIG_DIR.trim())
+  : path.join(ROOT, "default-config");
+
+/**
+ * Nilai awal kanonik. Checkout lokal lama belum memiliki `default-config/`,
+ * jadi `config/` tetap menjadi fallback kompatibel untuk dev/non-Docker.
+ */
+export const SEED_CONFIG_DIR = fs.existsSync(BUNDLED_CONFIG_DIR)
+  ? BUNDLED_CONFIG_DIR
+  : LEGACY_CONFIG_DIR;
+
+function stateDirectory(): string {
+  const statePath = process.env.DUCKDB_STATE_PATH?.trim();
+  return statePath
+    ? path.dirname(path.resolve(statePath))
+    : path.join(ROOT, "db");
+}
+
+/**
+ * Volume permanen. Bila `DUCKDB_STATE_PATH` dipindah, konfigurasi otomatis ikut
+ * ke volume state yang sama; `WIOM_RUNTIME_CONFIG_DIR` tetap menjadi override
+ * eksplisit untuk deployment khusus.
+ */
 export const RUNTIME_CONFIG_DIR = process.env.WIOM_RUNTIME_CONFIG_DIR?.trim()
   ? path.resolve(process.env.WIOM_RUNTIME_CONFIG_DIR.trim())
-  : path.join(ROOT, "db", "runtime-config");
+  : path.join(stateDirectory(), "runtime-config");
 
 /** Lokasi tulis kanonik untuk sebuah berkas konfigurasi. */
 export function runtimeConfigFile(basename: string): string {
@@ -45,6 +76,21 @@ export function seedConfigFile(basename: string): string {
   return path.join(SEED_CONFIG_DIR, basename);
 }
 
+/** Berkas instalasi lama, bila masih ada pada volume `/app/config`. */
+export function legacyConfigFile(basename: string): string {
+  return path.join(LEGACY_CONFIG_DIR, basename);
+}
+
+/**
+ * Sumber bootstrap dengan precedence yang menjaga upgrade:
+ * konfigurasi legacy yang pernah disimpan admin > default immutable image.
+ */
+function bootstrapConfigFile(basename: string): string {
+  const legacy = legacyConfigFile(basename);
+  if (fs.existsSync(legacy)) return legacy;
+  return seedConfigFile(basename);
+}
+
 /**
  * Berkas yang harus dipakai untuk operasi ini.
  *
@@ -54,7 +100,7 @@ export function seedConfigFile(basename: string): string {
 export function resolveConfigFile(basename: string, forWrite = false): string {
   const runtime = runtimeConfigFile(basename);
   if (forWrite) return runtime;
-  return fs.existsSync(runtime) ? runtime : seedConfigFile(basename);
+  return fs.existsSync(runtime) ? runtime : bootstrapConfigFile(basename);
 }
 
 /** Benar bila berkas ini sudah pindah ke penyimpanan permanen. */
@@ -71,6 +117,7 @@ export function isPersisted(basename: string): boolean {
  * rename; rename dalam satu filesystem bersifat atomik.
  */
 export function writeConfigJsonAtomic(file: string, value: unknown, mode = 0o600): void {
+  assertDurableConfigStorage();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
   try {
@@ -82,13 +129,37 @@ export function writeConfigJsonAtomic(file: string, value: unknown, mode = 0o600
   }
 }
 
+/**
+ * Jangan biarkan API Settings sukses menulis ke filesystem container yang
+ * diketahui ephemeral. Readiness tetap memberi diagnosis; guard ini mencegah
+ * false-success bila trafik masih sempat mencapai container yang tidak sehat.
+ */
+export function assertDurableConfigStorage(): void {
+  const required = ["1", "true", "on", "required"].includes(
+    process.env.WIOM_REQUIRE_PERSISTENT_STORAGE?.trim().toLowerCase() || "",
+  );
+  if (required && detectPersistentMount() !== true) {
+    throw new Error(
+      "Penyimpanan persisten belum terpasang. Pasang named volume atau bind mount ke /app/db sebelum menyimpan konfigurasi.",
+    );
+  }
+}
+
 export interface ConfigStorageInfo {
   /** Folder tempat setiap penyimpanan admin mendarat. */
   runtimeDir: string;
   /** Folder nilai awal bawaan image. */
   seedDir: string;
+  /** Folder konfigurasi deployment lama yang hanya dibaca untuk migrasi. */
+  legacyDir: string;
   /** Folder runtime benar-benar dapat ditulis oleh proses ini. */
   writable: boolean;
+  /** Folder runtime berada pada mount terpisah dari filesystem container. */
+  persistentMount: boolean | null;
+  /** Deployment ini mewajibkan bukti mount persisten (image Docker produksi). */
+  durabilityRequired: boolean;
+  /** Storage siap dipakai tanpa risiko reset container yang diketahui. */
+  durable: boolean;
   /** Berkas yang sudah tersimpan permanen (aman terhadap deploy ulang). */
   persisted: string[];
   /** Berkas yang masih memakai nilai bawaan image. */
@@ -111,6 +182,7 @@ const MANAGED_FILES = [
   "capacity.json",
   "recipients.json",
   "superset-sync.json",
+  ".superset-sync.secrets.json",
   "accounts.json",
 ];
 
@@ -123,6 +195,20 @@ const SEEDABLE_FILES = [
   "recipients.json",
   "superset-sync.json",
 ];
+
+/**
+ * Sidecar kredensial tidak pernah ada di source control, tetapi dapat berada
+ * di volume `/app/config` milik deployment lama. Ia wajib ikut dimigrasikan.
+ */
+const LEGACY_ONLY_FILES = [".superset-sync.secrets.json"];
+const MIGRATABLE_FILES = [...SEEDABLE_FILES, ...LEGACY_ONLY_FILES];
+
+const PRIVATE_FILES = new Set([
+  "recipients.json",
+  "superset-sync.json",
+  ".superset-sync.secrets.json",
+  "accounts.json",
+]);
 
 let seeded = false;
 
@@ -150,16 +236,18 @@ export function ensureRuntimeConfigSeeded(): void {
     // Pengaturan menampilkan peringatan lewat configStorageInfo().
     return;
   }
-  for (const basename of SEEDABLE_FILES) {
+  for (const basename of MIGRATABLE_FILES) {
     const runtime = runtimeConfigFile(basename);
-    const seed = seedConfigFile(basename);
-    if (fs.existsSync(runtime) || !fs.existsSync(seed)) continue;
+    const source = bootstrapConfigFile(basename);
+    if (fs.existsSync(runtime) || !fs.existsSync(source)) continue;
     try {
       // `flag: "wx"` supaya dua proses yang start bersamaan tidak saling timpa.
-      // Mode 0o644 mempertahankan keterbacaan berkas asalnya di image: worker
-      // sinkronisasi Python membaca superset-sync.json dari folder yang sama
-      // dan pada sebagian deployment berjalan sebagai pengguna berbeda.
-      fs.writeFileSync(runtime, fs.readFileSync(seed), { flag: "wx", mode: 0o644 });
+      // Berkas yang memuat webhook/kredensial memakai 0o600; kebijakan publik
+      // memakai 0o644 agar deployment service terpisah tetap dapat membacanya.
+      fs.writeFileSync(runtime, fs.readFileSync(source), {
+        flag: "wx",
+        mode: PRIVATE_FILES.has(basename) ? 0o600 : 0o644,
+      });
       console.info(`[WIOM] Konfigurasi ${basename} dipindahkan ke penyimpanan permanen ${runtime}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
@@ -183,14 +271,77 @@ export function configStorageInfo(): ConfigStorageInfo {
     else usingSeed.push(basename);
   }
   const probe = probeWritable();
+  const persistentMount = detectPersistentMount();
+  const durabilityRequired = ["1", "true", "on", "required"].includes(
+    process.env.WIOM_REQUIRE_PERSISTENT_STORAGE?.trim().toLowerCase() || "",
+  );
   return {
     runtimeDir: RUNTIME_CONFIG_DIR,
     seedDir: SEED_CONFIG_DIR,
+    legacyDir: LEGACY_CONFIG_DIR,
     writable: probe.writable,
+    persistentMount,
+    durabilityRequired,
+    durable: probe.writable && (!durabilityRequired || persistentMount === true),
     persisted,
     usingSeed,
     reason: probe.reason,
   };
+}
+
+function decodeMountPath(value: string): string {
+  return value.replace(/\\(040|011|012|134)/g, (_match, code: string) => ({
+    "040": " ",
+    "011": "\t",
+    "012": "\n",
+    "134": "\\",
+  })[code] || _match);
+}
+
+function directoryContains(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/**
+ * Verifikasi mount Linux dari `/proc/self/mountinfo`.
+ *
+ * Writable saja tidak membuktikan persistence: filesystem container juga
+ * writable tetapi hilang ketika Coolify mengganti container. Image produksi
+ * mengaktifkan `WIOM_REQUIRE_PERSISTENT_STORAGE`, sehingga readiness hanya OK
+ * bila direktori runtime berada di mount eksternal (named volume/bind mount).
+ * Di dev non-Linux hasilnya `null` dan pemeriksaan tidak diwajibkan.
+ */
+export function persistentMountFromInfo(
+  mountInfo: string,
+  directory = RUNTIME_CONFIG_DIR,
+): boolean {
+  const target = path.resolve(directory);
+  let best: { mountPoint: string; fsType: string } | null = null;
+  for (const line of mountInfo.split(/\r?\n/)) {
+    const [left, right] = line.split(" - ");
+    if (!left || !right) continue;
+    const fields = left.trim().split(/\s+/);
+    const after = right.trim().split(/\s+/);
+    if (fields.length < 5 || after.length < 1) continue;
+    const mountPoint = path.resolve(decodeMountPath(fields[4]));
+    if (!directoryContains(mountPoint, target)) continue;
+    if (!best || mountPoint.length > best.mountPoint.length) {
+      best = { mountPoint, fsType: after[0] };
+    }
+  }
+  if (!best) return false;
+  const filesystemRoot = path.parse(best.mountPoint).root;
+  return best.mountPoint !== filesystemRoot && !["tmpfs", "ramfs"].includes(best.fsType);
+}
+
+function detectPersistentMount(): boolean | null {
+  if (process.platform !== "linux") return null;
+  try {
+    return persistentMountFromInfo(fs.readFileSync("/proc/self/mountinfo", "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 /**

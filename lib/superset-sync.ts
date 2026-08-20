@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { z } from "zod";
 import { getWarehouses } from "@/lib/config";
-import { resolveConfigFile, runtimeConfigFile } from "@/lib/runtime-config";
+import { resolveConfigFile, runtimeConfigFile, writeConfigJsonAtomic } from "@/lib/runtime-config";
 
 const ROOT = process.cwd();
 const CONFIG_DIR = path.join(ROOT, "config");
@@ -12,12 +12,11 @@ const DB_DIR = path.join(ROOT, "db");
 /**
  * Konfigurasi dan kredensial sinkronisasi sama-sama harus selamat dari deploy.
  *
- * Kredensial sudah lama pindah ke `db/runtime-config/`: `.dockerignore`
- * sengaja menahannya di luar image, sehingga `/app/config` mulai kosong dan
- * admin harus menempelkan cookie lagi setelah setiap deploy. Berkas
- * konfigurasinya sendiri — jadwal, dataset, pemetaan kolom — masih tertinggal
- * di `config/` yang ikut dibangun ke image, jadi setiap perubahan dari halaman
- * Pengaturan kembali ke nilai bawaan pada build berikutnya.
+ * Kredensial dan konfigurasi publik kini berada di `db/runtime-config/`.
+ * `/app/config` hanya menjadi sumber migrasi instalasi lama, sedangkan default
+ * immutable image dikemas terpisah di `/app/default-config`; karena itu volume
+ * legacy tidak dapat menutupi default baru dan admin tidak perlu menempelkan
+ * ulang cookie setelah redeploy.
  *
  * Keduanya kini memakai aturan yang sama (lihat lib/runtime-config.ts): baca
  * salinan runtime bila ada, jatuh ke seed image bila belum pernah disimpan,
@@ -283,16 +282,6 @@ function resolveRuntimePath(reference: string | undefined, fallback: string): st
   return resolved;
 }
 
-function writeJsonAtomic(file: string, value: unknown, mode?: number): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode });
-  fs.renameSync(temp, file);
-  if (mode !== undefined) {
-    try { fs.chmodSync(file, mode); } catch { /* Windows and some volumes ignore POSIX modes. */ }
-  }
-}
-
 export function getSupersetSyncConfig(): SupersetSyncConfig {
   const configFile = syncConfigFile();
   const parsed = SupersetSyncConfigSchema.safeParse(readJson(configFile));
@@ -380,8 +369,8 @@ export function writeSupersetSyncSettings(input: unknown) {
     if (value?.trim()) stored.auth[key] = value.trim();
   }
 
-  writeJsonAtomic(syncConfigFile(true), validated);
-  writeJsonAtomic(secretsFile(true), stored, 0o600);
+  writeConfigJsonAtomic(syncConfigFile(true), validated, 0o600);
+  writeConfigJsonAtomic(secretsFile(true), stored, 0o600);
   return {
     ...getSupersetSyncSettings(),
     // The daemon reloads secrets every pass, so a freshly pasted cookie is
@@ -460,7 +449,7 @@ export function requestSupersetSync(actor: string) {
     requested_by: actor,
     reused: false,
   };
-  writeJsonAtomic(requestFile, request, 0o600);
+  writeConfigJsonAtomic(requestFile, request, 0o600);
   return request;
 }
 
