@@ -4,8 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useT } from "@/lib/i18n-client";
 
-const WHS = ["BGO", "BIT", "CBN", "CBT", "PGS", "SRG", "STL", "STR"];
-
 type ItemGroup = "pages" | "warehouses" | "actions" | "data";
 
 interface Item {
@@ -14,7 +12,14 @@ interface Item {
   href?: string; action?: () => void | Promise<void>;
 }
 
-export default function CommandPalette({ role }: { role: string }) {
+export default function CommandPalette({
+  role,
+  warehouses,
+}: {
+  role: string;
+  /** Kode gudang dari konfigurasi, bukan daftar tetap di dalam berkas ini. */
+  warehouses: string[];
+}) {
   const router = useRouter();
   const { t } = useT();
   const [open, setOpen] = useState(false);
@@ -26,8 +31,13 @@ export default function CommandPalette({ role }: { role: string }) {
 
   const close = useCallback(() => { setOpen(false); setQ(""); setDataItems([]); setIdx(0); }, []);
 
+  // Sinyal yang sama dengan tombol basis di topbar. Tanpa `wiom:basis`,
+  // mengganti basis dari palette hanya merender ulang komponen server:
+  // heatmap — yang membaca cookie hanya saat sinyal itu tiba — tetap
+  // menggambar basis sebelumnya di halaman yang sedang dibuka.
   const setBasis = useCallback((v: string) => {
     document.cookie = `wiom_basis=${v}; path=/; max-age=31536000; samesite=lax`;
+    window.dispatchEvent(new Event("wiom:basis"));
     router.refresh();
   }, [router]);
 
@@ -35,6 +45,7 @@ export default function CommandPalette({ role }: { role: string }) {
     { id: "p-exec", group: "pages", label: t("nav.exec"), hint: t("palette.networkKpi"), href: "/" },
     { id: "p-occ", group: "pages", label: t("nav.occupancy"), hint: t("palette.warehouseZones"), href: "/occupancy" },
     { id: "p-heat", group: "pages", label: t("nav.heatmap"), hint: t("palette.locationGrid"), href: "/heatmap" },
+    { id: "p-mv", group: "pages", label: t("nav.movements"), hint: t("palette.movements"), href: "/movements" },
     { id: "p-fc", group: "pages", label: t("nav.forecast"), hint: t("palette.forecast"), href: "/forecast" },
     { id: "p-dens", group: "pages", label: t("nav.density"), hint: t("palette.priority"), href: "/density" },
     { id: "p-al", group: "pages", label: t("nav.alerts"), hint: t("palette.alertWork"), href: "/alerts" },
@@ -50,20 +61,24 @@ export default function CommandPalette({ role }: { role: string }) {
     { id: "a-bpol", group: "actions", label: t("palette.viewBasis").replace("{basis}", t("basis.policy")), hint: "default", action: () => setBasis("policy") },
     { id: "a-bqty", group: "actions", label: t("palette.viewBasis").replace("{basis}", t("basis.qty")), hint: t("common.unit"), action: () => setBasis("qty") },
     { id: "a-bcbm", group: "actions", label: t("palette.viewBasis").replace("{basis}", t("basis.cbm")), hint: "m³", action: () => setBasis("cbm") },
+    { id: "a-bbin", group: "actions", label: t("palette.viewBasis").replace("{basis}", t("basis.bin")), hint: t("basis.binHint"), action: () => setBasis("bin") },
     { id: "a-theme", group: "actions", label: t("palette.switchTheme"), hint: t("palette.themeHint"),
       action: () => {
-        const el = document.documentElement;
-        const dark = el.classList.toggle("dark");
-        localStorage.setItem("wiom-theme", dark ? "dark" : "light");
+        const dark = document.documentElement.classList.toggle("dark");
+        try { localStorage.setItem("wiom-theme", dark ? "dark" : "light"); } catch {}
+        // Grafik melukis ke canvas dan tidak ikut `var(--…)`; tanpa sinyal ini
+        // mereka tetap memakai warna tema sebelumnya sampai halaman dimuat ulang.
+        window.dispatchEvent(new Event("wiom:theme"));
       } },
     { id: "a-out", group: "actions", label: t("action.logout"), hint: t("palette.signOutHint"),
       action: async () => { await fetch("/api/auth/logout", { method: "POST" }); router.replace("/login"); router.refresh(); } },
   ], [router, setBasis, t]);
 
-  const whItems: Item[] = useMemo(() => WHS.flatMap((w) => [
+  const whItems: Item[] = useMemo(() => warehouses.flatMap((w) => [
     { id: `w-h-${w}`, group: "warehouses" as const, label: `${t("nav.heatmap")} ${w}`, hint: t("palette.heatmapHint"), href: `/heatmap?wh=${w}` },
     { id: `w-o-${w}`, group: "warehouses" as const, label: `${t("nav.occupancy")} ${w}`, hint: t("palette.occupancyHint"), href: `/occupancy/${w}` },
-  ]), [t]);
+    { id: `w-m-${w}`, group: "warehouses" as const, label: `${t("nav.movements")} ${w}`, hint: t("palette.movements"), href: `/movements?wh=${w}` },
+  ]), [t, warehouses]);
 
   // Pencarian data (SLOC & produk) — debounce 200 ms
   useEffect(() => {

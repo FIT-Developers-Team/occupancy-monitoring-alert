@@ -294,22 +294,63 @@ async function main() {
   }
   await insert(db, "cycle_count", ["count_id","count_date","sloc_code","system_qty","physical_qty"], cc);
 
-  // -- 4) movement kecil (untuk drawer SLOC) ---------------------------------
+  // -- 4) movement (Recent movements, dataset 705) ---------------------------
+  // Aksi sengaja ditulis dengan ejaan yang berbeda-beda — persis seperti data
+  // asli, di mana satu kegiatan yang sama muncul sebagai "Putaway", "PUT_AWAY",
+  // dan "Penempatan". Demo ini yang membuktikan standardisasi tipe di
+  // lib/movements.ts benar-benar bekerja, bukan sekadar meneruskan teks rapi.
   const mv = [];
-  let mid = 700000;
-  const ops = ["Budi","Sari","Andi","Dewi","Rizki","Tono","Maya","Agus"];
-  for (let i = 0; i < 160; i++) {
-    mid++;
-    const s = pick(slocs.filter((x) => !x.staging));
-    const p = s.p1;
-    const t = pick(["PUTAWAY","PICKING","TRANSFER"]);
-    mv.push([mid, q(t), q(iso(new Date(NOW.getTime() - rand() * 48 * H))), q(pick(ops)),
-      t === "PUTAWAY" ? "NULL" : q(s.code), t === "PICKING" ? "NULL" : q(s.code),
-      p[0], q(p[1]), Math.round(between(1, 12)), synced]);
+  const ops = ["Budi Santoso","Sari Rahayu","Andi Pratama","Dewi Lestari",
+    "Rizki Ramadhan","Tono Wijaya","Maya Kusuma","Agus Setiawan"];
+  const ACTIONS = [
+    // [aksi mentah, tanda operator, punya rak asal, punya rak tujuan]
+    ["Goods Receipt", "+", false, true],
+    ["Penerimaan Barang", "+", false, true],
+    ["Putaway", "+", true, true],
+    ["PUT_AWAY", "+", true, true],
+    ["Picking", "-", true, false],
+    ["Pengambilan Order", "-", true, false],
+    ["Packing", "-", true, false],
+    ["Outbound Delivery", "-", true, false],
+    ["Internal Transfer", "+", true, true],
+    ["Pemindahan Rak", "+", true, true],
+    ["Stock Opname Adjustment", "-", true, true],
+    ["Return to Vendor", "-", true, false],
+    ["Change Status Good to Bad", "-", true, true],
+  ];
+  const STATUSES = ["Available", "Available", "Available", "Bad", "Quarantine"];
+  const TYPES = ["Consumer Goods", "Fresh", "Frozen Food", "Beverage"];
+  const pool = slocs.filter((x) => !x.staging);
+  for (let i = 0; i < 900; i++) {
+    const s = pick(pool);
+    const other = pick(pool.filter((x) => x.wh === s.wh)) ?? s;
+    const p = rand() < 0.7 ? s.p1 : (s.p2 ?? s.p1);
+    const [action, sign, hasFrom, hasTo] = pick(ACTIONS);
+    const created = new Date(NOW.getTime() - rand() * 30 * 24 * H);
+    // Sebagian kecil baris di-update setelah dibuat; itulah yang membedakan
+    // patokan waktu kejadian (created_at) dari watermark sinkron (updated_at).
+    const updated = new Date(created.getTime() + (rand() < 0.15 ? rand() * 4 * H : 0));
+    const fromStatus = pick(STATUSES);
+    mv.push([
+      synced, q(iso(created)), q(iso(updated)), s.id, q(s.name),
+      q(`TRX-${s.wh}-${String(100000 + Math.floor(rand() * 899999))}`),
+      p[0], q(p[1]), q(p[2]), q(p[3]), q(pick(TYPES)),
+      hasFrom ? q(s.code) : "NULL",
+      hasTo ? q(hasFrom ? other.code : s.code) : "NULL",
+      q(action), q(sign),
+      hasFrom ? q(`PKG-${String(10000 + Math.floor(rand() * 89999))}`) : "NULL",
+      hasTo ? q(`PKG-${String(10000 + Math.floor(rand() * 89999))}`) : "NULL",
+      q(fromStatus),
+      q(action.includes("Bad") ? "Bad" : fromStatus),
+      q(pick(ops)),
+      Math.round(between(1, 48)),
+    ]);
   }
-  await insert(db, "movement_history",
-    ["movement_id","movement_type","movement_datetime","operator","source_sloc","destination_sloc",
-     "product_id","product_name","qty","_synced_at"], mv);
+  await insert(db, "movement_events",
+    ["_synced_at","created_at","updated_at","location_id","location_name","invoice_number",
+     "product_id","product_name","sku_number","l1_category","product_type",
+     "source_sloc","destination_sloc","action_raw","operator_sign",
+     "from_package","to_package","from_status","to_status","operator","qty"], mv);
 
   // -- 5) audit sync dummy ----------------------------------------------------
   await insert(db, "_sync_audit",
@@ -321,7 +362,7 @@ async function main() {
 
   const [c1] = await run(db, "SELECT count(*) n FROM stock_history");
   console.log(`✔ Seed v2: ${DB_PATH}`);
-  console.log(`  SLOC ${slocs.length} · baris stok ${c1.n} · snapshot ${hours.length} · cycle count ${cc.length}`);
+  console.log(`  SLOC ${slocs.length} · baris stok ${c1.n} · snapshot ${hours.length} · cycle count ${cc.length} · movement ${mv.length}`);
   db.close();
 }
 

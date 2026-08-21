@@ -1,8 +1,8 @@
 import { getSlocSummary, getWarehouseOccupancySummary } from "@/lib/queries";
 import { getBasisMode } from "@/lib/basis";
 import { parseSlocFilter } from "@/lib/sloc-filter";
-import { getT } from "@/lib/i18n";
-import { fmtNum, fmtPct } from "@/lib/utils";
+import { getLang, getT } from "@/lib/i18n";
+import { formatters } from "@/lib/utils";
 import Section from "@/components/ui/section";
 import KpiCard from "@/components/ui/kpi-card";
 import SlocExplorer from "@/components/domain/sloc-explorer";
@@ -25,7 +25,8 @@ export default async function DensityPage(
   }
 ) {
   const raw = await searchParams;
-  const [t, mode] = await Promise.all([getT(), getBasisMode()]);
+  const [t, mode, lang] = await Promise.all([getT(), getBasisMode(), getLang()]);
+  const f = formatters(lang);
 
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(raw)) {
@@ -59,24 +60,24 @@ export default async function DensityPage(
       <div className="metric-strip metric-strip-four">
         <KpiCard
           label={t("slocx.preset.breach")}
-          value={fmtNum(breach.total)}
+          value={f.num(breach.total)}
           tone={breach.total ? "critical" : "normal"}
           sub={`${filter.wh || t("common.allWarehouses")} · ${t(`basis.${filter.view}`)}`}
         />
         <KpiCard
           label={t("occ.slocOccupied")}
-          value={fmtNum(filled)}
+          value={f.num(filled)}
           tone="accent"
-          sub={`${t("common.of")} ${fmtNum(totalSloc)} ${t("common.active")}`}
+          sub={`${t("common.of")} ${f.num(totalSloc)} ${t("common.active")}`}
         />
         <KpiCard
           label={t("occ.emptySloc")}
-          value={fmtNum(empty)}
-          sub={`${fmtPct(totalSloc ? (empty / totalSloc) * 100 : 0)} ${t("common.empty").toLocaleLowerCase()}`}
+          value={f.num(empty)}
+          sub={`${f.pct(totalSloc ? (empty / totalSloc) * 100 : 0)} ${t("common.empty").toLocaleLowerCase()}`}
         />
         <KpiCard
           label="Bin"
-          value={fmtPct(totalSloc ? (filled / totalSloc) * 100 : 0)}
+          value={f.pct(totalSloc ? (filled / totalSloc) * 100 : 0)}
           tone="teal"
           sub={t("basis.binHint")}
         />

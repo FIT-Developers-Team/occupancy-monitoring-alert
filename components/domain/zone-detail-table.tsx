@@ -2,7 +2,7 @@
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { ZoneDetailFacets, ZoneDetailSort, ZoneLine } from "@/lib/queries";
-import { fmtCbm, fmtNum } from "@/lib/utils";
+import { formatters } from "@/lib/utils";
 import { useT } from "@/lib/i18n-client";
 import ExportExcelButton from "@/components/domain/export-excel-button";
 
@@ -36,7 +36,8 @@ export default function ZoneDetailTable({
   /** Pilihan status stok / kategori / zona rak yang benar-benar ada di zona ini. */
   facets: ZoneDetailFacets;
 }) {
-  const { t } = useT();
+  const { t, lang } = useT();
+  const f = formatters(lang);
   const [serverRows, setServerRows] = useState(rows);
   const [totalRows, setTotalRows] = useState(total);
   const [query, setQuery] = useState("");
@@ -245,8 +246,8 @@ export default function ZoneDetailTable({
                   <td className="max-w-[280px] truncate" title={row.product_name}>{row.product_name}</td>
                   <td className="text-[11px]">{row.l1_category || "—"}</td>
                   <td><span className={`badge badge-${stockStatusTone(row.status)}`}>{row.status || "—"}</span></td>
-                  <td className="num text-right">{fmtNum(row.qty)}</td>
-                  <td className="num text-right">{fmtCbm(row.cbm)}</td>
+                  <td className="num text-right">{f.num(row.qty)}</td>
+                  <td className="num text-right">{f.cbm(row.cbm)}</td>
                   <td
                     className="num text-right font-semibold"
                     style={{ color: statusColor[row.sloc_status] ?? "var(--text)" }}
@@ -301,8 +302,8 @@ export default function ZoneDetailTable({
                 {t("common.sku")} {row.sku_number || "—"} · {row.l1_category || "—"}
               </div>
               <div className="zone-detail-mobile-metrics">
-                <span>Qty <b className="num">{fmtNum(row.qty)}</b></span>
-                <span>CBM <b className="num">{fmtCbm(row.cbm)}</b></span>
+                <span>Qty <b className="num">{f.num(row.qty)}</b></span>
+                <span>CBM <b className="num">{f.cbm(row.cbm)}</b></span>
                 <span className={`badge badge-${stockStatusTone(row.status)}`}>{row.status || "—"}</span>
               </div>
             </article>

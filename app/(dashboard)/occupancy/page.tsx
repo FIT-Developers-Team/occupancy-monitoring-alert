@@ -1,8 +1,8 @@
 import { getWarehouseOccupancySummary, getZoneSummary } from "@/lib/queries";
 import { thresholdsFor } from "@/lib/config";
 import { getBasisMode, pickPct, pickStatus } from "@/lib/basis";
-import { fmtNum, fmtPct } from "@/lib/utils";
-import { getT } from "@/lib/i18n";
+import { formatters } from "@/lib/utils";
+import { getLang, getT } from "@/lib/i18n";
 import Section from "@/components/ui/section";
 import OccupancyBar from "@/components/ui/occupancy-bar";
 import { StatusBadge } from "@/components/ui/badges";
@@ -18,7 +18,8 @@ export const dynamic = "force-dynamic";
 export const generateMetadata = pageTitle("nav.occupancy");
 
 export default async function OccupancyPage() {
-  const [mode, t] = await Promise.all([getBasisMode(), getT()]);
+  const [mode, t, lang] = await Promise.all([getBasisMode(), getT(), getLang()]);
+  const f = formatters(lang);
   const [sums, zones] = await Promise.all([getWarehouseOccupancySummary(), getZoneSummary()]);
   const thresholdMap = Object.fromEntries(sums.map((w) => [w.code, thresholdsFor(w.code)]));
   const totalActive = sums.reduce((sum, warehouse) => sum + warehouse.sloc_total, 0);
@@ -45,9 +46,9 @@ export default async function OccupancyPage() {
       <CapacityStandardNote />
 
       <div className="occ-summary-strip">
-        <div className="occ-summary-item"><span className="eyebrow">{t("occ.activeSloc")}</span><strong className="num">{fmtNum(totalActive)}</strong><span>{sums.length} {t("common.warehouse").toLowerCase()}</span></div>
-        <div className="occ-summary-item"><span className="eyebrow">{t("occ.slocOccupied")}</span><strong className="num">{fmtNum(totalOccupied)}</strong><span>{totalActive ? fmtPct(totalOccupied / totalActive * 100) : "0%"}</span></div>
-        <div className="occ-summary-item"><span className="eyebrow">{t("occ.emptySloc")}</span><strong className="num">{fmtNum(totalEmpty)}</strong><span>{totalActive ? fmtPct(totalEmpty / totalActive * 100) : "0%"}</span></div>
+        <div className="occ-summary-item"><span className="eyebrow">{t("occ.activeSloc")}</span><strong className="num">{f.num(totalActive)}</strong><span>{sums.length} {t("common.warehouse").toLowerCase()}</span></div>
+        <div className="occ-summary-item"><span className="eyebrow">{t("occ.slocOccupied")}</span><strong className="num">{f.num(totalOccupied)}</strong><span>{totalActive ? f.pct(totalOccupied / totalActive * 100) : "0%"}</span></div>
+        <div className="occ-summary-item"><span className="eyebrow">{t("occ.emptySloc")}</span><strong className="num">{f.num(totalEmpty)}</strong><span>{totalActive ? f.pct(totalEmpty / totalActive * 100) : "0%"}</span></div>
         <div className="occ-summary-item occ-summary-alert"><span className="eyebrow">{t("occ.attentionWarehouses")}</span><strong className="num">{attention}</strong><span>{sums.length} {t("common.total").toLowerCase()}</span></div>
       </div>
 
@@ -74,13 +75,13 @@ export default async function OccupancyPage() {
                 : <OccupancyBar pct={raw} status={shownStatus} thresholds={thresholdsFor(w.code)}
                     label={`${t("common.occupancy")} ${w.code}`} />}
               <div className="occ-warehouse-metrics">
-                <span>Qty <b className="num">{fmtPct(w.pct_qty)}</b></span>
-                <span>CBM <b className="num">{fmtPct(w.pct_cbm)}</b></span>
-                <span>Bin <b className="num">{fmtPct(w.pct_bin)}</b></span>
+                <span>Qty <b className="num">{f.pct(w.pct_qty)}</b></span>
+                <span>CBM <b className="num">{f.pct(w.pct_cbm)}</b></span>
+                <span>Bin <b className="num">{f.pct(w.pct_bin)}</b></span>
               </div>
               <div className="occ-warehouse-foot">
-                <span>{t("common.empty")} <b className="num">{fmtNum(w.sloc_empty)}</b></span>
-                <span>{t("common.total")} <b className="num">{fmtNum(w.sloc_total)}</b></span>
+                <span>{t("common.empty")} <b className="num">{f.num(w.sloc_empty)}</b></span>
+                <span>{t("common.total")} <b className="num">{f.num(w.sloc_total)}</b></span>
               </div>
             </PrefetchLink>
           );

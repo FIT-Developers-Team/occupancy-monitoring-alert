@@ -1,8 +1,8 @@
 import { listAlerts, eventsFor } from "@/lib/alerts/store";
 import { currentUser, canWrite } from "@/lib/auth";
 import { getRecipients } from "@/lib/config";
-import { getT } from "@/lib/i18n";
-import { fmtDateTime } from "@/lib/utils";
+import { getLang, getT } from "@/lib/i18n";
+import { formatters } from "@/lib/utils";
 import Section from "@/components/ui/section";
 import { SeverityBadge, AlertStatusBadge } from "@/components/ui/badges";
 import RunTickButton from "@/components/domain/run-tick-button";
@@ -29,7 +29,8 @@ export default async function AlertsPage(
   { searchParams }: { searchParams: Promise<{ id?: string }> }
 ) {
   const { id } = await searchParams;
-  const [user, t] = await Promise.all([currentUser(), getT()]);
+  const [user, t, lang] = await Promise.all([currentUser(), getT(), getLang()]);
+  const f = formatters(lang);
   const writable = user ? canWrite(user.role) : false;
   const cfg = getRecipients();
   const levels: Record<number, string> = {};
@@ -98,7 +99,7 @@ export default async function AlertsPage(
                 <span className="num font-semibold">{a.warehouse_code}</span>
                 <span className="truncate">{a.title}</span>
                 <span className="ml-auto flex items-center gap-2">
-                  <span className="eyebrow">{a.resolved_by ?? "—"} · {fmtDateTime(a.resolved_at)}</span>
+                  <span className="eyebrow">{a.resolved_by ?? "—"} · {f.dateTime(a.resolved_at)}</span>
                   <AlertStatusBadge status={a.status} />
                 </span>
               </li>

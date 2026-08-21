@@ -1,6 +1,6 @@
 import { getForecastRows } from "@/lib/queries";
-import { getT } from "@/lib/i18n";
-import { fmtNum, fmtHours, fmtPct } from "@/lib/utils";
+import { getLang, getT } from "@/lib/i18n";
+import { formatters, type Formatters } from "@/lib/utils";
 import Section from "@/components/ui/section";
 import WhatIfPanel from "@/components/domain/what-if-panel";
 import PageHeader from "@/components/ui/page-header";
@@ -10,10 +10,13 @@ import { pageTitle } from "@/lib/page-metadata";
 export const dynamic = "force-dynamic";
 export const generateMetadata = pageTitle("nav.forecast");
 
-const sign = (n: number, d = 1) => `${n >= 0 ? "+" : ""}${fmtNum(n, d)}`;
+/** Laju selalu ditulis bertanda: "+0,4" dan "-0,4" harus terbaca berbeda sekilas. */
+const signed = (f: Formatters, value: number, digits = 1) =>
+  `${value >= 0 ? "+" : ""}${f.num(value, digits)}`;
 
 export default async function ForecastPage() {
-  const [rows, t] = await Promise.all([getForecastRows(), getT()]);
+  const [rows, t, lang] = await Promise.all([getForecastRows(), getT(), getLang()]);
+  const f = formatters(lang);
   const sorted = [...rows].sort((a, b) => (a.hours_to_95 ?? 1e9) - (b.hours_to_95 ?? 1e9));
   return (
     <div className="dashboard-page">
@@ -45,26 +48,26 @@ export default async function ForecastPage() {
                   </td>
                   <td className="num text-right font-semibold">{r.current_pct}%</td>
                   <td className="num text-right" title={`${r.bins_now}/${r.sloc_total}`}>
-                    {fmtPct(r.sloc_total ? (r.bins_now / r.sloc_total) * 100 : 0)}
+                    {f.pct(r.sloc_total ? (r.bins_now / r.sloc_total) * 100 : 0)}
                   </td>
-                  <td className="num text-right">{r.forecast_ready ? `${sign(r.rate_pct_per_hour, 3)}%` : "—"}</td>
-                  <td className="num text-right" title={`${fmtNum(r.qty_now)} ${t("common.unit")}`}>
-                    {r.forecast_ready ? sign(r.qty_rate_per_hour) : "—"}
+                  <td className="num text-right">{r.forecast_ready ? `${signed(f, r.rate_pct_per_hour, 3)}%` : "—"}</td>
+                  <td className="num text-right" title={`${f.num(r.qty_now)} ${t("common.unit")}`}>
+                    {r.forecast_ready ? signed(f, r.qty_rate_per_hour) : "—"}
                   </td>
-                  <td className="num text-right" title={`${fmtNum(r.sku_now)} SKU`}>
-                    {r.forecast_ready ? sign(r.sku_rate_per_hour) : "—"}
+                  <td className="num text-right" title={`${f.num(r.sku_now)} SKU`}>
+                    {r.forecast_ready ? signed(f, r.sku_rate_per_hour) : "—"}
                   </td>
                   <td className="num text-right" title={`${r.bins_now} ${t("common.filled").toLowerCase()}`}>
-                    {r.forecast_ready ? sign(r.bin_rate_per_hour, 2) : "—"}
+                    {r.forecast_ready ? signed(f, r.bin_rate_per_hour, 2) : "—"}
                   </td>
                   <td>
                     <span className="chip num" style={r.hours_to_95 !== null && r.hours_to_95 < 12
                       ? { borderColor: "var(--st-critical-fg)", color: "var(--st-critical-fg)", background: "var(--st-critical-bg)" }
                       : undefined}>
-                      {fmtHours(r.hours_to_95)}
+                      {f.hours(r.hours_to_95)}
                     </span>
                   </td>
-                  <td><span className="chip num">{fmtHours(r.hours_to_100)}</span></td>
+                  <td><span className="chip num">{f.hours(r.hours_to_100)}</span></td>
                 </tr>
               ))}
             </tbody>

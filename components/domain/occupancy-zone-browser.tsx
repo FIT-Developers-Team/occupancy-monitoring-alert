@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import type { BasisMode, OccupancyStatus, ZoneSummary } from "@/types";
-import { fmtNum, fmtPct } from "@/lib/utils";
+import { formatters } from "@/lib/utils";
 import { pickViewPct, pickViewStatus } from "@/lib/occupancy-view";
 import { useT } from "@/lib/i18n-client";
 import OccupancyBar from "@/components/ui/occupancy-bar";
@@ -23,7 +23,8 @@ export default function OccupancyZoneBrowser({
   thresholds: Record<string, Thresholds>;
   fixedWarehouse?: string;
 }) {
-  const { t } = useT();
+  const { t, lang } = useT();
+  const f = formatters(lang);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [warehouse, setWarehouse] = useState(fixedWarehouse ?? "ALL");
@@ -153,7 +154,7 @@ export default function OccupancyZoneBrowser({
         <div className="occ-zone-result">
           <span className="chip chip-accent">{t(`basis.${mode}`)}</span>
           <span className="num">{filtered.length}/{rows.length} {t("common.zone").toLowerCase()}</span>
-          <span className="num" title={t("occ.emptySloc")}>· {fmtNum(emptySlocs)} {t("common.empty").toLowerCase()}</span>
+          <span className="num" title={t("occ.emptySloc")}>· {f.num(emptySlocs)} {t("common.empty").toLowerCase()}</span>
           <button type="button" className="btn btn-sm" disabled={page <= 1}
             onClick={() => setPage((value) => value - 1)} aria-label={t("action.back")}>←</button>
           <span className="num">{page}/{totalPages}</span>
@@ -204,11 +205,11 @@ export default function OccupancyZoneBrowser({
                       <strong className="num">{raw === null ? "—" : `${raw}%`}</strong>
                     </div>
                   </td>
-                  <td className="num text-right">{fmtPct(row.pct_qty)}</td>
-                  <td className="num text-right">{fmtPct(row.pct_cbm)}</td>
-                  <td className="num text-right">{fmtPct(row.pct_bin)}</td>
-                  <td className="num text-right">{fmtNum(row.sloc_occupied)}</td>
-                  <td className="num text-right">{fmtNum(row.sloc_empty)}</td>
+                  <td className="num text-right">{f.pct(row.pct_qty)}</td>
+                  <td className="num text-right">{f.pct(row.pct_cbm)}</td>
+                  <td className="num text-right">{f.pct(row.pct_bin)}</td>
+                  <td className="num text-right">{f.num(row.sloc_occupied)}</td>
+                  <td className="num text-right">{f.num(row.sloc_empty)}</td>
                 </tr>
               );
             })}
@@ -236,10 +237,10 @@ export default function OccupancyZoneBrowser({
                 : <OccupancyBar pct={raw} status={shownStatus} thresholds={thresholds[row.wh]}
                     label={`${t("common.occupancy")} ${row.wh} ${row.zone}`} />}
               <div className="occ-zone-mobile-metrics">
-                <span>Qty <b className="num">{fmtPct(row.pct_qty)}</b></span>
-                <span>CBM <b className="num">{fmtPct(row.pct_cbm)}</b></span>
-                <span>Bin <b className="num">{fmtPct(row.pct_bin)}</b></span>
-                <span>{t("common.empty")} <b className="num">{fmtNum(row.sloc_empty)}</b></span>
+                <span>Qty <b className="num">{f.pct(row.pct_qty)}</b></span>
+                <span>CBM <b className="num">{f.pct(row.pct_cbm)}</b></span>
+                <span>Bin <b className="num">{f.pct(row.pct_bin)}</b></span>
+                <span>{t("common.empty")} <b className="num">{f.num(row.sloc_empty)}</b></span>
               </div>
             </Link>
           );

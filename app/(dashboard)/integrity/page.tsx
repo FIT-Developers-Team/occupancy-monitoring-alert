@@ -1,7 +1,11 @@
 import Link from "next/link";
 import { getIntegrity, getIntegrityDrift, getSyncHealth } from "@/lib/queries";
 import { getWarehouses } from "@/lib/config";
-import { getLang, getT, localeOf } from "@/lib/i18n";
+import { getLang, getT } from "@/lib/i18n";
+// Halaman ini dulu menyalin seluruh pemformat bersama hanya untuk mendapat
+// versi yang mengikuti bahasa. Pemformat bersamanya kini memang mengikuti
+// bahasa, jadi salinannya hilang bersama peluang keduanya menyimpang.
+import { formatters } from "@/lib/utils";
 import Section from "@/components/ui/section";
 import KpiCard from "@/components/ui/kpi-card";
 import PageHeader from "@/components/ui/page-header";
@@ -19,47 +23,6 @@ export const generateMetadata = pageTitle("nav.integrity");
  */
 const DRIFT_PAGE_ROWS = 500;
 
-function formatNumber(value: number | null | undefined, locale: string, digits = 0) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
-  return new Intl.NumberFormat(locale, {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  }).format(value);
-}
-
-function formatPercent(value: number | null | undefined, locale: string, digits = 1) {
-  return value === null || value === undefined || Number.isNaN(value)
-    ? "—"
-    : `${formatNumber(value, locale, digits)}%`;
-}
-
-function formatDateTime(value: string | null | undefined, locale: string) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return `${new Intl.DateTimeFormat(locale, {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    timeZone: "Asia/Jakarta",
-  }).format(date)} WIB`;
-}
-
-function formatDate(value: unknown, locale: string) {
-  const raw = String(value ?? "");
-  if (!raw) return "—";
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return raw;
-  return new Intl.DateTimeFormat(locale, {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "Asia/Jakarta",
-  }).format(date);
-}
-
 export default async function IntegrityPage(
   { searchParams }: { searchParams: Promise<{ wh?: string }> }
 ) {
@@ -74,7 +37,7 @@ export default async function IntegrityPage(
     getT(),
     getLang(),
   ]);
-  const locale = localeOf(lang);
+  const f = formatters(lang);
   const counted = rows.reduce((sum, row) => sum + row.counted, 0);
   const matched = rows.reduce((sum, row) => sum + row.matched, 0);
   const average = counted ? (matched / counted) * 100 : null;
@@ -104,32 +67,32 @@ export default async function IntegrityPage(
           {whSel && <Link className="btn btn-ghost btn-sm" href="/integrity">{t("action.reset")}</Link>}
         </form>
         <span className="chip" title={t("int.ui.snapshotTitle")}>
-          {t("int.ui.snapshot")} {formatDateTime(sync.last_snapshot, locale)}
+          {t("int.ui.snapshot")} {f.dateTime(sync.last_snapshot)}
         </span>
       </div>
 
       <div className="metric-strip metric-strip-four">
         <KpiCard
           label={`${t("int.title")} ${whSel ?? t("int.ui.network")}`}
-          value={formatPercent(average, locale)}
+          value={f.pct(average)}
           tone={average !== null && average < 95 ? "warning" : "teal"}
-          sub={`${formatNumber(matched, locale)}/${formatNumber(counted, locale)} ${t("int.ui.slocMatch")}`}
+          sub={`${f.num(matched)}/${f.num(counted)} ${t("int.ui.slocMatch")}`}
         />
         <KpiCard
           label={t("int.ui.phantomOccupancy")}
-          value={formatNumber(phantom, locale)}
+          value={f.num(phantom)}
           tone={phantom ? "critical" : "normal"}
           sub={t("int.ui.phantomSub")}
         />
         <KpiCard
           label={t("int.ui.ghostStock")}
-          value={formatNumber(ghost, locale)}
+          value={f.num(ghost)}
           tone={ghost ? "warning" : "normal"}
           sub={t("int.ui.ghostSub")}
         />
         <KpiCard
           label={t("int.ui.countedSloc")}
-          value={formatNumber(counted, locale)}
+          value={f.num(counted)}
           tone="accent"
           sub={whSel ? `${t("int.ui.cycleCount")} ${whSel}` : t("int.ui.allWarehousesSub")}
         />
@@ -173,27 +136,27 @@ export default async function IntegrityPage(
                       {row.warehouse}
                     </Link>
                   </td>
-                  <td className="num text-right">{formatNumber(row.counted, locale)}</td>
-                  <td className="num text-right">{formatNumber(row.matched, locale)}</td>
+                  <td className="num text-right">{f.num(row.counted)}</td>
+                  <td className="num text-right">{f.num(row.matched)}</td>
                   <td
                     className="num text-right font-semibold"
                     style={{ color: row.integrity_pct < 95 ? "var(--st-warning-fg)" : "var(--st-normal-fg)" }}
                   >
-                    {formatPercent(row.integrity_pct, locale)}
+                    {f.pct(row.integrity_pct)}
                   </td>
                   <td
                     className="num text-right"
                     style={row.phantom ? { color: "var(--st-critical-fg)", fontWeight: 600 } : undefined}
                   >
-                    {formatNumber(row.phantom, locale)}
+                    {f.num(row.phantom)}
                   </td>
                   <td
                     className="num text-right"
                     style={row.ghost ? { color: "var(--st-warning-fg)", fontWeight: 600 } : undefined}
                   >
-                    {formatNumber(row.ghost, locale)}
+                    {f.num(row.ghost)}
                   </td>
-                  <td className="num">{formatDate(row.last_count, locale)}</td>
+                  <td className="num">{f.date(row.last_count)}</td>
                 </tr>
               ))}
               {rows.length === 0 && (

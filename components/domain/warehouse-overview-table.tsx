@@ -3,15 +3,30 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { BasisMode, WarehouseSummary } from "@/types";
-import { fmtHours, fmtNum, fmtPct } from "@/lib/utils";
+import { formatters } from "@/lib/utils";
 import { pickViewPct, pickViewStatus } from "@/lib/occupancy-view";
 import { useT } from "@/lib/i18n-client";
 import OccupancyBar from "@/components/ui/occupancy-bar";
 
 type SortKey = "code" | "pct" | "pct_qty" | "pct_cbm" | "pct_bin" | "sloc_empty" | "hours_to_95";
 
-export default function WarehouseOverviewTable({ rows, mode }: { rows: WarehouseSummary[]; mode: BasisMode }) {
-  const { t } = useT();
+type Thresholds = { monitor: number; warning: number; critical: number; breach: number };
+
+export default function WarehouseOverviewTable({
+  rows, mode, thresholds,
+}: {
+  rows: WarehouseSummary[];
+  mode: BasisMode;
+  /**
+   * Ambang per gudang, sama dengan yang dipakai kartu dan tabel zona di halaman
+   * Okupansi. Tanpa ini bar di sini menggambar tanda 70/85/95 bawaan untuk
+   * setiap gudang, sehingga PGS — yang disetel 70/82/92 — memperlihatkan dua
+   * posisi tanda yang berbeda pada dua halaman untuk angka yang sama.
+   */
+  thresholds: Record<string, Thresholds>;
+}) {
+  const { t, lang } = useT();
+  const f = formatters(lang);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "pct", dir: -1 });
   const sorted = useMemo(() => [...rows].sort((a, b) => {
     const av = sort.key === "pct" ? pickViewPct(a, mode) : a[sort.key];
@@ -50,12 +65,13 @@ export default function WarehouseOverviewTable({ rows, mode }: { rows: Warehouse
               {raw === null || status === null
                 ? <span className="occ-track-unavailable flex-1" title={t("heat.unavailable")} />
                 : <div className="flex-1"><OccupancyBar pct={raw} status={status}
+                    thresholds={thresholds[w.code]}
                     label={`${t("common.occupancy")} ${w.code}`} /></div>}
               <span className="num w-12 text-right text-[12px] font-semibold">{raw === null ? "—" : `${raw}%`}</span>
             </div></td>
-            <td className="num text-right">{fmtPct(w.pct_qty)}</td><td className="num text-right">{fmtPct(w.pct_cbm)}</td>
-            <td className="num text-right">{fmtPct(w.pct_bin)}</td><td className="num text-right">{fmtNum(w.sloc_empty)}</td>
-            <td className="num text-right">{fmtHours(w.hours_to_95)}</td>
+            <td className="num text-right">{f.pct(w.pct_qty)}</td><td className="num text-right">{f.pct(w.pct_cbm)}</td>
+            <td className="num text-right">{f.pct(w.pct_bin)}</td><td className="num text-right">{f.num(w.sloc_empty)}</td>
+            <td className="num text-right">{f.hours(w.hours_to_95)}</td>
           </tr>;
         })}</tbody>
       </table>

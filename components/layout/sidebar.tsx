@@ -10,6 +10,7 @@ const NAV = [
   { href: "/", key: "nav.exec", icon: "M3 13h4v8H3zM10 9h4v12h-4zM17 3h4v18h-4z" },
   { href: "/occupancy", key: "nav.occupancy", icon: "M4 4h16v6H4zM4 14h9v6H4zM16 14h4v6h-4z" },
   { href: "/heatmap", key: "nav.heatmap", icon: "M4 4h4v4H4zM10 4h4v4h-4zM16 4h4v4h-4zM4 10h4v4H4zM10 10h4v4h-4zM16 10h4v4h-4zM4 16h4v4H4zM10 16h4v4h-4zM16 16h4v4h-4z" },
+  { href: "/movements", key: "nav.movements", icon: "M4 8h13M14 4l4 4-4 4M20 16H7M10 12l-4 4 4 4" },
   { href: "/forecast", key: "nav.forecast", icon: "M3 17l6-6 4 4 8-8M15 7h6v6" },
   { href: "/density", key: "nav.density", icon: "M12 3l9 16H3l9-16zM12 10v4M12 17v.5" },
   { href: "/alerts", key: "nav.alerts", icon: "M12 3a6 6 0 016 6v3l2 3H4l2-3V9a6 6 0 016-6zM10 19a2 2 0 004 0" },

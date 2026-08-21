@@ -741,6 +741,148 @@
   .slocx-page-size { flex: none; }
   .slocx-loading { margin-left: auto; }
 
+
+  /* ----------------------------------------------------------------------
+     Penjelajah pergerakan stok (Recent movements).
+     Menumpang kerangka .slocx-* untuk toolbar, ringkasan, dan paginasi supaya
+     kedua tabel besar aplikasi ini terasa sebagai satu kendali yang sama;
+     hanya hal yang benar-benar khas pergerakan yang punya gaya sendiri.
+     ---------------------------------------------------------------------- */
+  .mvx { display: grid; min-width: 0; gap: 9px; }
+
+  /* Warna tipe mengikuti akibatnya pada stok — lihat TYPE_TONE di komponen. */
+  .mvx-type { gap: 6px; cursor: pointer; }
+  .mvx-type b { font-size: 10.5px; }
+  .mvx-type-in {
+    border-color: color-mix(in oklab, var(--st-normal-fg) 40%, transparent);
+    background: var(--st-normal-bg); color: var(--st-normal-fg);
+  }
+  .mvx-type-out {
+    border-color: color-mix(in oklab, var(--st-warning-fg) 40%, transparent);
+    background: var(--st-warning-bg); color: var(--st-warning-fg);
+  }
+  .mvx-type-move {
+    border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+    background: var(--accent-soft); color: var(--accent-ink);
+  }
+  .mvx-type-control { border-color: var(--border-strong); color: var(--text-muted); }
+  .mvx-type.is-on {
+    box-shadow: inset 0 0 0 1px currentColor; font-weight: 700;
+  }
+  td .mvx-type, .slocx-mobile-metrics .mvx-type { cursor: default; }
+
+  .mvx-in i, .mvx-in b { color: var(--st-normal-fg); }
+  .mvx-out i, .mvx-out b { color: var(--st-warning-fg); }
+  .mvx-qty { font-weight: 650; }
+  .mvx-qty.mvx-in, .mvx-qty.mvx-out { color: inherit; }
+  td.mvx-qty.mvx-in, .mvx-qty.mvx-in b, b.mvx-qty.mvx-in { color: var(--st-normal-fg); }
+  td.mvx-qty.mvx-out, .mvx-qty.mvx-out b, b.mvx-qty.mvx-out { color: var(--st-warning-fg); }
+  .mvx-qty.mvx-neutral { color: var(--text-muted); }
+
+  .mvx-table { min-width: 1120px; }
+  .mvx-table thead { position: sticky; z-index: 2; top: 0; background: var(--surface-raised); }
+  /* Waktu absolut dan jaraknya dari sekarang berdampingan: yang pertama untuk
+     dicocokkan dengan sistem lain, yang kedua untuk dibaca sekilas. */
+  .mvx-time { display: grid; gap: 1px; line-height: 1.25; white-space: nowrap; }
+  .mvx-time small { color: var(--text-muted); font-size: 10px; }
+  .mvx-product { display: grid; max-width: 250px; gap: 1px; line-height: 1.25; }
+  .mvx-product > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mvx-product small { color: var(--text-muted); font-size: 10px; }
+  .mvx-route {
+    display: flex; max-width: 260px; align-items: center; gap: 5px; font-size: 11px;
+  }
+  .mvx-route > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mvx-route > b { flex: none; color: var(--text-muted); font-weight: 400; }
+  .mvx-status { max-width: 150px; font-size: 11px; }
+  .mvx-status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mvx-operator { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mvx-invoice {
+    max-width: 150px; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* Grafik aktivitas: dua deret pada satu sumbu nol, masuk ke atas, keluar ke
+     bawah. Bentuk divergen ini yang membuat hari dengan arus tidak seimbang
+     terlihat tanpa membaca satu angka pun. */
+  .mvx-activity { display: grid; gap: 5px; padding: 10px 12px; }
+  .mvx-activity figcaption {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px;
+  }
+  .mvx-activity-legend {
+    display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px;
+    color: var(--text-muted); font-size: 10.5px;
+  }
+  .mvx-activity-legend i { width: 8px; height: 8px; border-radius: 2px; }
+  .mvx-activity-legend i:not(:first-child) { margin-left: 7px; }
+  .mvx-activity-legend small { margin-left: 4px; font-size: 10px; opacity: .8; }
+  .mvx-swatch-in { background: var(--st-normal-fg); }
+  .mvx-swatch-out { background: var(--st-warning-fg); }
+  .mvx-activity svg { width: 100%; height: 74px; }
+  .mvx-activity-axis {
+    display: flex; justify-content: space-between; color: var(--text-muted); font-size: 10px;
+  }
+
+  /* Strip per gudang — jawaban langsung atas "Recent movements per WH". */
+  .mvx-wh-strip { display: grid; gap: 6px; }
+  .mvx-wh-title { color: var(--text-muted); }
+  .mvx-wh-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 6px;
+  }
+  .mvx-wh-card {
+    display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--surface-raised); color: var(--text); text-align: left;
+    transition: border-color .12s ease, background-color .12s ease;
+  }
+  .mvx-wh-card:hover { border-color: var(--accent); }
+  .mvx-wh-card.is-on {
+    border-color: color-mix(in oklab, var(--accent) 60%, var(--border));
+    background: var(--accent-soft);
+  }
+  .mvx-wh-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .mvx-wh-head strong { font-size: 13px; }
+  .mvx-wh-head span { color: var(--text-muted); font-size: 11px; }
+  .mvx-wh-flow { display: flex; gap: 8px; font-size: 11px; }
+  .mvx-wh-flow .mvx-in { color: var(--st-normal-fg); }
+  .mvx-wh-flow .mvx-out { color: var(--st-warning-fg); }
+  .mvx-wh-foot { color: var(--text-muted); font-size: 10px; }
+
+  .mvx-empty {
+    display: grid; gap: 5px; padding: 26px 16px; border: 1px dashed var(--border-strong);
+    border-radius: 9px; text-align: center;
+  }
+  .mvx-empty strong { font-size: 13px; }
+  .mvx-empty p { margin: 0 auto; max-width: 62ch; color: var(--text-muted); font-size: 11.5px; }
+
+  /* Panel detail: rute lokasi dulu, sisanya sebagai daftar pasangan. */
+  .mvx-route-card {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center; gap: 10px; padding: 10px 12px;
+  }
+  .mvx-route-card > div { display: grid; min-width: 0; gap: 1px; }
+  .mvx-route-card strong { overflow: hidden; font-size: 12.5px; text-overflow: ellipsis; }
+  .mvx-route-card small { overflow: hidden; color: var(--text-muted); font-size: 10.5px; text-overflow: ellipsis; }
+  .mvx-route-arrow { color: var(--text-muted); font-size: 16px; }
+  .mvx-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+  .mvx-detail-grid dd { overflow: hidden; font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Tabel padanan aksi mentah → tipe kanonik (halaman Pergerakan). */
+  .mvx-mapping-warning {
+    margin-bottom: 9px; padding: 8px 10px; border: 1px solid
+    color-mix(in oklab, var(--st-monitor-fg) 35%, var(--border));
+    border-radius: 7px; background: var(--st-monitor-bg); color: var(--st-monitor-fg);
+    font-size: 11.5px;
+  }
+  .mvx-mapping-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 5px;
+  }
+  .mvx-mapping-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: baseline;
+    gap: 8px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px;
+    background: var(--surface-sunken); font-size: 11.5px;
+  }
+  .mvx-mapping-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mvx-mapping-row b { color: var(--accent-ink); font-size: 11px; }
+  .mvx-mapping-row small { color: var(--text-muted); font-size: 10px; }
+
   /* Tombol ekspor: umpan balik proses tetap di dalam alur tombol. */
   .export-btn-wrap { display: inline-flex; min-width: 0; align-items: center; gap: 7px; }
   .export-btn { display: inline-flex; align-items: center; gap: 6px; }
@@ -805,8 +947,14 @@
   .heat-legend-item.is-active { border-color: color-mix(in oklab, var(--accent) 55%, var(--border)); color: var(--text); }
   .heat-legend-item.is-active { background: var(--accent-soft); }
   .heat-legend-item i { width: 8px; height: 8px; flex: none; border: 1px solid color-mix(in oklab, var(--text) 12%, transparent); border-radius: 2px; }
+  /* Ringkasan toolbar boleh membungkus ke baris berikutnya, bukan memaksa
+     lebarnya sendiri. Dengan `min-width: max-content` isinya menentukan lebar
+     minimum dokumen, sehingga setiap keterangan yang ditambahkan di sini —
+     jumlah zona, jumlah SLOC, okupansi, tombol ekspor — mendorong seluruh
+     halaman melewati tepi layar ponsel. */
   .heat-toolbar-meta {
-    display: flex; min-width: max-content; flex: none; align-items: center; gap: 5px;
+    display: flex; min-width: 0; flex: 0 1 auto; flex-wrap: wrap;
+    align-items: center; gap: 5px;
     color: var(--text-muted); font-size: 10.5px;
   }
   .heat-toolbar-meta b { color: var(--text); }
@@ -1132,6 +1280,11 @@
     .occ-zone-mobile,
     .zone-detail-mobile { display: grid; gap: 7px; }
     .slocx-table-wrap { display: none; }
+    .mvx-wh-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mvx-detail-grid { grid-template-columns: 1fr; }
+    .mvx-route-card { grid-template-columns: 1fr; }
+    .mvx-route-arrow { transform: rotate(90deg); justify-self: center; }
+    .mvx-activity svg { height: 62px; }
     .slocx-mobile { display: grid; gap: 7px; }
     .slocx-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .slocx-search { grid-column: 1 / -1; }

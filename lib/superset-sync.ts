@@ -180,16 +180,32 @@ export const SupersetSyncConfigSchema = z.object({
     }
     names.add(job.name);
     if (!job.enabled) continue;
-    const locationColumn = Object.keys(job.dataset.columns).find((raw) => raw === "location_id");
-    if (!locationColumn) {
+    // Yang menentukan keamanan scope adalah kolom TUJUAN `location_id` — itulah
+    // yang di-join ke allowlist gudang di DuckDB. Nama kolom sumbernya berbeda
+    // per dataset (dataset pergerakan memakai `inventory_origin_location_id`),
+    // jadi memaksakan nama mentah "location_id" hanya akan menolak dataset yang
+    // sebenarnya sudah ber-scope dengan benar.
+    if (!scopeColumnOf(job.dataset.columns)) {
       ctx.addIssue({
         code: "custom",
         path: ["jobs", index, "dataset", "columns"],
-        message: "Job aktif harus memetakan location_id agar scope gudang tetap aman.",
+        message: "Job aktif harus memetakan satu kolom ke location_id agar scope gudang tetap aman.",
       });
     }
   }
 });
+
+/**
+ * Kolom SUMBER yang membawa location_id pada sebuah dataset.
+ *
+ * Filter Superset memakai nama kolom asli, sedangkan allowlist gudang memakai
+ * nama tujuan. Satu-satunya penghubung yang sah antara keduanya adalah peta
+ * kolom job itu sendiri.
+ */
+function scopeColumnOf(columns: Record<string, string>): string | null {
+  const direct = Object.entries(columns).find(([, target]) => target === "location_id");
+  return direct ? direct[0] : null;
+}
 
 const SecretSchema = z.object({
   auth: z.object({
@@ -341,23 +357,32 @@ export function writeSupersetSyncSettings(input: unknown) {
     throw new Error(`location_id di luar allowlist gudang: ${invalidIds.join(", ")}.`);
   }
 
-  const scopeFilter = {
-    col: "location_id",
-    op: "IN",
-    val: parsed.config.scope.location_ids,
-  };
+  // Scope gudang dipaksakan ulang pada setiap penyimpanan, memakai nama kolom
+  // yang benar-benar dimiliki dataset masing-masing. Menuliskan "location_id"
+  // untuk semua job akan menanam filter pada kolom yang tidak ada di dataset
+  // pergerakan — Superset menolaknya dan job berhenti menarik data.
   const config: SupersetSyncConfig = {
     ...parsed.config,
-    jobs: parsed.config.jobs.map((job) => ({
-      ...job,
-      dataset: {
-        ...job.dataset,
-        filters: [
-          scopeFilter,
-          ...job.dataset.filters.filter((filter) => filter.col !== "location_id"),
-        ],
-      },
-    })),
+    jobs: parsed.config.jobs.map((job) => {
+      const scopeColumn = scopeColumnOf(job.dataset.columns) ?? "location_id";
+      const scopeFilter = {
+        col: scopeColumn,
+        op: "IN",
+        val: parsed.config.scope.location_ids,
+      };
+      return {
+        ...job,
+        dataset: {
+          ...job.dataset,
+          filters: [
+            scopeFilter,
+            ...job.dataset.filters.filter(
+              (filter) => filter.col !== scopeColumn && filter.col !== "location_id",
+            ),
+          ],
+        },
+      };
+    }),
   };
   const validated = SupersetSyncConfigSchema.parse(config);
 

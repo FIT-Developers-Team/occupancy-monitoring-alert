@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import type { ForecastRow } from "@/types";
 import { hoursToTarget } from "@/lib/forecast";
-import { fmtHours, fmtNum } from "@/lib/utils";
+import { formatters } from "@/lib/utils";
 import { useT } from "@/lib/i18n-client";
 import dynamic from "next/dynamic";
 import LoadingPopup from "@/components/ui/loading-popup";
@@ -16,7 +16,8 @@ const ForecastChart = dynamic(() => import("@/components/charts/forecast-chart")
 });
 
 export default function WhatIfPanel({ rows }: { rows: ForecastRow[] }) {
-  const { t } = useT();
+  const { t, lang } = useT();
+  const f = formatters(lang);
   const [wh, setWh] = useState(rows[0]?.warehouse ?? "");
   const [inAdj, setInAdj] = useState(0);
   const [outAdj, setOutAdj] = useState(0);
@@ -38,7 +39,7 @@ export default function WhatIfPanel({ rows }: { rows: ForecastRow[] }) {
   const noFlow = row.in_rate === 0 && row.out_rate === 0;
   const unavailable = !row.forecast_ready;
   const changed = inAdj !== 0 || outAdj !== 0;
-  const fmtFlow = (v: number) => (row.flow_unit === "unit" ? fmtNum(v, 1) : fmtNum(v, 3));
+  const fmtFlow = (v: number) => (row.flow_unit === "unit" ? f.num(v, 1) : f.num(v, 3));
 
   return (
     <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
@@ -86,12 +87,12 @@ export default function WhatIfPanel({ rows }: { rows: ForecastRow[] }) {
             <span className="eyebrow">{t("fc.to95")}</span>
             <span className="num text-sm font-semibold"
               style={{ color: sim.h95 !== null && sim.h95 < 12 ? "var(--st-critical-fg)" : "var(--text)" }}>
-              {fmtHours(sim.h95)}
+              {f.hours(sim.h95)}
             </span>
           </div>
           <div className="flex items-baseline justify-between">
             <span className="eyebrow">{t("fc.to100")}</span>
-            <span className="num text-sm font-semibold">{fmtHours(sim.h100)}</span>
+            <span className="num text-sm font-semibold">{f.hours(sim.h100)}</span>
           </div>
           {changed && (
             <button className="btn btn-ghost btn-sm w-full justify-center"

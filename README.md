@@ -66,6 +66,33 @@ Dua dataset sumber (kolom persis seperti yang kamu kirim):
 **Dataset STOK** → tabel `stock_history` (snapshot penuh tiap sync)
 `location_id, product_id, product_name, sku_number, l1_category_name, rack_storage_name, length, width, height, rack_name, product_detail_status_name (Available/Bad/Lost), SUM(stock), sku_cbm, occupied_cbm`
 
+**Dataset PERGERAKAN** (dataset `705`, slice `23640`) → tabel `movement_events`
+(incremental, watermark `inventory_updated_at`, retensi 60 hari)
+`inventory_created_at, inventory_updated_at, inventory_origin_location_id, origin_location_name, inventory_invoice_number, inventory_product_id, product_name, product_sku_number, parent_category_name, product_type_name, from_rack_name, to_rack_name, inventory_action, inventory_operator, from_package_label, to_package_label, from_status_notes, to_status_notes, inventory_created_by, SUM(inventory_quantity)`
+
+Pemetaan kolomnya:
+
+| Kolom dataset | Kolom DuckDB | Dipakai untuk |
+| --- | --- | --- |
+| `inventory_created_at` | `created_at` | patokan waktu kejadian — dasar rentang 24 jam/7 hari/30 hari |
+| `inventory_updated_at` | `updated_at` | watermark incremental + kunci dedupe versi terbaru |
+| `inventory_origin_location_id` | `location_id` | join allowlist gudang (`wh_map`) |
+| `origin_location_name` | `location_name` | nama gudang pada panel detail |
+| `inventory_invoice_number` | `invoice_number` | ID transaksi/task |
+| `inventory_product_id` / `product_name` / `product_sku_number` | `product_id` / `product_name` / `sku_number` | identitas SKU |
+| `parent_category_name` / `product_type_name` | `l1_category` / `product_type` | filter kategori & tipe produk |
+| `from_rack_name` / `to_rack_name` | `source_sloc` / `destination_sloc` | rute lokasi + alur (masuk/internal/keluar) |
+| `inventory_action` | `action_raw` | **distandarkan** ke sepuluh tipe kanonik saat dibaca |
+| `inventory_operator` | `operator_sign` | arah stok (+ menambah, − mengurangi) |
+| `from_package_label` / `to_package_label` | `from_package` / `to_package` | penelusuran asset/package |
+| `from_status_notes` / `to_status_notes` | `from_status` / `to_status` | perubahan status stok |
+| `inventory_created_by` | `operator` | nama pelaksana |
+| `SUM(inventory_quantity)` | `qty` | jumlah, ditandatangani mengikuti arah |
+
+Karena kolom scope-nya bernama `inventory_origin_location_id` — bukan
+`location_id` — allowlist gudang dipasang pada **kolom sumber yang benar-benar
+dimiliki dataset**; penghubungnya adalah peta kolom job itu sendiri.
+
 Langkah (mode default `superset_dataset` — **tanpa SQL Lab, tanpa Google Sheet, tanpa kredensial DB**):
 
 1. Jalankan web, masuk sebagai admin, lalu buka **Pengaturan → Superset Sync**.
@@ -312,7 +339,7 @@ warna.
 
 ## 5. Fitur
 
-Ringkasan Eksekutif (KPI Qty & CBM, tren operasional 48 jam, Top Risiko) · Okupansi per gudang/zona · Heatmap SLOC + drawer isi produk & movement · Forecast time-to-full (laju %, Qty & SKU/jam) + What-If Inbound/Outbound · Penjelajah SLOC (cari & filter lintas 144k lokasi) + ekspor Excel · Alert Center (dedup, hysteresis, auto-resolve, eskalasi dinamis, notifikasi real-time Google Chat per WH) · Integritas (phantom/ghost) · Audit Trail · Pengaturan 4 tab termasuk Superset Sync · Panduan · sidebar ⇄ icon-rail smooth + drawer mobile · ⌘K.
+Ringkasan Eksekutif (KPI Qty & CBM, tren operasional 48 jam, Top Risiko) · Okupansi per gudang/zona · Heatmap SLOC + drawer isi produk & movement · Pergerakan Stok (Recent movements per WH) · Forecast time-to-full (laju %, Qty & SKU/jam) + What-If Inbound/Outbound · Penjelajah SLOC (cari & filter lintas 144k lokasi) + ekspor Excel · Alert Center (dedup, hysteresis, auto-resolve, eskalasi dinamis, notifikasi real-time Google Chat per WH) · Integritas (phantom/ghost) · Audit Trail · Pengaturan 4 tab termasuk Superset Sync · Panduan · sidebar ⇄ icon-rail smooth + drawer mobile · ⌘K.
 
 ### 5.1 Filter, pencarian, dan ekspor Excel
 
@@ -328,6 +355,8 @@ paginasi atau pembagian batch.**
 | Okupansi (`/occupancy`) | Filter zona (pencarian, gudang, status, terisi/kosong) + penjelajah SLOC | `dataset=zone`, `dataset=warehouse`, `dataset=sloc` |
 | Detail gudang (`/occupancy/[wh]`) | Idem, terkunci pada satu gudang | `dataset=sloc` |
 | Isi zona (`/occupancy/[wh]/[zone]`) | Pencarian SLOC/SKU, status stok, kategori L1, zona rak + penjelajah SLOC untuk lokasi kosong | `dataset=zone-detail`, `dataset=sloc` |
+| Pergerakan (`/movements`) | Pencarian bebas (produk, SKU, transaksi, package, SLOC, operator, aksi), gudang, rentang waktu, tipe pergerakan, arah stok, alur lokasi, kategori L1, tipe produk, status tujuan, operator, kode SLOC. Filter tersimpan di URL. | `dataset=movements` |
+| Detail gudang (`/occupancy/[wh]`) — panel Pergerakan | Idem, terkunci pada satu gudang | `dataset=movements` |
 | Heatmap (`/heatmap`) | Pencarian zona, lompat ke kode SLOC, filter status pada legenda + penjelajah SLOC | `dataset=sloc` (termasuk per zona dari dialog) |
 | Alert (`/alerts`) | Pencarian judul/lokasi/SKU/aturan, gudang, tingkat, aturan | `dataset=alerts` |
 | Integritas (`/integrity`) | Pencarian kode SLOC, jenis selisih, gudang | `dataset=integrity` |
@@ -337,16 +366,49 @@ Endpoint: `GET /api/export?dataset=<nama>&<filter>` mengembalikan `.xlsx` asli
 (ditulis tanpa dependensi oleh `lib/xlsx.ts`) berisi sheet data + sheet
 **Filter** yang mencatat kriteria, jumlah baris, dan waktu pembuatan sehingga
 setiap berkas dapat diaudit ulang. Data tabel interaktif berasal dari
-`GET /api/sloc/explore`, pilihan dropdown dari `GET /api/sloc/facets`.
+`GET /api/sloc/explore`, pilihan dropdown dari `GET /api/sloc/facets`. Tabel
+pergerakan memakai `GET /api/movements` (baris + ringkasan + aktivitas + per
+gudang dalam satu tarikan) dan `GET /api/movements/facets`.
 
-Batas pengaman: 400.000 baris SLOC, 200.000 baris isi zona, 50.000 alert —
-semuanya jauh di atas volume nyata (±144k SLOC aktif) sehingga tidak pernah
-memaksa unduhan bertahap.
+Batas pengaman: 400.000 baris SLOC, 200.000 baris isi zona, 50.000 alert,
+100.000 baris pergerakan — semuanya jauh di atas volume nyata (±144k SLOC aktif)
+sehingga tidak pernah memaksa unduhan bertahap.
+
+### 5.2 Pergerakan stok — standardisasi tipe aksi
+
+`inventory_action` ditulis bebas oleh WMS: satu kegiatan yang sama muncul
+sebagai `Putaway`, `PUT_AWAY`, dan `Penempatan`. Menampilkannya apa adanya
+membuat filter tidak berguna — puluhan nilai untuk enam kegiatan. Karena itu
+`lib/movements.ts` memetakan setiap aksi ke **satu** tipe kanonik:
+
+`RECEIVING · PUTAWAY · PICKING · PACKING · DISPATCH · TRANSFER · RETURN ·
+ADJUSTMENT · STATUS_CHANGE · OTHER`
+
+Aturannya berurutan (yang cocok pertama menang), teksnya dinormalkan lebih dulu
+(`_`, `-`, `/` menjadi spasi), lalu kata kunci dicocokkan sebagai **awalan
+kata** — sehingga `remove` tidak tergolong sebagai `move`. Tabel aturan yang
+sama membangkitkan ekspresi SQL DuckDB dan fungsi TypeScript, jadi filter di
+server dan label di layar tidak mungkin menyimpang; `tests/movement-taxonomy.test.mjs`
+menjaga keduanya tetap sepakat.
+
+Teks aslinya tidak pernah hilang: kolom `action_raw` tetap tampil pada panel
+detail dan berkas Excel, dan halaman `/movements` menutup dengan tabel padanan
+**aksi asli → tipe kanonik** beserta jumlah kejadiannya. Ejaan baru yang belum
+dikenali jatuh ke `OTHER` dan langsung terlihat di sana — tambahkan kata
+kuncinya di `lib/movements.ts`.
+
+Arah stok dibaca dari `inventory_operator` (`+` menambah, `−` mengurangi) dan
+alur lokasi diturunkan dari pasangan rak asal/tujuan (masuk gudang, antar-lokasi,
+keluar gudang). Karena job incremental dapat menarik ulang transaksi yang
+di-update, view `vw_movement` mendedupe berdasarkan kunci alami kejadian dan
+menyimpan versi `updated_at` paling akhir — tanpa itu, satu kejadian dapat
+terhitung dua kali pada KPI masuk/keluar.
 
 Dua trigger aktif: **OCC-ZONE-BREACH** (satu alert per warehouse/zona) dan
 **OCC-SLOC-BREACH** (lokasi terparah, dibatasi `sloc_alerts.max_alerts` per pass).
 Keduanya memakai hysteresis, auto-resolve, dedup thread, dan eskalasi sampai
-di-ack. Rule stok dan movement dinonaktifkan sampai dataset movement tersedia.
+di-ack. Rule stok dan movement belum dijalankan pada fase ini; data
+pergerakannya sendiri sudah tersedia di `/movements`.
 
 ### Tingkat keparahan: dinilai pada KEDUA basis kapasitas
 

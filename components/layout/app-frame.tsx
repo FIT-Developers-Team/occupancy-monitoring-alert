@@ -6,8 +6,11 @@ import Topbar from "@/components/layout/topbar";
 import { useT } from "@/lib/i18n-client";
 
 export default function AppFrame({
-  userName, role, dataVersion, children,
-}: { userName: string; role: string; dataVersion: string; children: React.ReactNode }) {
+  userName, role, dataVersion, warehouses, children,
+}: {
+  userName: string; role: string; dataVersion: string;
+  warehouses: string[]; children: React.ReactNode;
+}) {
   const [mode, setMode] = useState<NavMode>("open");
   const [mobileOpen, setMobileOpen] = useState(false);
   const [ready, setReady] = useState(false);
@@ -60,7 +63,7 @@ export default function AppFrame({
         onNavigate={onNavigate} onToggle={toggleMode} />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar userName={userName} role={role} dataVersion={dataVersion}
-          onOpenMobileNav={() => setMobileOpen(true)} />
+          warehouses={warehouses} onOpenMobileNav={() => setMobileOpen(true)} />
         <main id="main-content" tabIndex={-1}
           className="min-w-0 flex-1 space-y-3 p-3 sm:space-y-4 sm:p-4 md:p-5">
           {children}

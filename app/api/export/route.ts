@@ -9,6 +9,7 @@ import { currentUser } from "@/lib/auth";
 import { getT, type TFn } from "@/lib/i18n";
 import { getWarehouses, thresholdsFor } from "@/lib/config";
 import { parseSlocFilter, type SlocFilter } from "@/lib/sloc-filter";
+import { parseMovementFilter } from "@/lib/movements";
 import { ALERT_EXPORT_MAX_ROWS, listAlerts } from "@/lib/alerts/store";
 import {
   getForecastRows,
@@ -18,6 +19,8 @@ import {
   getWarehouseSummaries,
   getZoneDetail,
   getZoneSummary,
+  getMovementRowsAll,
+  MOVEMENT_EXPORT_MAX_ROWS,
   SLOC_EXPORT_MAX_ROWS,
   ZONE_DETAIL_EXPORT_MAX_ROWS,
   type SlocExplorerRow,
@@ -38,6 +41,7 @@ const DATASETS = [
   "integrity",
   "forecast",
   "warehouse",
+  "movements",
 ] as const;
 type Dataset = (typeof DATASETS)[number];
 
@@ -515,6 +519,81 @@ async function buildWarehouse(params: URLSearchParams, t: TFn): Promise<Built> {
   };
 }
 
+/**
+ * Ekspor pergerakan stok.
+ *
+ * Kolomnya sengaja SELENGKAP dataset sumber — paket asal/tujuan, status
+ * asal/tujuan, tipe produk, aksi mentah — karena berkas inilah yang dipakai
+ * saat menelusuri selisih stok, dan penelusuran seperti itu selalu berhenti
+ * pada kolom yang kebetulan tidak ikut diekspor. Tipe kanonik dan aksi mentah
+ * berdampingan supaya hasil standardisasi dapat diperiksa ulang.
+ */
+async function buildMovements(params: URLSearchParams, t: TFn): Promise<Built> {
+  const filter = parseMovementFilter(params);
+  const rows = await getMovementRowsAll(filter);
+  return {
+    rowCount: rows.length,
+    filename: safeFilename(
+      `wiom-movement-${[filter.wh || "all", filter.range].filter(Boolean).join("-")}-${stamp()}`,
+    ),
+    sheets: [
+      {
+        name: t("export.sheet.movements"),
+        columns: [
+          { key: "at", header: t("mv.detail.created"), width: 20 },
+          { key: "updated_at", header: t("mv.detail.updated"), width: 20 },
+          { key: "wh", header: t("common.warehouse"), width: 10 },
+          { key: "location_name", header: t("mv.col.locationName"), width: 26 },
+          { key: "invoice_number", header: t("mv.col.invoice"), width: 20 },
+          { key: "movement_type", header: t("common.type"), width: 16 },
+          { key: "action_raw", header: t("mv.detail.rawAction"), width: 26 },
+          { key: "direction", header: t("mv.direction"), width: 12 },
+          { key: "flow", header: t("mv.flow"), width: 12 },
+          { key: "product_id", header: t("mv.col.productId"), width: 12 },
+          { key: "product_name", header: t("common.product"), width: 34 },
+          { key: "sku_number", header: t("common.sku"), width: 18 },
+          { key: "l1_category", header: t("mv.col.category"), width: 20 },
+          { key: "product_type", header: t("mv.col.productType"), width: 18 },
+          { key: "source_sloc", header: t("common.from"), width: 26 },
+          { key: "destination_sloc", header: t("common.to"), width: 26 },
+          { key: "from_package", header: t("mv.col.fromPackage"), width: 18 },
+          { key: "to_package", header: t("mv.col.toPackage"), width: 18 },
+          { key: "from_status", header: t("mv.col.fromStatus"), width: 14 },
+          { key: "to_status", header: t("mv.col.toStatus"), width: 14 },
+          { key: "operator", header: t("common.operator"), width: 22 },
+          { key: "qty", header: "Qty", type: "number", width: 12 },
+          { key: "qty_signed", header: t("mv.col.qtySigned"), type: "number", width: 14 },
+        ],
+        // Tipe, arah, dan alur ditulis sebagai label bahasa aktif — mengikuti
+        // ekspor lain — sementara aksi mentah tetap berdiri sendiri di kolom
+        // sebelahnya sebagai nilai sumber yang tidak pernah berubah.
+        rows: rows.map((row) => ({
+          ...row,
+          movement_type: t(`mv.type.${row.movement_type}`),
+          direction: t(`mv.direction.${row.direction}`),
+          flow: t(`mv.flow.${row.flow}`),
+        })),
+      },
+      filterSheet(t("export.sheet.filter"), [
+        { label: t("common.warehouse"), value: filter.wh || t("common.allWarehouses") },
+        { label: t("mv.range"), value: t(`mv.range.${filter.range}`) },
+        { label: t("common.type"), value: filter.type.length ? filter.type.join(", ") : t("mv.allTypes") },
+        { label: t("mv.direction"), value: filter.direction || t("mv.direction.all") },
+        { label: t("mv.flow"), value: filter.flow || t("common.all") },
+        { label: t("common.sloc"), value: filter.sloc || "—" },
+        { label: t("mv.col.category"), value: filter.category || t("common.all") },
+        { label: t("mv.col.productType"), value: filter.productType || t("common.all") },
+        { label: t("mv.col.toStatus"), value: filter.status || t("common.all") },
+        { label: t("common.operator"), value: filter.operator || t("common.all") },
+        { label: t("action.search"), value: filter.q || "—" },
+        { label: t("export.rowCount"), value: String(rows.length) },
+        { label: t("export.cap"), value: String(MOVEMENT_EXPORT_MAX_ROWS) },
+        { label: t("export.generatedAt"), value: stamp() },
+      ]),
+    ],
+  };
+}
+
 const BUILDERS: Record<Dataset, (params: URLSearchParams, t: TFn) => Promise<Built>> = {
   sloc: buildSloc,
   zone: buildZone,
@@ -523,6 +602,7 @@ const BUILDERS: Record<Dataset, (params: URLSearchParams, t: TFn) => Promise<Bui
   integrity: buildIntegrity,
   forecast: buildForecast,
   warehouse: buildWarehouse,
+  movements: buildMovements,
 };
 
 export async function GET(request: NextRequest) {

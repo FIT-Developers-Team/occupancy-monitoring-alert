@@ -103,12 +103,27 @@ export async function readModelCached<T>(
     return await refresh;
   } catch (error) {
     if (!cached) throw error;
-    console.warn(
+    // Dibedakan dari peringatan di atas dengan sengaja. Di sini sidik jari
+    // datanya SUDAH berganti, jadi hasil yang tersaji diketahui berasal dari
+    // snapshot lama — bukan sekadar hasil yang umurnya lewat. Tanpa umur yang
+    // disebutkan, kegagalan berulang terbaca sama saja dengan kegagalan sekali,
+    // dan sebuah read model dapat tertinggal berjam-jam di belakang sisa dasbor
+    // tanpa satu pun barisnya menunjukkan hal itu. Persis itulah yang terjadi
+    // pada read model tren: ia gagal setiap kali dan tetap tersaji, 22 jam di
+    // belakang setiap angka lain di layar.
+    console.error(
       `[WIOM] Read model ${key} gagal dihitung ulang (${(error as Error).message})`
-      + " — memakai hasil valid terakhir.",
+      + ` — menyajikan hasil ${describeAge(Date.now() - cached.updatedAt)} dari snapshot sebelumnya.`,
     );
     return cached.data;
   }
+}
+
+function describeAge(ms: number): string {
+  const minutes = Math.max(0, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes} menit lalu`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} jam lalu` : `${Math.round(hours / 24)} hari lalu`;
 }
 
 export function clearReadModelMemory(): void {

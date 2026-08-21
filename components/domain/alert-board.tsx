@@ -2,7 +2,7 @@
 // Papan alert per gudang + pop-up detail (sebab, dampak, tindakan, riwayat).
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { Alert, Severity } from "@/types";
-import { fmtDateTime, severityOrder } from "@/lib/utils";
+import { formatters, severityOrder } from "@/lib/utils";
 import { useT } from "@/lib/i18n-client";
 import { SEVERITY_TONE } from "@/lib/status-tone";
 import { trapFocus } from "@/lib/focus-trap";
@@ -26,7 +26,8 @@ export default function AlertBoard({
   /** Kelompok status yang dimuat papan ini — dipakai ekspor agar cakupannya sama. */
   exportGroup?: "open" | "acknowledged" | "closed" | "all";
 }) {
-  const { t } = useT();
+  const { t, lang } = useT();
+  const f = formatters(lang);
   const [wh, setWh] = useState<string>("");
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -256,7 +257,7 @@ export default function AlertBoard({
                 </div>
                 <div>
                   <div className="eyebrow">{t("common.time")}</div>
-                  <div className="num text-[11px] font-semibold">{fmtDateTime(sel.created_at)}</div>
+                  <div className="num text-[11px] font-semibold">{f.dateTime(sel.created_at)}</div>
                 </div>
               </div>
               {(events[sel.alert_id] ?? []).length > 0 && (
@@ -267,7 +268,7 @@ export default function AlertBoard({
                       <li key={e.id} className="flex justify-between gap-2 text-[11px]"
                         style={{ color: "var(--text-muted)" }}>
                         <span>{e.action}{e.note ? ` — ${e.note}` : ""}</span>
-                        <span className="num shrink-0">{fmtDateTime(e.at)}</span>
+                        <span className="num shrink-0">{f.dateTime(e.at)}</span>
                       </li>
                     ))}
                   </ul>

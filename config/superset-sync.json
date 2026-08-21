@@ -184,40 +184,60 @@
     },
     {
       "name": "movement_incremental",
-      "label": "Pergerakan stok",
-      "enabled": false,
+      "label": "Pergerakan stok (Recent movements)",
+      "enabled": true,
       "required": false,
       "mode": "incremental",
-      "target_table": "movement_history",
-      "base_sql": "SELECT movement_id, movement_type, movement_datetime, operator, source_sloc, destination_sloc, product_id, product_name, qty FROM <DATASET_MOVEMENT>",
-      "key_col": "movement_id",
-      "key_type": "string",
-      "chunk_size": 50000,
-      "watermark_column": "movement_datetime",
+      "target_table": "movement_events",
+      "base_sql": "SELECT inventory_created_at, inventory_updated_at, inventory_origin_location_id, origin_location_name, inventory_invoice_number, inventory_product_id, product_name, product_sku_number, parent_category_name, product_type_name, from_rack_name, to_rack_name, inventory_action, inventory_operator, from_package_label, to_package_label, from_status_notes, to_status_notes, inventory_created_by, SUM(inventory_quantity) AS qty FROM <DATASET_MOVEMENT> GROUP BY <SEMUA_KOLOM_NON_AGREGAT>",
+      "key_col": "updated_at",
+      "key_type": "timestamp",
+      "chunk_size": 20000,
+      "watermark_column": "updated_at",
       "primary_key": [],
       "history_table": null,
-      "retention_days": 120,
+      "retention_days": 60,
       "min_interval_seconds": 0,
       "dataset": {
-        "id": "",
-        "chart_id": null,
-        "page": "keyset",
-        "key": "movement_id",
+        "id": 705,
+        "chart_id": 23640,
+        "page": "offset",
+        "orderby": [
+          "inventory_updated_at",
+          "inventory_invoice_number",
+          "inventory_product_id"
+        ],
         "columns": {
-          "location_id": "location_id",
-          "movement_id": "movement_id",
-          "movement_type": "movement_type",
-          "movement_datetime": "movement_datetime",
-          "operator": "operator",
-          "source_sloc": "source_sloc",
-          "destination_sloc": "destination_sloc",
-          "product_id": "product_id",
+          "inventory_created_at": "created_at",
+          "inventory_updated_at": "updated_at",
+          "inventory_origin_location_id": "location_id",
+          "origin_location_name": "location_name",
+          "inventory_invoice_number": "invoice_number",
+          "inventory_product_id": "product_id",
           "product_name": "product_name",
-          "qty": "qty"
+          "product_sku_number": "sku_number",
+          "parent_category_name": "l1_category",
+          "product_type_name": "product_type",
+          "from_rack_name": "source_sloc",
+          "to_rack_name": "destination_sloc",
+          "inventory_action": "action_raw",
+          "inventory_operator": "operator_sign",
+          "from_package_label": "from_package",
+          "to_package_label": "to_package",
+          "from_status_notes": "from_status",
+          "to_status_notes": "to_status",
+          "inventory_created_by": "operator"
         },
+        "metrics": [
+          {
+            "agg": "SUM",
+            "column": "inventory_quantity",
+            "label": "qty"
+          }
+        ],
         "filters": [
           {
-            "col": "location_id",
+            "col": "inventory_origin_location_id",
             "op": "IN",
             "val": [
               160,
@@ -231,7 +251,11 @@
             ]
           }
         ],
-        "inherit_chart_filters": true
+        "inherit_chart_filters": true,
+        "derive_from_sloc_code": false,
+        "segment_by": [
+          "inventory_origin_location_id"
+        ]
       }
     },
     {

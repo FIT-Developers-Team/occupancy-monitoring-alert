@@ -2,8 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getZoneDetail, getZoneDetailFacets, getZoneSummary } from "@/lib/queries";
 import { getBasisMode, pickPct, pickStatus } from "@/lib/basis";
-import { fmtNum, fmtPct, fmtCbm } from "@/lib/utils";
-import { getT } from "@/lib/i18n";
+import { formatters } from "@/lib/utils";
+import { getLang, getT } from "@/lib/i18n";
 import Section from "@/components/ui/section";
 import KpiCard from "@/components/ui/kpi-card";
 import { StatusBadge } from "@/components/ui/badges";
@@ -36,10 +36,11 @@ export default async function ZoneDetailPage(
   const p = await params;
   const code = p.warehouseId.toUpperCase();
   const zone = decodeURIComponent(p.zone).toUpperCase();
-  const [mode, t, zones, detail, facets] = await Promise.all([
-    getBasisMode(), getT(),
+  const [mode, t, lang, zones, detail, facets] = await Promise.all([
+    getBasisMode(), getT(), getLang(),
     getZoneSummary(code), getZoneDetail(code, zone), getZoneDetailFacets(code, zone),
   ]);
+  const f = formatters(lang);
   const lines = detail.rows;
   const z = zones.find((x) => x.zone === zone);
   if (!z) notFound();
@@ -66,26 +67,26 @@ export default async function ZoneDetailPage(
       <div className="metric-strip metric-strip-four">
         <KpiCard
           label={t("common.occupancy")}
-          value={fmtPct(shownPct)}
+          value={f.pct(shownPct)}
           tone={toneFor(shownStatus)}
           sub={`${t("basis.label")}: ${t(`basis.${mode}`)}`}
         />
         <KpiCard
           label={t("occ.slocOccupied")}
-          value={fmtNum(z.sloc_occupied)}
-          sub={`${fmtPct(z.pct_bin)} · ${fmtNum(z.sloc_total)} ${t("common.active")}`}
+          value={f.num(z.sloc_occupied)}
+          sub={`${f.pct(z.pct_bin)} · ${f.num(z.sloc_total)} ${t("common.active")}`}
           tone="accent"
         />
         <KpiCard
           label={t("occ.emptySloc")}
-          value={fmtNum(z.sloc_empty)}
-          sub={`${fmtPct(100 - z.pct_bin)} ${t("common.empty").toLocaleLowerCase()}`}
+          value={f.num(z.sloc_empty)}
+          sub={`${f.pct(100 - z.pct_bin)} ${t("common.empty").toLocaleLowerCase()}`}
         />
         <KpiCard
           label={`${t("common.sku")} · ${t("occ.rows")}`}
-          value={fmtNum(detail.total)}
+          value={f.num(detail.total)}
           sub={detail.truncated
-            ? `${fmtNum(lines.length)} ${t("occ.rowsLoaded")}`
+            ? `${f.num(lines.length)} ${t("occ.rowsLoaded")}`
             : t("occ.zoneContents")}
           tone="accent"
         />
@@ -94,25 +95,25 @@ export default async function ZoneDetailPage(
       <div className="occ-basis-strip card">
         <div>
           <span className="eyebrow">Qty</span>
-          <strong className="num">{fmtPct(z.pct_qty)}</strong>
-          <small>{fmtNum(z.occ_qty)} / {fmtNum(z.cap_qty)} {t("common.unit")}</small>
+          <strong className="num">{f.pct(z.pct_qty)}</strong>
+          <small>{f.num(z.occ_qty)} / {f.num(z.cap_qty)} {t("common.unit")}</small>
         </div>
         <div>
           <span className="eyebrow">{t("heat.cbmEffective")}</span>
-          <strong className="num">{fmtPct(z.pct_cbm)}</strong>
-          <small title={t("heat.capCbmHint")}>{fmtCbm(z.occ_cbm)} / {fmtCbm(z.cap_cbm)} m³</small>
+          <strong className="num">{f.pct(z.pct_cbm)}</strong>
+          <small title={t("heat.capCbmHint")}>{f.cbm(z.occ_cbm)} / {f.cbm(z.cap_cbm)} m³</small>
         </div>
         <div>
           <span className="eyebrow">Bin</span>
-          <strong className="num">{fmtPct(z.pct_bin)}</strong>
-          <small>{fmtNum(z.sloc_occupied)} / {fmtNum(z.sloc_total)} SLOC</small>
+          <strong className="num">{f.pct(z.pct_bin)}</strong>
+          <small>{f.num(z.sloc_occupied)} / {f.num(z.sloc_total)} SLOC</small>
         </div>
       </div>
 
       <CapacityStandardNote warehouse={code} />
 
       <Section
-        eyebrow={`${fmtNum(lines.length)} ${t("common.of")} ${fmtNum(detail.total)} ${t("occ.rows")} · ${code}/${zone}`}
+        eyebrow={`${f.num(lines.length)} ${t("common.of")} ${f.num(detail.total)} ${t("occ.rows")} · ${code}/${zone}`}
         title={t("occ.zoneContents")}
       >
         <ZoneDetailTable

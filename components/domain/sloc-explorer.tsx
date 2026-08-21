@@ -24,7 +24,7 @@ import {
   type SlocSort,
   type SlocStatusFilter,
 } from "@/lib/sloc-filter";
-import { fmtCapCbm, fmtCbm, fmtNum } from "@/lib/utils";
+import { formatters } from "@/lib/utils";
 import { trapFocus } from "@/lib/focus-trap";
 import { useT } from "@/lib/i18n-client";
 import { StatusBadge } from "@/components/ui/badges";
@@ -104,7 +104,10 @@ export default function SlocExplorer({
   syncUrl?: boolean;
 }) {
   const { t, lang } = useT();
-  const locale = lang === "en" ? "en-GB" : "id-ID";
+  const f = formatters(lang);
+  // Satu sumber locale untuk seluruh komponen ini: `toLocaleString` di bawah
+  // dan pemformat bersama harus tidak mungkin memakai konvensi yang berbeda.
+  const locale = f.locale;
 
   const [filter, setFilter] = useState<SlocFilter>(() => ({
     ...EMPTY_SLOC_FILTER,
@@ -488,10 +491,10 @@ export default function SlocExplorer({
         <span className="slocx-summary-empty">
           <i>{t("occ.emptySloc")}</i><b className="num">{summary.empty.toLocaleString(locale)}</b>
         </span>
-        <span><i>Qty</i><b className="num">{fmtNum(summary.occ_qty)} / {fmtNum(summary.cap_qty)}</b></span>
+        <span><i>Qty</i><b className="num">{f.num(summary.occ_qty)} / {f.num(summary.cap_qty)}</b></span>
         <span title={t("heat.capCbmHint")}>
           <i>{t("heat.cbmEffective")}</i>
-          <b className="num">{fmtCbm(summary.occ_cbm)} / {fmtCbm(summary.cap_cbm)}</b>
+          <b className="num">{f.cbm(summary.occ_cbm)} / {f.cbm(summary.cap_cbm)}</b>
         </span>
         <span><i>{t("common.sku")}</i><b className="num">{summary.sku_count.toLocaleString(locale)}</b></span>
         {!isDefaultSlocFilter(filter) && (
@@ -550,12 +553,12 @@ export default function SlocExplorer({
                         : <StatusBadge status={row.status as never} />}
                     </td>
                     <td className="num text-right">
-                      {fmtNum(row.occ_qty)}
-                      <span style={{ color: "var(--text-muted)" }}>/{row.qty_valid ? fmtNum(row.cap_qty) : "—"}</span>
+                      {f.num(row.occ_qty)}
+                      <span style={{ color: "var(--text-muted)" }}>/{row.qty_valid ? f.num(row.cap_qty) : "—"}</span>
                     </td>
                     <td className="num text-right">
-                      {fmtCbm(row.occ_cbm)}
-                      <span style={{ color: "var(--text-muted)" }}>/{row.cbm_valid ? fmtCbm(row.cap_cbm) : "—"}</span>
+                      {f.cbm(row.occ_cbm)}
+                      <span style={{ color: "var(--text-muted)" }}>/{row.cbm_valid ? f.cbm(row.cap_cbm) : "—"}</span>
                     </td>
                     <td className="num text-right">{pctText(row.pct_qty)}</td>
                     <td className="num text-right">{pctText(row.pct_cbm)}</td>
@@ -666,15 +669,15 @@ export default function SlocExplorer({
               <div>
                 <span className="eyebrow">Qty</span>
                 <strong className="num">{pctText(selected.pct_qty)}</strong>
-                <small>{fmtNum(selected.occ_qty)} / {selected.qty_valid ? fmtNum(selected.cap_qty) : "—"}</small>
+                <small>{f.num(selected.occ_qty)} / {selected.qty_valid ? f.num(selected.cap_qty) : "—"}</small>
               </div>
               <div>
                 <span className="eyebrow">{t("heat.cbmEffective")}</span>
                 <strong className="num">{pctText(selected.pct_cbm)}</strong>
-                <small>{fmtCbm(selected.occ_cbm)} / {selected.cbm_valid ? fmtCbm(selected.cap_cbm) : "—"}</small>
+                <small>{f.cbm(selected.occ_cbm)} / {selected.cbm_valid ? f.cbm(selected.cap_cbm) : "—"}</small>
                 <small className="metric-formula num" title={t("heat.capCbmHint")}>
                   {selected.cbm_valid
-                    ? `${t("heat.capConfigured")} ${fmtCapCbm(selected.cap_cbm_nominal)} × ${selected.utilization_pct}%`
+                    ? `${t("heat.capConfigured")} ${f.capCbm(selected.cap_cbm_nominal)} × ${selected.utilization_pct}%`
                     : t("heat.capUnknown")}
                 </small>
               </div>
@@ -695,11 +698,11 @@ export default function SlocExplorer({
                   <li key={`${line.product_id}-${index}`} className="card anim-in px-3 py-2 text-[11.5px]">
                     <div className="flex items-start justify-between gap-2">
                       <span className="min-w-0 font-semibold">{line.product_name}</span>
-                      <span className="num shrink-0">{fmtNum(line.qty)}</span>
+                      <span className="num shrink-0">{f.num(line.qty)}</span>
                     </div>
                     <div className="flex items-center justify-between gap-2" style={{ color: "var(--text-muted)" }}>
                       <span className="num">{t("common.skuNo")} {line.sku_number}</span>
-                      <span className="num">{fmtCbm(line.cbm)} m³</span>
+                      <span className="num">{f.cbm(line.cbm)} m³</span>
                     </div>
                     <div className="flex items-center justify-between gap-2" style={{ color: "var(--text-muted)" }}>
                       <span className="truncate">{line.l1_category || "—"}</span>

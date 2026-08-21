@@ -11,7 +11,8 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import type { BasisMode, RackZoneSummary, SlocOccupancy, StockLine, ZoneSummary } from "@/types";
-import { fmtCapCbm, fmtCbm, fmtNum } from "@/lib/utils";
+import { formatters } from "@/lib/utils";
+import type { MovementRow } from "@/lib/movements";
 import { pickViewPct, pickViewStatus } from "@/lib/occupancy-view";
 import { useT } from "@/lib/i18n-client";
 import { trapFocus } from "@/lib/focus-trap";
@@ -50,16 +51,7 @@ const CELL_COLOUR: Record<HeatStatus, string> = {
 };
 const naturalOrder = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
-interface Movement {
-  movement_id: number;
-  movement_type: string;
-  at: string;
-  operator: string;
-  source_sloc: string | null;
-  destination_sloc: string | null;
-  product_name: string | null;
-  qty: number;
-}
+type Movement = MovementRow;
 
 interface HeatLabels {
   openZone: string;
@@ -145,6 +137,7 @@ function CellButton({
   cell,
   basis,
   filter,
+  t,
   onSelect,
   index,
   showCoordinates = false,
@@ -153,6 +146,7 @@ function CellButton({
   cell: SlocOccupancy;
   basis: BasisMode;
   filter: StatusFilter;
+  t: (key: string, fallback?: string) => string;
   onSelect: (cell: SlocOccupancy) => void;
   index?: number;
   showCoordinates?: boolean;
@@ -161,13 +155,24 @@ function CellButton({
   const status = heatStatus(cell, basis);
   const pct = cellPct(cell, basis);
   const dimmed = filter !== "ALL" && status !== filter;
+  // Kotak ini tidak memuat teks apa pun, jadi tooltip-nya adalah satu-satunya
+  // tempat statusnya terbaca sebagai kata. Ia harus memakai kata yang sama
+  // dengan legenda tepat di atasnya; sebelumnya di sini muncul nama enum mentah
+  // ("BREACH") sementara legendanya menulis "Breach" atau terjemahannya.
+  const coordinates = [
+    `${t("heat.aisle")} ${cell.aisle || "—"}`,
+    `${t("heat.bay")} ${cell.bay || "—"}`,
+    `${t("heat.level")} ${cell.level || "—"}`,
+    `${t("heat.bin")} ${cell.bin || "—"}`,
+  ];
+  const reading = [cell.sloc_code, ...coordinates, t(`heat.legendStatus.${status}`), pctText(pct)];
   return (
     <button
       type="button"
       role={index === undefined ? undefined : "gridcell"}
       className={`heat-cell-button${showCoordinates ? " heat-cell-coordinate" : ""}${binLabel ? " heat-cell-bin" : ""}${dimmed ? " is-muted" : ""}`}
-      title={`${cell.sloc_code} · Aisle ${cell.aisle || "—"} · Bay ${cell.bay || "—"} · Level ${cell.level || "—"} · Bin ${cell.bin || "—"} · ${status} · ${pctText(pct)}`}
-      aria-label={`${cell.sloc_code}, Aisle ${cell.aisle || "—"}, Bay ${cell.bay || "—"}, Level ${cell.level || "—"}, Bin ${cell.bin || "—"}, ${status}, ${pctText(pct)}`}
+      title={reading.join(" · ")}
+      aria-label={reading.join(", ")}
       data-heat-index={index}
       tabIndex={index === undefined || index === 0 ? 0 : -1}
       onClick={() => onSelect(cell)}
@@ -296,17 +301,17 @@ const ZoneLayout = memo(function ZoneLayout({
         <section key={aisleGroup.aisle} className="zone-aisle">
           <header className="zone-aisle-head">
             <h3>
-              <span>{t("heat.aisle", "Aisle")}</span>
+              <span>{t("heat.aisle")}</span>
               <strong className="num">{aisleGroup.aisle}</strong>
             </h3>
             <span className="zone-aisle-stat num">
               <b>{aisleGroup.filled.toLocaleString(locale)}</b>
-              <small>{t("heat.filled", "terisi")}</small>
+              <small>{t("heat.filled")}</small>
               <i aria-hidden>·</i>
               {/* Empty ACTIVE bins are usable capacity, so they get their own
                   number rather than being implied by the difference. */}
               <b>{(aisleGroup.total - aisleGroup.filled).toLocaleString(locale)}</b>
-              <small>{t("heat.emptyActive", "kosong")}</small>
+              <small>{t("heat.emptyActive")}</small>
             </span>
           </header>
           <div className="zone-bay-list">
@@ -318,7 +323,7 @@ const ZoneLayout = memo(function ZoneLayout({
               >
                 <header className="zone-bay-head">
                   <span>
-                    <b>{t("heat.bay", "Bay")}</b>
+                    <b>{t("heat.bay")}</b>
                     <strong className="num">{bayGroup.bay}</strong>
                   </span>
                   <small className="num">{bayGroup.filled}/{bayGroup.total}</small>
@@ -326,7 +331,7 @@ const ZoneLayout = memo(function ZoneLayout({
                 <div className="zone-bay-levels">
                   {bayGroup.levels.map((row) => (
                     <div key={row.level} className="zone-level-row">
-                      <span className="zone-level-label num" title={`${t("heat.level", "Level")} ${row.level}`}>
+                      <span className="zone-level-label num" title={`${t("heat.level")} ${row.level}`}>
                         {levelLabel(row.level)}
                       </span>
                       <div className="zone-bin-row">
@@ -336,6 +341,7 @@ const ZoneLayout = memo(function ZoneLayout({
                             cell={cell}
                             basis={basis}
                             filter={filter}
+                            t={t}
                             onSelect={onSelect}
                             binLabel
                           />
@@ -419,7 +425,7 @@ const HeatZoneGroup = memo(function HeatZoneGroup({
               <div className="heat-aisle-list">
                 {[...byAisle.entries()].map(([aisle, aisleCells]) => (
                   <div key={aisle} className="heat-aisle-row">
-                    <span className="heat-aisle-label"><b>Aisle</b><strong className="num">{aisle}</strong></span>
+                    <span className="heat-aisle-label"><b>{t("heat.aisle")}</b><strong className="num">{aisle}</strong></span>
                     <div
                       className="heat-cell-matrix heat-cell-coordinate-matrix"
                       role="grid"
@@ -432,6 +438,7 @@ const HeatZoneGroup = memo(function HeatZoneGroup({
                           cell={cell}
                           basis={basis}
                           filter={filter}
+                          t={t}
                           index={index}
                           showCoordinates
                           onSelect={onSelect}
@@ -465,7 +472,10 @@ export default function HeatmapGrid({
   initialSloc?: string;
 }) {
   const { t, lang } = useT();
-  const locale = lang === "en" ? "en-GB" : "id-ID";
+  const f = formatters(lang);
+  // Satu sumber locale untuk seluruh komponen ini: `toLocaleString` di bawah
+  // dan pemformat bersama harus tidak mungkin memakai konvensi yang berbeda.
+  const locale = f.locale;
   const [basis, setBasis] = useState<BasisMode>("policy");
   const [wh, setWh] = useState(initialWh);
   const [zones, setZones] = useState<ZoneSummary[]>([]);
@@ -667,38 +677,6 @@ export default function HeatmapGrid({
 
   const statusOptions = basis === "bin" ? BIN_STATUS : QUANTITY_STATUS;
 
-  const totals = useMemo(() => {
-    const total = zones.reduce((sum, zone) => sum + zone.sloc_total, 0);
-    const empty = zones.reduce((sum, zone) => sum + zone.sloc_empty, 0);
-    const occupied = Math.max(0, total - empty);
-    let numerator = 0;
-    let denominator = 0;
-    if (basis === "qty") {
-      zones.forEach((zone) => {
-        if (zone.cap_qty > 0 && zone.pct_qty !== null) {
-          numerator += zone.cap_qty * zone.pct_qty / 100;
-          denominator += zone.cap_qty;
-        }
-      });
-    } else if (basis === "cbm") {
-      zones.forEach((zone) => {
-        if (zone.cap_cbm > 0 && zone.pct_cbm !== null) {
-          numerator += zone.cap_cbm * zone.pct_cbm / 100;
-          denominator += zone.cap_cbm;
-        }
-      });
-    } else if (basis === "policy") {
-      zones.forEach((zone) => {
-        numerator += zone.sloc_total * zone.pct;
-        denominator += zone.sloc_total;
-      });
-    }
-    const occupancy = basis === "bin"
-      ? (total > 0 ? occupied / total * 100 : null)
-      : (denominator > 0 ? numerator / denominator * 100 : null);
-    return { total, empty, occupied, occupancy };
-  }, [basis, zones]);
-
   // Preview cells are a bounded sample. Never hide a whole zone from a status
   // filter based on that sample; dim non-matching cells while retaining the
   // authoritative zone index. Pencarian zona aman disaring di sini karena
@@ -715,6 +693,61 @@ export default function HeatmapGrid({
       return tokens.every((token) => haystack.includes(token));
     });
   }, [zoneQuery, zones]);
+
+  /**
+   * Ringkasan gudang pada baris toolbar.
+   *
+   * Dua hal diperbaiki di sini sekaligus.
+   *
+   * Pertama, angkanya mengikuti zona yang BENAR-BENAR tampil. Sebelumnya jumlah
+   * SLOC selalu mencakup seluruh gudang, sehingga menyaring zona menghasilkan
+   * baris yang menyebut tiga zona tepat di sebelah angka SLOC milik lima belas
+   * zona.
+   *
+   * Kedua, okupansi gabungan dijumlahkan sebagai isi dibagi kapasitas — cara
+   * yang sama dengan kartu gudang di halaman Okupansi. Bentuk sebelumnya
+   * merata-ratakan persentase tiap zona dengan bobot jumlah SLOC. Itu statistik
+   * yang berbeda: ia tidak pernah dapat melewati persentase zona tertingginya,
+   * sekalipun gudangnya secara keseluruhan sudah melewati kapasitas, sehingga
+   * heatmap dan halaman Okupansi dapat menyebut angka berbeda untuk gudang yang
+   * sama.
+   */
+  const totals = useMemo(() => {
+    const total = visibleZones.reduce((sum, zone) => sum + zone.sloc_total, 0);
+    const empty = visibleZones.reduce((sum, zone) => sum + zone.sloc_empty, 0);
+    const occupied = Math.max(0, total - empty);
+
+    const ratio = (
+      capacityOf: (zone: ZoneSummary) => number,
+      pctOf: (zone: ZoneSummary) => number | null,
+    ) => {
+      let filled = 0;
+      let capacity = 0;
+      for (const zone of visibleZones) {
+        const cap = capacityOf(zone);
+        const pct = pctOf(zone);
+        if (cap <= 0 || pct === null) continue;
+        filled += cap * pct / 100;
+        capacity += cap;
+      }
+      return capacity > 0 ? filled / capacity * 100 : null;
+    };
+    const qty = ratio((zone) => zone.cap_qty, (zone) => zone.pct_qty);
+    const cbm = ratio((zone) => zone.cap_cbm, (zone) => zone.pct_cbm);
+    const bin = total > 0 ? occupied / total * 100 : null;
+    // Basis kebijakan gudang adalah basis yang dipakai mayoritas lokasinya,
+    // dengan cadangan basis satunya bila kapasitasnya belum tersedia — aturan
+    // yang sama persis dengan read model gudang di server.
+    const cbmSlocs = visibleZones.reduce(
+      (sum, zone) => sum + (zone.basis === "cbm" ? zone.sloc_total : 0), 0);
+    const policy = cbmSlocs > total / 2 ? (cbm ?? qty) : (qty ?? cbm);
+    const occupancy =
+      basis === "qty" ? qty
+      : basis === "cbm" ? cbm
+      : basis === "bin" ? bin
+      : policy;
+    return { total, empty, occupied, occupancy };
+  }, [basis, visibleZones]);
 
   const statusLabel = useCallback((status: HeatStatus) => {
     return t(`heat.legendStatus.${status}`);
@@ -856,6 +889,14 @@ export default function HeatmapGrid({
               <span><b className="num">{visibleZones.length}</b> {t("heat.zonesShown")}</span>
               <span aria-hidden="true">·</span>
               <span><b className="num">{loading && zones.length === 0 ? "—" : totals.total.toLocaleString(locale)}</b> SLOC</span>
+              <span aria-hidden="true">·</span>
+              {/* Okupansi gabungan zona yang tampil, dihitung dengan rumus yang
+                  sama dengan halaman Okupansi, sehingga kedua layar dapat
+                  dibandingkan langsung alih-alih menyebut angka yang berbeda. */}
+              <span title={`${t("common.filled")} ${totals.occupied.toLocaleString(locale)} · ${t("common.empty")} ${totals.empty.toLocaleString(locale)}`}>
+                <b className="num">{loading && zones.length === 0 ? "—" : pctText(totals.occupancy)}</b>
+                {" "}{t(`basis.${basis}`)}
+              </span>
             </>
           )}
           <ExportExcelButton
@@ -962,7 +1003,7 @@ export default function HeatmapGrid({
                   <div className="heat-zone-loading">{t("common.loading")}</div>
                 )}
                 {!zoneLoading && zoneCells.length === 0 && (
-                  <div className="heat-zone-loading">{t("heat.noCells", "Tidak ada SLOC pada zona ini.")}</div>
+                  <div className="heat-zone-loading">{t("heat.noCells")}</div>
                 )}
               </div>
             )}
@@ -1057,18 +1098,18 @@ export default function HeatmapGrid({
               <div>
                 <span className="eyebrow">{t("heat.qty")}</span>
                 <strong className="num">
-                  {fmtNum(selectedCell.occ_qty)}/{selectedCell.qty_valid ? fmtNum(selectedCell.cap_qty) : "—"}
+                  {f.num(selectedCell.occ_qty)}/{selectedCell.qty_valid ? f.num(selectedCell.cap_qty) : "—"}
                 </strong>
                 <small className="metric-formula">{t("heat.capQtyNote")}</small>
               </div>
               <div>
                 <span className="eyebrow">{t("heat.cbmEffective")}</span>
                 <strong className="num">
-                  {fmtCbm(selectedCell.occ_cbm)}/{selectedCell.cbm_valid ? fmtCbm(selectedCell.cap_cbm) : "—"}
+                  {f.cbm(selectedCell.occ_cbm)}/{selectedCell.cbm_valid ? f.cbm(selectedCell.cap_cbm) : "—"}
                 </strong>
                 <small className="metric-formula num" title={t("heat.capCbmHint")}>
                   {selectedCell.cbm_valid
-                    ? `${t("heat.capConfigured")} ${fmtCapCbm(selectedCell.cap_cbm_nominal)} × ${selectedCell.utilization_pct}%`
+                    ? `${t("heat.capConfigured")} ${f.capCbm(selectedCell.cap_cbm_nominal)} × ${selectedCell.utilization_pct}%`
                     : t("heat.capUnknown")}
                 </small>
               </div>
@@ -1098,8 +1139,8 @@ export default function HeatmapGrid({
                         <span className="num">SKU {stockLine.sku_number}</span>
                       </div>
                       <div className="heat-detail-list-value">
-                        <b className="num">{fmtNum(stockLine.qty)}</b>
-                        <span>{fmtCbm(stockLine.cbm)} m³</span>
+                        <b className="num">{f.num(stockLine.qty)}</b>
+                        <span>{f.cbm(stockLine.cbm)} m³</span>
                       </div>
                     </li>
                   ))}
@@ -1114,9 +1155,15 @@ export default function HeatmapGrid({
               ) : (
                 <ul className="heat-detail-list">
                   {moves.map((movement) => (
-                    <li key={movement.movement_id}>
+                    <li key={movement.movement_uid}>
                       <div>
-                        <strong>{movement.movement_type}</strong>
+                        {/* Tipe kanonik, bukan teks aksi mentah: satu kegiatan
+                            yang sama tidak boleh tampil dengan tiga ejaan
+                            berbeda pada panel sesempit ini. Ejaan aslinya tetap
+                            tersedia sebagai tooltip. */}
+                        <strong title={movement.action_raw}>
+                          {t(`mv.type.${movement.movement_type}`)}
+                        </strong>
                         <span className="num">
                           {new Date(movement.at).toLocaleString(locale)}
                         </span>
@@ -1125,8 +1172,13 @@ export default function HeatmapGrid({
                         </span>
                       </div>
                       <div className="heat-detail-list-value">
-                        <b className="num">{fmtNum(movement.qty)}</b>
-                        <span>{movement.operator}</span>
+                        <b className={`num mvx-qty mvx-${movement.direction.toLowerCase()}`}>
+                          {movement.direction === "OUT" ? "−" : movement.direction === "IN" ? "+" : ""}
+                          {f.num(movement.qty)}
+                        </b>
+                        <span title={movement.product_name}>
+                          {movement.operator || "—"}
+                        </span>
                       </div>
                     </li>
                   ))}

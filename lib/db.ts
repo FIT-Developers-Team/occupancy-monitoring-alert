@@ -517,18 +517,52 @@ async function getStateDb(): Promise<duckdb.Database> {
   return db;
 }
 
+/**
+ * Antrean tunggal untuk state DB — alasannya sama persis dengan antrean riwayat
+ * di atas, dan ketiadaannya di sini adalah kelalaian, bukan keputusan.
+ *
+ * Binding Node DuckDB dapat MENGHENTIKAN PROSES ketika beberapa panggilan
+ * native `all` berbagi satu handle Database secara bersamaan. Riwayat sudah
+ * dilindungi; state DB tidak, padahal ia justru koneksi tulis tunggal yang
+ * dipakai bersama seluruh permintaan.
+ *
+ * Pola pemanggilannya membuat hal itu bukan sekadar kemungkinan teoretis.
+ * Halaman Alert membuka tiga `listAlerts` sekaligus di dalam satu
+ * `Promise.all`, dan halaman Ringkasan menambahkan `activeCountsBySeverity` di
+ * sampingnya — beberapa kueri native berbarengan pada satu handle, persis
+ * bentuk yang diperingatkan catatan di atas. Gejalanya: server merender
+ * halamannya sampai selesai, lalu prosesnya hilang tanpa jejak kesalahan.
+ *
+ * Menyerialkannya tidak mengubah hasil apa pun — setiap pemanggil sudah
+ * menunggu Promise-nya masing-masing — dan biayanya hanya urutan, bukan waktu:
+ * satu handle DuckDB memang mengeksekusi satu per satu.
+ */
+let stateQueryQueue: Promise<void> = Promise.resolve();
+
+function runOnState<T>(work: () => Promise<T>): Promise<T> {
+  const result = stateQueryQueue.then(work);
+  // Kegagalan diserap di sini saja supaya satu kueri yang gagal tidak menutup
+  // antrean bagi kueri berikutnya; pemanggilnya tetap menerima penolakan.
+  stateQueryQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 export async function stateQuery<T = Record<string, unknown>>(
   sql: string,
   params: unknown[] = []
 ): Promise<T[]> {
-  const db = await getStateDb();
-  const rows = await allAsync(db, sql, params);
-  return rows.map(norm) as T[];
+  return runOnState(async () => {
+    const db = await getStateDb();
+    const rows = await allAsync(db, sql, params);
+    return rows.map(norm) as T[];
+  });
 }
 
 export async function stateExec(sql: string, params: unknown[] = []): Promise<void> {
-  const db = await getStateDb();
-  await allAsync(db, sql, params);
+  await runOnState(async () => {
+    const db = await getStateDb();
+    await allAsync(db, sql, params);
+  });
 }
 
 export function uid(prefix = ""): string {

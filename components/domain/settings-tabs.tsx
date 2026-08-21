@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n-client";
-import { fmtCapCbm } from "@/lib/utils";
+import { formatters } from "@/lib/utils";
 
 function SettingsPanelLoading() {
   return (
@@ -227,7 +227,8 @@ function ConfigBackupPanel({ durable }: { durable: boolean }) {
 }
 
 export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
-  const { t } = useT();
+  const { t, lang } = useT();
+  const f = formatters(lang);
   const [tab, setTab] = useState<"accounts" | "sync" | "thresholds" | "capacity" | "recipients">("accounts");
   const [thresholds, setThresholds] = useState<Thresholds | null>(null);
   const [capacity, setCapacity] = useState<Capacity | null>(null);
@@ -495,7 +496,7 @@ export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
                       {key === "max_cbm" && global?.set.max_cbm !== undefined && (
                         <span className="field-hint num">
                           {t("set.ui.capacity.effectivePreview")}{" "}
-                          {fmtCapCbm(global.set.max_cbm * capacity.utilization_pct / 100)} m³
+                          {f.capCbm(global.set.max_cbm * capacity.utilization_pct / 100)} m³
                         </span>
                       )}
                     </label>
@@ -630,7 +631,7 @@ export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
                             <input type="number" min={0} step="any" inputMode="decimal"
                               className="input num w-24" disabled={catScoped}
                               value={r.set.max_cbm ?? ""} placeholder="—"
-                              title={r.set.max_cbm === undefined ? undefined : `${t("set.ui.capacity.effectivePreview")} ${fmtCapCbm(r.set.max_cbm * (r.set.utilization_pct ?? capacity.utilization_pct) / 100)} m³`}
+                              title={r.set.max_cbm === undefined ? undefined : `${t("set.ui.capacity.effectivePreview")} ${f.capCbm(r.set.max_cbm * (r.set.utilization_pct ?? capacity.utilization_pct) / 100)} m³`}
                               onChange={(e) => setSetNum(i, "max_cbm", e.target.value)} />
                           </td>
                           <td><input type="number" className="input num w-16" disabled={catScoped}

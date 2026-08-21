@@ -1,5 +1,6 @@
 import { auditLog, notificationLog } from "@/lib/alerts/store";
-import { getLang, getT, localeOf } from "@/lib/i18n";
+import { getLang, getT } from "@/lib/i18n";
+import { formatters } from "@/lib/utils";
 import Section from "@/components/ui/section";
 import PageHeader from "@/components/ui/page-header";
 import { redirect } from "next/navigation";
@@ -8,19 +9,6 @@ import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
 export const generateMetadata = pageTitle("nav.audit");
-
-function formatDateTime(value: string, locale: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return `${new Intl.DateTimeFormat(locale, {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    timeZone: "Asia/Jakarta",
-  }).format(date)} WIB`;
-}
 
 export default async function AuditPage() {
   // Otorisasi diperiksa sebelum kuerinya, bukan sesudah. Bentuk lama menarik
@@ -35,7 +23,7 @@ export default async function AuditPage() {
     getT(),
     getLang(),
   ]);
-  const locale = localeOf(lang);
+  const f = formatters(lang);
 
   return (
     <div className="dashboard-page">
@@ -60,7 +48,7 @@ export default async function AuditPage() {
             <tbody>
               {(audits as Array<Record<string, unknown>>).map((audit) => (
                 <tr key={String(audit.id)}>
-                  <td className="num whitespace-nowrap">{formatDateTime(String(audit.at), locale)}</td>
+                  <td className="num whitespace-nowrap">{f.dateTime(String(audit.at))}</td>
                   <td className="num">{String(audit.actor)}</td>
                   <td><span className="chip">{String(audit.action)}</span></td>
                   <td className="num">{String(audit.entity)}</td>
@@ -103,7 +91,7 @@ export default async function AuditPage() {
                 const status = String(notification.status);
                 return (
                   <tr key={String(notification.id)}>
-                    <td className="num whitespace-nowrap">{formatDateTime(String(notification.at), locale)}</td>
+                    <td className="num whitespace-nowrap">{f.dateTime(String(notification.at))}</td>
                     <td><span className="chip">{String(notification.channel)}</span></td>
                     <td className="num">{String(notification.recipient)}</td>
                     <td>

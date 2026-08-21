@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { getCapacity, getThresholds, thresholdsFor } from "@/lib/config";
 import { currentUser, isAdmin } from "@/lib/auth";
-import { getT } from "@/lib/i18n";
-import { fmtCapCbm } from "@/lib/utils";
+import { getLang, getT } from "@/lib/i18n";
+import { formatters } from "@/lib/utils";
 
 /**
  * Pernyataan singkat tentang kebijakan yang sedang membentuk setiap angka di
@@ -21,7 +21,8 @@ export default async function CapacityStandardNote({
   /** Bila diisi, ambang yang ditampilkan mengikuti override gudang tersebut. */
   warehouse?: string;
 }) {
-  const [t, user] = await Promise.all([getT(), currentUser()]);
+  const [t, user, lang] = await Promise.all([getT(), currentUser(), getLang()]);
+  const f = formatters(lang);
   const capacity = getCapacity();
   // Pintasan hanya berguna bagi yang boleh membukanya; /settings menolak
   // supervisor, jadi menampilkan tautan itu kepada mereka hanya menyesatkan.
@@ -52,9 +53,9 @@ export default async function CapacityStandardNote({
             <>
               {" "}{t("std.example")}{" "}
               <b className="num">
-                {fmtCapCbm(sampleCbm)} × {capacity.utilization_pct}%
+                {f.capCbm(sampleCbm)} × {capacity.utilization_pct}%
                 {" = "}
-                {fmtCapCbm(sampleCbm * capacity.utilization_pct / 100)}
+                {f.capCbm(sampleCbm * capacity.utilization_pct / 100)}
               </b>{" "}
               m³.
             </>

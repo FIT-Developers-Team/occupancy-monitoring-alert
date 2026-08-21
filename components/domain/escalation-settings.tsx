@@ -407,7 +407,7 @@ export default function EscalationSettings() {
           <strong>{t("set.ui.recipients.unsavedTitle")}</strong>
           <span>{t("set.ui.recipients.unsavedBody")}</span>
           <button className="btn btn-primary btn-sm" disabled={busy} onClick={save}>
-            {busy ? t("set.ui.saving") : t("set.ui.save")}
+            {busy ? t("set.ui.saving") : t("action.save")}
           </button>
         </div>
       )}

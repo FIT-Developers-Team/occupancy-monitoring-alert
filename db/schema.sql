@@ -39,12 +39,70 @@ CREATE TABLE IF NOT EXISTS stock_history (
   occupied_cbm DOUBLE
 );
 
--- Opsional (fase berikut): movement & cycle count
-CREATE TABLE IF NOT EXISTS movement_history (
-  movement_id BIGINT, movement_type VARCHAR, movement_datetime TIMESTAMP,
-  operator VARCHAR, source_sloc VARCHAR, destination_sloc VARCHAR,
-  product_id BIGINT, product_name VARCHAR, qty DOUBLE, _synced_at TIMESTAMP
+-- Dataset 705 (pergerakan stok / "Recent movements"): satu baris per
+-- transaksi × produk × aksi, dengan SUM(inventory_quantity) sebagai qty.
+--
+-- Tabel lama `movement_history` memakai bentuk hipotetis (movement_id,
+-- movement_type, movement_datetime) yang tidak pernah terisi data nyata — job
+-- sync-nya selalu SKIPPED karena dataset-nya belum ada. Bentuk asli dataset
+-- jauh lebih kaya (paket, status asal/tujuan, kategori, tipe produk, invoice),
+-- dan tidak dapat dipetakan ke kolom lama tanpa membuang sebagian besarnya.
+-- Karena itu tabelnya diganti, bukan ditambal: yang lama dibuang sekali di
+-- sini, dan tidak ada lagi yang menulis ke sana.
+DROP TABLE IF EXISTS movement_history;
+CREATE TABLE IF NOT EXISTS movement_events (
+  _synced_at TIMESTAMP,
+  created_at TIMESTAMP,          -- inventory_created_at (patokan waktu kejadian)
+  updated_at TIMESTAMP,          -- inventory_updated_at (watermark incremental)
+  location_id INTEGER,           -- inventory_origin_location_id
+  location_name VARCHAR,         -- origin_location_name
+  invoice_number VARCHAR,        -- inventory_invoice_number (ID transaksi/task)
+  product_id BIGINT,             -- inventory_product_id
+  product_name VARCHAR,
+  sku_number VARCHAR,            -- product_sku_number
+  l1_category VARCHAR,           -- parent_category_name
+  product_type VARCHAR,          -- product_type_name
+  source_sloc VARCHAR,           -- from_rack_name
+  destination_sloc VARCHAR,      -- to_rack_name
+  action_raw VARCHAR,            -- inventory_action (mentah; distandarkan saat dibaca)
+  operator_sign VARCHAR,         -- inventory_operator (+/- terhadap stok)
+  from_package VARCHAR,          -- from_package_label
+  to_package VARCHAR,            -- to_package_label
+  from_status VARCHAR,           -- from_status_notes
+  to_status VARCHAR,             -- to_status_notes
+  operator VARCHAR,              -- inventory_created_by (nama pelaksana)
+  qty DOUBLE                     -- SUM(inventory_quantity)
 );
+
+-- Dedupe pergerakan.
+--
+-- Job incremental menarik ulang jendela lookback pada setiap pass, dan sebuah
+-- transaksi yang di-update di WMS akan muncul kembali dengan `updated_at` baru.
+-- Tanpa view ini, satu kejadian yang sama bisa terhitung dua kali pada KPI
+-- masuk/keluar. Kunci alaminya adalah seluruh kolom pengenal KECUALI
+-- `updated_at`, `qty`, dan `_synced_at`; versi paling akhir yang menang.
+CREATE OR REPLACE VIEW vw_movement AS
+WITH keyed AS (
+  SELECT *,
+         md5(concat_ws('|',
+             coalesce(CAST(location_id AS VARCHAR), ''),
+             coalesce(invoice_number, ''),
+             coalesce(CAST(product_id AS VARCHAR), ''),
+             coalesce(action_raw, ''),
+             coalesce(operator_sign, ''),
+             coalesce(source_sloc, ''), coalesce(destination_sloc, ''),
+             coalesce(from_package, ''), coalesce(to_package, ''),
+             coalesce(from_status, ''), coalesce(to_status, ''),
+             coalesce(operator, ''),
+             coalesce(CAST(created_at AS VARCHAR), ''))) AS movement_uid
+  FROM movement_events
+)
+SELECT * FROM keyed
+QUALIFY row_number() OVER (
+    PARTITION BY movement_uid
+    ORDER BY updated_at DESC NULLS LAST, _synced_at DESC NULLS LAST
+) = 1;
+
 CREATE TABLE IF NOT EXISTS cycle_count (
   count_id VARCHAR, count_date DATE, sloc_code VARCHAR,
   system_qty DOUBLE, physical_qty DOUBLE

@@ -6,6 +6,7 @@ import CommandPalette from "@/components/ui/command-palette";
 import BasisSwitch from "@/components/ui/basis-switch";
 import LangSwitch from "@/components/ui/lang-switch";
 import { useT } from "@/lib/i18n-client";
+import { localeOf } from "@/lib/i18n-dict";
 
 // Halaman dimuat ulang saat snapshot benar-benar berganti (lihat pemungutan
 // status di bawah), jadi timer ini bukan lagi cara utama layar tetap segar —
@@ -24,10 +25,13 @@ interface DataStatus {
 }
 
 export default function Topbar({
-  userName, role, dataVersion, onOpenMobileNav,
-}: { userName: string; role: string; dataVersion: string; onOpenMobileNav: () => void }) {
+  userName, role, dataVersion, warehouses, onOpenMobileNav,
+}: {
+  userName: string; role: string; dataVersion: string;
+  warehouses: string[]; onOpenMobileNav: () => void;
+}) {
   const router = useRouter();
-  const { t } = useT();
+  const { t, lang } = useT();
   const [paused, setPaused] = useState(false);
   const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
   const nextRefresh = useRef(Date.now() + FALLBACK_REFRESH_MS);
@@ -136,8 +140,10 @@ export default function Topbar({
       : paused
         ? t("shell.refreshPaused")
         : t("shell.sync.current");
+  // Jam sinkronisasi mengikuti bahasa yang dipilih, seperti setiap tanggal lain
+  // di aplikasi ini; zona waktunya tetap WIB karena itulah waktu operasional.
   const syncTitle = dataStatus?.updatedAt
-    ? `${syncLabel} · ${new Date(dataStatus.updatedAt).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })} WIB`
+    ? `${syncLabel} · ${new Date(dataStatus.updatedAt).toLocaleString(localeOf(lang), { timeZone: "Asia/Jakarta" })} WIB`
     : syncLabel;
 
   return (
@@ -152,7 +158,7 @@ export default function Topbar({
           <path d="M4 6h16M4 12h16M4 18h16" />
         </svg>
       </button>
-      <CommandPalette role={role} />
+      <CommandPalette role={role} warehouses={warehouses} />
       <div className="topbar-primary">
         <div className="topbar-basis"><BasisSwitch /></div>
         <button

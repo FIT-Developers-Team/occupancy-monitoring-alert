@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { getWarehouseDashboard, getIntegrity, getOccupancyScopeQuality } from "@/lib/queries";
+import { thresholdsFor } from "@/lib/config";
 import { listAlerts, activeCountsBySeverity } from "@/lib/alerts/store";
 import { getBasisMode } from "@/lib/basis";
-import { getT } from "@/lib/i18n";
-import { fmtCbm, fmtNum, fmtPct, fmtHours, fmtDateTime } from "@/lib/utils";
+import { getLang, getT } from "@/lib/i18n";
+import { formatters } from "@/lib/utils";
 import KpiCard from "@/components/ui/kpi-card";
 import Section from "@/components/ui/section";
 import { StatusBadge, SeverityBadge } from "@/components/ui/badges";
@@ -20,15 +21,17 @@ export const generateMetadata = pageTitle("nav.exec");
 const STATUS_RANK = { BREACH: 0, CRITICAL: 1, WARNING: 2, MONITOR: 3, NORMAL: 4 } as const;
 
 export default async function ExecutivePage() {
-  const [mode, t] = await Promise.all([getBasisMode(), getT()]);
+  const [mode, t, lang] = await Promise.all([getBasisMode(), getT(), getLang()]);
+  const f = formatters(lang);
   const [warehouseData, integrity, active, counts, scopeQuality] = await Promise.all([
-    getWarehouseDashboard(48),
+    getWarehouseDashboard(),
     getIntegrity().catch(() => []),
     listAlerts({ status: ["NEW", "NOTIFIED", "ACKNOWLEDGED"], limit: 6 }),
     activeCountsBySeverity(),
     getOccupancyScopeQuality(),
   ]);
   const { summaries: sums, trend } = warehouseData;
+  const thresholdMap = Object.fromEntries(sums.map((w) => [w.code, thresholdsFor(w.code)]));
 
   const qOcc = sums.reduce((s, w) => s + w.occ_qty, 0);
   const qCap = sums.reduce((s, w) => s + w.cap_qty, 0);
@@ -67,29 +70,29 @@ export default async function ExecutivePage() {
       <PageHeader title={t("exec.title")} />
 
       <div className="metric-strip metric-strip-five">
-        <KpiCard label={t("exec.qtyOcc")} value={netQ === null ? "—" : fmtPct(netQ)} tone={tone(netQ)}
-          sub={`${fmtNum(qOcc)} / ${fmtNum(qCap)} ${t("common.unit")}`} />
+        <KpiCard label={t("exec.qtyOcc")} value={netQ === null ? "—" : f.pct(netQ)} tone={tone(netQ)}
+          sub={`${f.num(qOcc)} / ${f.num(qCap)} ${t("common.unit")}`} />
         {/* Penyebutnya kapasitas efektif (sudah dikali utilisasi volume);
-            pembagian dengan fmtNum(…, 0) juga membuang seluruh desimal m³. */}
-        <KpiCard label={t("exec.cbmOcc")} value={netV === null ? "—" : fmtPct(netV)} tone={tone(netV)}
-          sub={`${fmtCbm(vOcc)} / ${fmtCbm(vCap)} m³ · ${t("heat.cbmEffective")}`} />
-        <KpiCard label={t("exec.binOcc")} value={fmtPct(netBin)} tone={tone(netBin)}
-          sub={`${fmtNum(slocFilled)} / ${fmtNum(slocTotal)} ${t("common.sloc").toLowerCase()}`} />
-        <KpiCard label={t("exec.activeAlerts")} value={fmtNum(totalActive)}
+            pembagian dengan f.num(…, 0) juga membuang seluruh desimal m³. */}
+        <KpiCard label={t("exec.cbmOcc")} value={netV === null ? "—" : f.pct(netV)} tone={tone(netV)}
+          sub={`${f.cbm(vOcc)} / ${f.cbm(vCap)} m³ · ${t("heat.cbmEffective")}`} />
+        <KpiCard label={t("exec.binOcc")} value={f.pct(netBin)} tone={tone(netBin)}
+          sub={`${f.num(slocFilled)} / ${f.num(slocTotal)} ${t("common.sloc").toLowerCase()}`} />
+        <KpiCard label={t("exec.activeAlerts")} value={f.num(totalActive)}
           tone={worstSev ? SEVERITY_TONE[worstSev] : "normal"}
           sub={worstSev ? worstSev : t("common.none")} />
-        <KpiCard label={t("exec.integrity")} value={integrityAvg === null ? "—" : fmtPct(integrityAvg)}
+        <KpiCard label={t("exec.integrity")} value={integrityAvg === null ? "—" : f.pct(integrityAvg)}
           tone={integrityAvg !== null && integrityAvg < 95 ? "warning" : "teal"}
           sub={`${sums.length} ${t("common.warehouse").toLowerCase()}`} />
       </div>
 
       <div className="context-note">
         <span><b style={{ color: "var(--text)" }}>{t("exec.scope")}:</b> {t("exec.scopeDetail")}</span>
-        <span className="num">{fmtNum(unzonedActive)} {t("exec.unzoned")} · {fmtNum(unmappedStock)} {t("exec.unmappedStock")}</span>
+        <span className="num">{f.num(unzonedActive)} {t("exec.unzoned")} · {f.num(unmappedStock)} {t("exec.unmappedStock")}</span>
       </div>
 
       <Section eyebrow={`${t("basis.label")}: ${t(`basis.${mode}`)}`} title={t("exec.byWarehouse")}>
-        <WarehouseOverviewTable rows={sums} mode={mode} />
+        <WarehouseOverviewTable rows={sums} mode={mode} thresholds={thresholdMap} />
       </Section>
 
       <div className="secondary-grid">
@@ -103,13 +106,13 @@ export default async function ExecutivePage() {
                     <StatusBadge status={w.status} />
                   </div>
                   <div className="truncate text-[11.5px]" style={{ color: "var(--text-muted)" }}>
-                    {fmtNum(w.sloc_occupied)}/{fmtNum(w.sloc_total)} {t("common.filled").toLowerCase()}
+                    {f.num(w.sloc_occupied)}/{f.num(w.sloc_total)} {t("common.filled").toLowerCase()}
                   </div>
                 </div>
                 <div className="text-right">
                   <div className="num text-base font-semibold">{w.pct}%</div>
                   <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-                    {fmtHours(w.hours_to_95)}
+                    {f.hours(w.hours_to_95)}
                   </div>
                 </div>
               </PrefetchLink>
@@ -134,7 +137,7 @@ export default async function ExecutivePage() {
                         <SeverityBadge severity={a.severity} />
                       </div>
                       <div className="truncate text-[11.5px]" style={{ color: "var(--text-muted)" }}>
-                        {a.warehouse_code}{a.sloc_code ? ` · ${a.sloc_code}` : ""} · {fmtDateTime(a.created_at)}
+                        {a.warehouse_code}{a.sloc_code ? ` · ${a.sloc_code}` : ""} · {f.dateTime(a.created_at)}
                       </div>
                     </div>
                   </PrefetchLink>

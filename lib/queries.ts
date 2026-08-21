@@ -15,6 +15,23 @@ import {
 import { clearReadModelMemory, readModelCached } from "@/lib/read-model-cache";
 import { CAPACITY_LIMIT_PCT, CAPACITY_MATCH_TOLERANCE_PCT } from "@/lib/alerts/severity";
 import { DRIFT_TYPES, type SlocFilter, type SlocSort } from "@/lib/sloc-filter";
+import {
+  EMPTY_MOVEMENT_FILTER,
+  EMPTY_MOVEMENT_SUMMARY,
+  RANGE_HOURS,
+  movementDirectionSQL,
+  movementFlowSQL,
+  movementTypeSQL,
+  type MovementFacets,
+  type MovementFilter,
+  type MovementRow,
+  type MovementSort,
+  type MovementSummary,
+  type MovementType,
+  type MovementBucket,
+  type MovementWarehouseRow,
+} from "@/lib/movements";
+export type { MovementBucket, MovementRow, MovementSummary, MovementWarehouseRow };
 import type {
   SlocOccupancy, WarehouseSummary, ZoneSummary, RackZoneSummary, TrendPoint, ForecastRow, StockLine, Basis, BasisMode,
 } from "@/types";
@@ -539,7 +556,21 @@ function withWarehouseTrend(
   });
 }
 
-export async function getWarehouseDashboard(hoursBack = 36): Promise<{
+/**
+ * Rentang riwayat yang menghasilkan laju okupansi dan horizon "menuju 95%".
+ *
+ * Satu angka untuk seluruh aplikasi, dan itu memang harus begitu. Sebelumnya
+ * Ringkasan memakai 48 jam sementara halaman detail gudang, ekspor Excel, dan
+ * ringkasan harian memakai 36 jam — sehingga KPI "→ 95%" untuk gudang yang sama
+ * menunjukkan angka berbeda tergantung halaman mana yang sedang dibuka, tanpa
+ * ada apa pun di layar yang menjelaskan mengapa. Rentang yang sama juga berarti
+ * hanya ada satu read model tren yang perlu dihitung dan disimpan, bukan dua.
+ */
+export const TREND_WINDOW_HOURS = 48;
+
+export async function getWarehouseDashboard(
+  hoursBack = TREND_WINDOW_HOURS,
+): Promise<{
   summaries: WarehouseSummary[];
   trend: TrendPoint[];
 }> {
@@ -548,7 +579,7 @@ export async function getWarehouseDashboard(hoursBack = 36): Promise<{
 }
 
 export async function getWarehouseSummaries(): Promise<WarehouseSummary[]> {
-  return (await getWarehouseDashboard(36)).summaries;
+  return (await getWarehouseDashboard()).summaries;
 }
 
 /** Occupancy screens that do not show forecast should not scan stock history. */
@@ -1179,6 +1210,30 @@ export async function getZoneDetailFacets(wh: string, zone: string): Promise<Zon
   };
 }
 
+/**
+ * Deret okupansi per snapshot untuk grafik tren dan laju proyeksi.
+ *
+ * MENGAPA HITUNGAN UNIK DIPECAH MENJADI SUB-AGREGAT
+ * -------------------------------------------------
+ * Bentuk sebelumnya memakai dua `count(DISTINCT …)` di dalam satu agregasi
+ * berkelompok. Di DuckDB jalur itu tidak dapat tumpah ke disk: ia menyimpan
+ * seluruh himpunan nilai uniknya di memori, apa pun isi `temp_directory`.
+ * Terhadap jendela 48 jam pada basis data ini — 2,5 juta baris riwayat — kueri
+ * itu menabrak batas 320 MB yang dipakai layanan web dan gagal dengan
+ * "Out of Memory".
+ *
+ * Akibatnya tidak terlihat sebagai halaman error, dan itulah yang membuatnya
+ * berbahaya: read model tren jatuh kembali ke hasil valid terakhir, sehingga
+ * grafik tren, laju, dan horizon "menuju 95%" membeku pada angka lama sementara
+ * setiap read model lain terus segar. Pada berkas cache mesin ini, tren
+ * tertinggal 22 jam dan proyeksi 28 jam di belakang sisa dasbor.
+ *
+ * Menghitung baris unik lewat `SELECT DISTINCT` lalu `count(*)` memakai jalur
+ * agregasi biasa, yang MEMANG dapat tumpah ke disk. Hasilnya identik —
+ * diverifikasi baris per baris terhadap bentuk lama pada batas memori longgar —
+ * sementara puncak pemakaian memorinya turun dari 305 MiB menjadi 66 MiB dan
+ * kueri justru selesai lebih cepat.
+ */
 async function loadWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
   refreshCachesForHistoryChange();
   const safeHours = Math.max(1, Math.floor(hoursBack));
@@ -1198,22 +1253,36 @@ async function loadWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
               ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
        FROM vw_sloc v ${JOIN_WH}
        WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()}
+     ), snapshot AS (
+       SELECT s._synced_at AS t, e.wh, s.location_id, s.sloc_code, s.product_id,
+              CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END AS qty,
+              CASE WHEN e.cbm_valid THEN s.occupied_cbm ELSE 0 END AS cbm,
+              (s.stock_qty > 0 OR s.occupied_cbm > 0) AS filled
+       FROM stock_history s
+       JOIN effective e
+         ON e.location_id = s.location_id AND e.sloc_code = s.sloc_code
+       WHERE s._synced_at >= now() - INTERVAL ${safeHours} HOUR
+         AND ${statusPredicateSQL("s.status")}
+         AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
+     ), totals AS (
+       SELECT t, wh, sum(qty)::DOUBLE AS qty, sum(cbm)::DOUBLE AS cbm
+       FROM snapshot GROUP BY 1, 2
+     ), skus AS (
+       SELECT t, wh, count(*)::INT AS sku
+       FROM (SELECT DISTINCT t, wh, product_id FROM snapshot)
+       GROUP BY 1, 2
+     ), bins AS (
+       SELECT t, wh, count(*)::INT AS bins
+       FROM (SELECT DISTINCT t, wh, location_id, sloc_code FROM snapshot WHERE filled)
+       GROUP BY 1, 2
      )
-     SELECT s._synced_at::VARCHAR AS t, e.wh,
-            sum(CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END)::DOUBLE AS qty,
-            sum(CASE WHEN e.cbm_valid THEN s.occupied_cbm ELSE 0 END)::DOUBLE AS cbm,
-            count(DISTINCT s.product_id)::INT AS sku,
-            count(DISTINCT CASE
-              WHEN s.stock_qty > 0 OR s.occupied_cbm > 0
-              THEN (s.location_id, s.sloc_code)
-            END)::INT AS bins
-     FROM stock_history s
-     JOIN effective e
-       ON e.location_id = s.location_id AND e.sloc_code = s.sloc_code
-     WHERE s._synced_at >= now() - INTERVAL ${safeHours} HOUR
-       AND ${statusPredicateSQL("s.status")}
-       AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
-     GROUP BY 1, 2 ORDER BY 1 ASC`
+     SELECT totals.t::VARCHAR AS t, totals.wh, totals.qty, totals.cbm,
+            coalesce(skus.sku, 0)::INT AS sku,
+            coalesce(bins.bins, 0)::INT AS bins
+     FROM totals
+     LEFT JOIN skus USING (t, wh)
+     LEFT JOIN bins USING (t, wh)
+     ORDER BY 1 ASC`
   );
   const out = rows.map((r) => {
     const c = caps.get(r.wh) ?? { capQ: 0, capV: 0, basis: "qty" as Basis, slocs: 0 };
@@ -1240,59 +1309,91 @@ export async function getWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
 
 /** Estimasi inbound/outbound per jam dari delta snapshot (26 jam terakhir). */
 export interface FlowRate { wh: string; in_qty: number; out_qty: number; in_cbm: number; out_cbm: number }
+
+interface FlowRateRow {
+  wh: string; in_qty: number; out_qty: number; in_cbm: number; out_cbm: number; hours: number;
+}
+
+/**
+ * Delta per lokasi/SKU antar snapshot, dijumlahkan menjadi laju masuk & keluar.
+ *
+ * DIJALANKAN PER GUDANG, BUKAN SEKALIGUS
+ * --------------------------------------
+ * Fungsi jendela di bawah mengurutkan seluruh jendela 26 jam — dua juta baris
+ * riwayat — dalam satu operasi. Diukur pada basis data ini, puncaknya mencapai
+ * 305 MiB dari batas 320 MB yang dipakai layanan web: lolos pada koneksi yang
+ * baru dibuka, gagal begitu ada kueri lain yang memorinya masih dipegang buffer
+ * manager. Itu bukan margin yang dapat diandalkan, dan ia akan menyempit lagi
+ * setiap kali riwayat bertambah panjang.
+ *
+ * Partisi jendelanya sendiri tidak pernah melintasi gudang — sebuah location_id
+ * hanya dimiliki satu gudang — sehingga memecahnya per gudang menghasilkan
+ * angka yang identik (diverifikasi terhadap bentuk satu-kueri) sambil mengikat
+ * puncak memori pada gudang terbesar, bukan pada seluruh jaringan.
+ */
 export async function getFlowRates(): Promise<Map<string, FlowRate>> {
   const cap = capacitySqlExpressions();
-  const rows = await queryHistory<{
-    wh: string; in_qty: number; out_qty: number; in_cbm: number; out_cbm: number; hours: number;
-  }>(
-    `${WH_MAP()}, effective AS (
-       SELECT v.location_id, v.sloc_code, m.wh,
-              coalesce(v.zone, '') AS zone, coalesce(v.rack_zone, '') AS rack_zone,
-              coalesce(v.aisle, '') AS aisle, coalesce(v.bay, '') AS bay,
-              coalesce(v.level, '') AS level, coalesce(v.bin, '') AS bin,
-              coalesce(v.storage_handling, '') AS storage_handling,
-              ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
-       FROM vw_sloc v ${JOIN_WH}
-       WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()}
-     ), series AS (
-       SELECT e.wh, s.location_id, s.sloc_code, s.product_id, s._synced_at AS t,
-              CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END AS qty,
-              CASE WHEN e.cbm_valid THEN s.occupied_cbm ELSE 0 END AS cbm
-       FROM stock_history s
-       JOIN effective e
-         ON e.location_id = s.location_id AND e.sloc_code = s.sloc_code
-       WHERE s._synced_at >= now() - INTERVAL 26 HOUR
-         AND ${statusPredicateSQL("s.status")}
-         AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
-     ), d AS (
-       SELECT wh, t,
-              qty - lag(qty) OVER w AS dq,
-              cbm - lag(cbm) OVER w AS dv
-       FROM series
-       WINDOW w AS (PARTITION BY location_id, sloc_code, product_id ORDER BY t)
-     )
-     SELECT wh,
-            coalesce(sum(CASE WHEN dq > 0 THEN dq END), 0)::DOUBLE  AS in_qty,
-            coalesce(-sum(CASE WHEN dq < 0 THEN dq END), 0)::DOUBLE AS out_qty,
-            coalesce(sum(CASE WHEN dv > 0 THEN dv END), 0)::DOUBLE  AS in_cbm,
-            coalesce(-sum(CASE WHEN dv < 0 THEN dv END), 0)::DOUBLE AS out_cbm,
-            greatest(1.0, (epoch(max(t)) - epoch(min(t))) / 3600.0)  AS hours
-     FROM d WHERE dq IS NOT NULL GROUP BY wh`
-  );
-  const m = new Map<string, FlowRate>();
-  for (const r of rows) {
-    m.set(r.wh, {
-      wh: r.wh,
-      in_qty: r1(r.in_qty / r.hours), out_qty: r1(r.out_qty / r.hours),
-      in_cbm: r3(r.in_cbm / r.hours), out_cbm: r3(r.out_cbm / r.hours),
-    });
+  const flows = new Map<string, FlowRate>();
+  // Berurutan, bukan Promise.all: kueri riwayat memang sudah diserialkan oleh
+  // antrean di lib/db, dan menjalankannya beriringan hanya akan menyusun
+  // kembali beban memori yang justru ingin dipecah pemisahan ini.
+  for (const warehouse of getWarehouses().warehouses) {
+    const rows = await queryHistory<FlowRateRow>(
+      `${WH_MAP()}, effective AS (
+         SELECT v.location_id, v.sloc_code, m.wh,
+                coalesce(v.zone, '') AS zone, coalesce(v.rack_zone, '') AS rack_zone,
+                coalesce(v.aisle, '') AS aisle, coalesce(v.bay, '') AS bay,
+                coalesce(v.level, '') AS level, coalesce(v.bin, '') AS bin,
+                coalesce(v.storage_handling, '') AS storage_handling,
+                ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
+         FROM vw_sloc v ${JOIN_WH}
+         WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()} AND m.wh = ?
+       ), series AS (
+         SELECT e.wh, s.location_id, s.sloc_code, s.product_id, s.status, s._synced_at AS t,
+                CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END AS qty,
+                CASE WHEN e.cbm_valid THEN s.occupied_cbm ELSE 0 END AS cbm
+         FROM stock_history s
+         JOIN effective e
+           ON e.location_id = s.location_id AND e.sloc_code = s.sloc_code
+         WHERE s._synced_at >= now() - INTERVAL 26 HOUR
+           AND ${statusPredicateSQL("s.status")}
+           AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
+       ), d AS (
+         SELECT wh, t,
+                qty - lag(qty) OVER w AS dq,
+                cbm - lag(cbm) OVER w AS dv
+         FROM series
+         -- Status ikut mempartisi deretnya. Riwayat menyimpan satu baris per
+         -- (lokasi, SKU, status); selama hanya satu status yang dihitung hal itu
+         -- tidak terlihat, tetapi begitu admin menambah status kedua di
+         -- Pengaturan, dua deret berbeda akan bercampur dalam satu partisi
+         -- dengan stempel waktu yang sama dan delta-nya menjadi bergantung pada
+         -- urutan baris yang kebetulan terbaca.
+         WINDOW w AS (PARTITION BY location_id, sloc_code, product_id, status ORDER BY t)
+       )
+       SELECT wh,
+              coalesce(sum(CASE WHEN dq > 0 THEN dq END), 0)::DOUBLE  AS in_qty,
+              coalesce(-sum(CASE WHEN dq < 0 THEN dq END), 0)::DOUBLE AS out_qty,
+              coalesce(sum(CASE WHEN dv > 0 THEN dv END), 0)::DOUBLE  AS in_cbm,
+              coalesce(-sum(CASE WHEN dv < 0 THEN dv END), 0)::DOUBLE AS out_cbm,
+              greatest(1.0, (epoch(max(t)) - epoch(min(t))) / 3600.0)  AS hours
+       FROM d WHERE dq IS NOT NULL GROUP BY wh`,
+      [warehouse.code],
+    );
+    for (const row of rows) {
+      flows.set(row.wh, {
+        wh: row.wh,
+        in_qty: r1(row.in_qty / row.hours), out_qty: r1(row.out_qty / row.hours),
+        in_cbm: r3(row.in_cbm / row.hours), out_cbm: r3(row.out_cbm / row.hours),
+      });
+    }
   }
-  return m;
+  return flows;
 }
 
 async function loadForecastRows(): Promise<ForecastRow[]> {
   const [base, trend, flows] = await Promise.all([
-    getWarehouseOccupancySummary(), getWarehouseTrend(48), getFlowRates(),
+    getWarehouseOccupancySummary(), getWarehouseTrend(TREND_WINDOW_HOURS), getFlowRates(),
   ]);
   const sums = withWarehouseTrend(base, trend);
   return sums.map((s) => {
@@ -1335,7 +1436,9 @@ export async function getForecastRows(): Promise<ForecastRow[]> {
   );
 }
 
-export async function getSlocDetail(code: string, wh?: string): Promise<{ stock: StockLine[]; movements: unknown[] }> {
+export async function getSlocDetail(
+  code: string, wh?: string,
+): Promise<{ stock: StockLine[]; movements: MovementRow[] }> {
   const scope = cleanScope({ wh, operational: true });
   if (wh && !scope.wh) return { stock: [], movements: [] };
   const [stock, movements] = await Promise.all([
@@ -1352,19 +1455,10 @@ export async function getSlocDetail(code: string, wh?: string): Promise<{ stock:
         ORDER BY occupied_cbm DESC LIMIT 50`,
       scope.wh ? [scope.wh, code] : [code],
     ),
-    queryHistory(
-      `${WH_MAP()}, valid AS (
-         SELECT v.sloc_code FROM vw_sloc v ${JOIN_WH}
-         WHERE ${OPERATIONAL_SLOC}${scope.wh ? " AND m.wh = ?" : ""}
-       )
-       SELECT movement_id, movement_type, movement_datetime::VARCHAR AS at, operator,
-               source_sloc, destination_sloc, product_name, qty
-        FROM movement_history
-        WHERE EXISTS (SELECT 1 FROM valid WHERE sloc_code = ?)
-          AND (source_sloc = ? OR destination_sloc = ?)
-        ORDER BY movement_datetime DESC LIMIT 12`,
-      scope.wh ? [scope.wh, code, code, code] : [code, code, code],
-    ).catch(() => []),
+    // Pergerakan dibaca lewat read-model bersama: satu-satunya cara agar panel
+    // SLOC, tabel gudang, dan halaman Movement menampilkan kejadian yang sama
+    // dengan tipe aksi yang sama.
+    getRecentMovements(code, 12, scope.wh).catch(() => []),
   ]);
   return { stock, movements };
 }
@@ -1467,31 +1561,341 @@ export async function getSyncHealth() {
   return { last_snapshot: snap[0]?.last ?? null, snapshot_rows: snap[0]?.rows ?? 0, recent_syncs: audit };
 }
 
-export async function getRecentMovements(sloc?: string, limit = 12, wh?: string) {
-  const lim = Math.min(50, Math.max(1, limit));
-  if (sloc) {
-    return queryHistory(
-      `${WH_MAP()}, valid AS (
-         SELECT v.sloc_code FROM vw_sloc v ${JOIN_WH} WHERE ${OPERATIONAL_SLOC}
-       )
-       SELECT movement_id, movement_type, movement_datetime::VARCHAR AS at, operator,
-               source_sloc, destination_sloc, product_name, qty
-       FROM movement_history
-       WHERE EXISTS (SELECT 1 FROM valid WHERE sloc_code = ?)
-         AND (source_sloc = ? OR destination_sloc = ?)
-       ORDER BY movement_datetime DESC LIMIT ${lim}`, [sloc, sloc, sloc]);
+// ---------------------------------------------------------------------------
+// Recent movements (dataset Superset 705 → movement_events → vw_movement)
+// ---------------------------------------------------------------------------
+//
+// SCOPE GUDANG — sama seperti seluruh read-model lain, `wh_map` adalah
+// allowlist-nya. Bedanya, pergerakan membawa `location_id` sendiri, sehingga
+// gudangnya tidak perlu ditebak dari kode rak. Itu penting: sebuah pergerakan
+// bisa berakhir di rak yang belum ada pada master SLOC (rak baru, atau
+// `to_rack_name` kosong pada pengeluaran barang), dan versi lama diam-diam
+// membuang baris seperti itu karena mensyaratkan kode raknya cocok.
+//
+// STANDARDISASI AKSI — `inventory_action` ditulis bebas oleh WMS. Tipe kanonik
+// dihitung di SQL dari tabel aturan yang sama dengan yang dipakai antarmuka
+// (lib/movements.ts), jadi filter di server dan label di layar tidak mungkin
+// memakai taksonomi yang berbeda.
+
+/** Sumber pergerakan yang sudah ber-scope, terstandardisasi, dan bertanda. */
+function movementSource(): string {
+  return `${WH_MAP()}, mv AS (
+    SELECT
+      v.movement_uid,
+      v.created_at,
+      v.updated_at,
+      m.wh,
+      coalesce(v.location_name, '') AS location_name,
+      coalesce(v.invoice_number, '') AS invoice_number,
+      v.product_id,
+      coalesce(v.product_name, '') AS product_name,
+      coalesce(v.sku_number, '') AS sku_number,
+      coalesce(v.l1_category, '') AS l1_category,
+      coalesce(v.product_type, '') AS product_type,
+      nullif(trim(coalesce(v.source_sloc, '')), '') AS source_sloc,
+      nullif(trim(coalesce(v.destination_sloc, '')), '') AS destination_sloc,
+      coalesce(v.action_raw, '') AS action_raw,
+      ${movementTypeSQL("v.action_raw")} AS movement_type,
+      ${movementDirectionSQL("v.operator_sign")} AS direction,
+      ${movementFlowSQL("v.source_sloc", "v.destination_sloc")} AS flow,
+      nullif(trim(coalesce(v.from_package, '')), '') AS from_package,
+      nullif(trim(coalesce(v.to_package, '')), '') AS to_package,
+      nullif(trim(coalesce(v.from_status, '')), '') AS from_status,
+      nullif(trim(coalesce(v.to_status, '')), '') AS to_status,
+      coalesce(v.operator, '') AS operator,
+      abs(coalesce(v.qty, 0))::DOUBLE AS qty
+    FROM vw_movement v
+    JOIN wh_map m ON m.location_id = v.location_id
+  )`;
+}
+
+/** Klausa WHERE + parameter dari kontrak filter bersama. */
+function movementWhere(filter: MovementFilter): { sql: string; params: unknown[] } {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  const hours = RANGE_HOURS[filter.range];
+  if (hours !== null) clauses.push(`mv.created_at >= now() - INTERVAL ${Number(hours)} HOUR`);
+  if (filter.wh) { clauses.push("mv.wh = ?"); params.push(filter.wh); }
+  if (filter.type.length) {
+    // Nilai berasal dari daftar tertutup MOVEMENT_TYPES; tetap diikat sebagai
+    // parameter supaya tidak ada jalur apa pun dari masukan ke teks SQL.
+    clauses.push(`mv.movement_type IN (${filter.type.map(() => "?").join(", ")})`);
+    params.push(...filter.type);
   }
-  // hanya movement yang menyentuh SLOC gudang ber-izin
-  return queryHistory(
-    `${WH_MAP()}, valid AS (
-        SELECT v.sloc_code, m.wh FROM vw_sloc v ${JOIN_WH} WHERE ${OPERATIONAL_SLOC}
-     )
-     SELECT h.movement_id, h.movement_type, h.movement_datetime::VARCHAR AS at, h.operator,
-            h.source_sloc, h.destination_sloc, h.product_name, h.qty
-     FROM movement_history h
-     WHERE EXISTS (SELECT 1 FROM valid x WHERE x.sloc_code IN (h.source_sloc, h.destination_sloc)
-                   ${wh ? `AND x.wh = '${wh.replace(/'/g, "''")}'` : ""})
-     ORDER BY h.movement_datetime DESC LIMIT ${lim}`);
+  if (filter.direction) { clauses.push("mv.direction = ?"); params.push(filter.direction); }
+  if (filter.flow) { clauses.push("mv.flow = ?"); params.push(filter.flow); }
+  if (filter.category) { clauses.push("mv.l1_category = ?"); params.push(filter.category); }
+  if (filter.productType) { clauses.push("mv.product_type = ?"); params.push(filter.productType); }
+  if (filter.status) { clauses.push("mv.to_status = ?"); params.push(filter.status); }
+  if (filter.operator) { clauses.push("mv.operator = ?"); params.push(filter.operator); }
+  if (filter.sloc) {
+    clauses.push("(mv.source_sloc ILIKE ? OR mv.destination_sloc ILIKE ?)");
+    params.push(`%${filter.sloc}%`, `%${filter.sloc}%`);
+  }
+  if (filter.q) {
+    const like = `%${filter.q}%`;
+    clauses.push(`(mv.product_name ILIKE ? OR mv.sku_number ILIKE ? OR mv.invoice_number ILIKE ?
+       OR mv.source_sloc ILIKE ? OR mv.destination_sloc ILIKE ?
+       OR mv.from_package ILIKE ? OR mv.to_package ILIKE ?
+       OR mv.operator ILIKE ? OR mv.action_raw ILIKE ?)`);
+    params.push(like, like, like, like, like, like, like, like, like);
+  }
+  return { sql: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", params };
+}
+
+const MOVEMENT_SORT_SQL: Record<MovementSort, string> = {
+  at: "mv.created_at",
+  qty: "mv.qty",
+  product: "mv.product_name",
+  type: "mv.movement_type",
+  wh: "mv.wh",
+  operator: "mv.operator",
+  invoice: "mv.invoice_number",
+};
+
+/** Batas keras satu halaman tabel; ekspor memakai batasnya sendiri. */
+export const MOVEMENT_PAGE_MAX = 500;
+export const MOVEMENT_EXPORT_MAX_ROWS = 100_000;
+
+/**
+ * Pergerakan belum tentu sudah pernah disinkronkan — pada instalasi baru
+ * tabelnya memang belum ada. Itu keadaan normal, bukan kegagalan, jadi
+ * pembacaannya berujung pada keadaan kosong dan bukan pada batas error halaman.
+ */
+async function movementQuery<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+  try {
+    return await queryHistory<T>(sql, params);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/movement_events|vw_movement/i.test(message)) return [];
+    throw error;
+  }
+}
+
+/** Satu tarikan baris; `limit` sudah dibatasi pemanggil. */
+function movementRowsQuery(
+  filter: MovementFilter, limit: number, offset: number,
+): Promise<MovementRow[]> {
+  const where = movementWhere(filter);
+  const order = MOVEMENT_SORT_SQL[filter.sort];
+  const dir = filter.dir === "asc" ? "ASC" : "DESC";
+  return movementQuery<MovementRow>(
+    `${movementSource()}
+     SELECT movement_uid, created_at::VARCHAR AS at, updated_at::VARCHAR AS updated_at,
+            wh, location_name, invoice_number, product_id, product_name, sku_number,
+            l1_category, product_type, source_sloc, destination_sloc, action_raw,
+            movement_type, direction, flow, from_package, to_package,
+            from_status, to_status, operator, qty,
+            (CASE WHEN direction = 'OUT' THEN -qty ELSE qty END)::DOUBLE AS qty_signed
+     FROM mv ${where.sql}
+     ORDER BY ${order} ${dir}, mv.created_at DESC, mv.movement_uid
+     LIMIT ${Math.trunc(limit)} OFFSET ${Math.trunc(offset)}`,
+    where.params,
+  );
+}
+
+export async function getMovementRows(
+  filter: MovementFilter, offset = 0, limit = 100,
+): Promise<MovementRow[]> {
+  return movementRowsQuery(
+    filter,
+    Math.min(MOVEMENT_PAGE_MAX, Math.max(1, Math.trunc(limit))),
+    Math.max(0, Math.trunc(offset)),
+  );
+}
+
+export async function getMovementSummary(filter: MovementFilter): Promise<MovementSummary> {
+  const where = movementWhere(filter);
+  const [totals, byType] = await Promise.all([
+    movementQuery<{
+      events: number; qty_in: number; qty_out: number; sku_count: number;
+      operator_count: number; invoice_count: number; sloc_count: number;
+      first_at: string | null; last_at: string | null;
+    }>(
+      `${movementSource()}
+       SELECT count(*)::INT AS events,
+              coalesce(sum(CASE WHEN direction = 'OUT' THEN 0 ELSE qty END), 0)::DOUBLE AS qty_in,
+              coalesce(sum(CASE WHEN direction = 'OUT' THEN qty ELSE 0 END), 0)::DOUBLE AS qty_out,
+              count(DISTINCT product_id)::INT AS sku_count,
+              count(DISTINCT nullif(operator, ''))::INT AS operator_count,
+              count(DISTINCT nullif(invoice_number, ''))::INT AS invoice_count,
+              count(DISTINCT coalesce(destination_sloc, source_sloc))::INT AS sloc_count,
+              min(created_at)::VARCHAR AS first_at,
+              max(created_at)::VARCHAR AS last_at
+       FROM mv ${where.sql}`,
+      where.params,
+    ),
+    movementQuery<{ movement_type: MovementType; events: number }>(
+      `${movementSource()}
+       SELECT movement_type, count(*)::INT AS events
+       FROM mv ${where.sql} GROUP BY movement_type`,
+      where.params,
+    ),
+  ]);
+  const row = totals[0];
+  if (!row) return EMPTY_MOVEMENT_SUMMARY;
+  const qtyIn = Number(row.qty_in ?? 0);
+  const qtyOut = Number(row.qty_out ?? 0);
+  return {
+    events: Number(row.events ?? 0),
+    qty_in: r1(qtyIn),
+    qty_out: r1(qtyOut),
+    qty_net: r1(qtyIn - qtyOut),
+    sku_count: Number(row.sku_count ?? 0),
+    operator_count: Number(row.operator_count ?? 0),
+    invoice_count: Number(row.invoice_count ?? 0),
+    sloc_count: Number(row.sloc_count ?? 0),
+    by_type: Object.fromEntries(byType.map((t) => [t.movement_type, Number(t.events)])),
+    first_at: row.first_at ?? null,
+    last_at: row.last_at ?? null,
+  };
+}
+
+/**
+ * Ringkasan per gudang — inti dari permintaan "Recent movements PER WH".
+ *
+ * Filter gudang sengaja diabaikan di sini supaya barisnya tetap dapat
+ * dibandingkan satu sama lain; memilih satu gudang menyorotnya, bukan
+ * menyembunyikan tujuh lainnya.
+ */
+export async function getMovementByWarehouse(
+  filter: MovementFilter,
+): Promise<MovementWarehouseRow[]> {
+  const where = movementWhere({ ...filter, wh: "" });
+  const rows = await movementQuery<Omit<MovementWarehouseRow, "name" | "qty_net">>(
+    `${movementSource()}
+     SELECT wh,
+            count(*)::INT AS events,
+            coalesce(sum(CASE WHEN direction = 'OUT' THEN 0 ELSE qty END), 0)::DOUBLE AS qty_in,
+            coalesce(sum(CASE WHEN direction = 'OUT' THEN qty ELSE 0 END), 0)::DOUBLE AS qty_out,
+            count(DISTINCT product_id)::INT AS sku_count,
+            count(DISTINCT nullif(operator, ''))::INT AS operator_count,
+            max(created_at)::VARCHAR AS last_at
+     FROM mv ${where.sql}
+     GROUP BY wh ORDER BY events DESC, wh`,
+    where.params,
+  );
+  const names = whNameByCode();
+  return rows.map((row) => ({
+    ...row,
+    name: names.get(row.wh) ?? row.wh,
+    qty_in: r1(Number(row.qty_in ?? 0)),
+    qty_out: r1(Number(row.qty_out ?? 0)),
+    qty_net: r1(Number(row.qty_in ?? 0) - Number(row.qty_out ?? 0)),
+    last_at: row.last_at ?? null,
+  }));
+}
+
+/**
+ * Aktivitas per jam/hari untuk grafik ringkas di atas tabel.
+ *
+ * Rentang pendek dikelompokkan per jam, rentang panjang per hari: satu batang
+ * per jam pada rentang 30 hari menghasilkan 720 batang yang tidak terbaca.
+ */
+export async function getMovementActivity(filter: MovementFilter): Promise<MovementBucket[]> {
+  const where = movementWhere(filter);
+  const hours = RANGE_HOURS[filter.range];
+  const unit = hours !== null && hours <= 72 ? "hour" : "day";
+  return movementQuery<MovementBucket>(
+    `${movementSource()}
+     SELECT date_trunc('${unit}', created_at)::VARCHAR AS t,
+            coalesce(sum(CASE WHEN direction = 'OUT' THEN 0 ELSE qty END), 0)::DOUBLE AS qty_in,
+            coalesce(sum(CASE WHEN direction = 'OUT' THEN qty ELSE 0 END), 0)::DOUBLE AS qty_out,
+            count(*)::INT AS events
+     FROM mv ${where.sql}
+     GROUP BY 1 ORDER BY 1`,
+    where.params,
+  );
+}
+
+/**
+ * Pilihan filter yang benar-benar ada pada data.
+ *
+ * Termasuk daftar aksi MENTAH beserta tipe kanoniknya: standardisasi tidak
+ * boleh menyembunyikan apa pun, dan inilah tempat admin dapat memeriksa apakah
+ * sebuah ejaan baru dari WMS sudah terpetakan dengan benar atau masih jatuh ke
+ * "Lainnya".
+ */
+export async function getMovementFacets(): Promise<MovementFacets> {
+  const scope = movementWhere({ ...EMPTY_MOVEMENT_FILTER, range: "30d" });
+  const [warehouses, categories, productTypes, statuses, operators, actions] = await Promise.all([
+    movementQuery<{ wh: string; events: number }>(
+      `${movementSource()} SELECT wh, count(*)::INT AS events FROM mv ${scope.sql}
+       GROUP BY wh ORDER BY wh`, scope.params),
+    movementQuery<{ value: string }>(
+      `${movementSource()} SELECT DISTINCT l1_category AS value FROM mv ${scope.sql}
+       ${scope.sql ? "AND" : "WHERE"} l1_category <> '' ORDER BY 1 LIMIT 200`, scope.params),
+    movementQuery<{ value: string }>(
+      `${movementSource()} SELECT DISTINCT product_type AS value FROM mv ${scope.sql}
+       ${scope.sql ? "AND" : "WHERE"} product_type <> '' ORDER BY 1 LIMIT 200`, scope.params),
+    movementQuery<{ value: string }>(
+      `${movementSource()} SELECT DISTINCT to_status AS value FROM mv ${scope.sql}
+       ${scope.sql ? "AND" : "WHERE"} to_status IS NOT NULL ORDER BY 1 LIMIT 100`, scope.params),
+    movementQuery<{ value: string }>(
+      `${movementSource()} SELECT operator AS value FROM mv ${scope.sql}
+       ${scope.sql ? "AND" : "WHERE"} operator <> ''
+       GROUP BY 1 ORDER BY count(*) DESC LIMIT 200`, scope.params),
+    movementQuery<{ raw: string; type: MovementType; events: number }>(
+      `${movementSource()} SELECT action_raw AS raw, movement_type AS type, count(*)::INT AS events
+       FROM mv ${scope.sql} ${scope.sql ? "AND" : "WHERE"} action_raw <> ''
+       GROUP BY 1, 2 ORDER BY events DESC LIMIT 100`, scope.params),
+  ]);
+  const names = whNameByCode();
+  return {
+    warehouses: warehouses.map((w) => ({
+      code: w.wh, name: names.get(w.wh) ?? w.wh, events: Number(w.events),
+    })),
+    categories: categories.map((r) => r.value),
+    product_types: productTypes.map((r) => r.value),
+    statuses: statuses.map((r) => r.value),
+    operators: operators.map((r) => r.value),
+    actions: actions.map((a) => ({ raw: a.raw, type: a.type, events: Number(a.events) })),
+  };
+}
+
+/** Semua baris yang cocok — hanya untuk ekspor Excel, dengan batas keras. */
+/**
+ * Satu kueri, bukan paginasi.
+ *
+ * Menyusun ekspor dari halaman 500 baris berarti DuckDB mengurutkan seluruh
+ * himpunan hasil sekali per halaman — dua ratus kali untuk berkas terbesar.
+ * Batasnya sendiri yang menjadi LIMIT.
+ */
+export async function getMovementRowsAll(filter: MovementFilter): Promise<MovementRow[]> {
+  return movementRowsQuery(filter, MOVEMENT_EXPORT_MAX_ROWS, 0);
+}
+
+/**
+ * Daftar pendek untuk panel SLOC dan kartu ringkas.
+ *
+ * Kode SLOC dicocokkan PERSIS di sini, berbeda dari kotak filter tabel yang
+ * memang mencari sebagian kata: panel sebuah lokasi tidak boleh menampilkan
+ * kejadian milik lokasi lain yang kebetulan kodenya berawalan sama.
+ */
+export async function getRecentMovements(
+  sloc?: string, limit = 12, wh?: string,
+): Promise<MovementRow[]> {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (wh) { clauses.push("mv.wh = ?"); params.push(wh); }
+  if (sloc) {
+    clauses.push("(mv.source_sloc = ? OR mv.destination_sloc = ?)");
+    params.push(sloc, sloc);
+  }
+  const lim = Math.min(MOVEMENT_PAGE_MAX, Math.max(1, Math.trunc(limit)));
+  return movementQuery<MovementRow>(
+    `${movementSource()}
+     SELECT movement_uid, created_at::VARCHAR AS at, updated_at::VARCHAR AS updated_at,
+            wh, location_name, invoice_number, product_id, product_name, sku_number,
+            l1_category, product_type, source_sloc, destination_sloc, action_raw,
+            movement_type, direction, flow, from_package, to_package,
+            from_status, to_status, operator, qty,
+            (CASE WHEN direction = 'OUT' THEN -qty ELSE qty END)::DOUBLE AS qty_signed
+     FROM mv ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+     ORDER BY mv.created_at DESC, mv.movement_uid
+     LIMIT ${lim}`,
+    params,
+  );
 }
 
 /** Pencarian cepat untuk command palette: SLOC & produk (dalam allowlist). */
