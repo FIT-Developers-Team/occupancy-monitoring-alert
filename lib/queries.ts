@@ -1577,6 +1577,42 @@ export async function getSyncHealth() {
 // (lib/movements.ts), jadi filter di server dan label di layar tidak mungkin
 // memakai taksonomi yang berbeda.
 
+/**
+ * ZONA WAKTU PERGERAKAN
+ * ---------------------
+ * `created_at`/`updated_at` disimpan PERSIS seperti di WMS: jam dinding WIB,
+ * tanpa zona. Itu disengaja — nilai yang sama dikirim kembali ke Superset
+ * sebagai filter watermark, jadi menggesernya ke UTC akan melewatkan atau
+ * menarik ulang tujuh jam data pada setiap pass.
+ *
+ * Konsekuensinya dua hal harus ditangani DI SINI, bukan dibiarkan ke pemanggil:
+ *
+ * 1. Batas rentang waktu tidak boleh memakai `now()` DuckDB. Di kontainer
+ *    produksi jam prosesnya UTC, sehingga "24 jam terakhir" akan membandingkan
+ *    jam dinding WIB dengan instan UTC dan meleset tujuh jam. Batasnya dihitung
+ *    di Node sebagai jam dinding WIB lalu diikat sebagai parameter.
+ * 2. Timestamp yang dikirim ke browser diberi offset `+07:00`. Tanpa itu
+ *    `new Date("2026-08-22 14:08:19")` diurai sebagai waktu LOKAL peramban, dan
+ *    pengguna di luar WIB melihat jam yang salah.
+ */
+const WIB_OFFSET = "+07:00";
+
+/** Ekspresi SQL yang mengubah kolom timestamp naif menjadi ISO 8601 ber-offset. */
+const wibIso = (column: string) =>
+  `strftime(${column}, '%Y-%m-%dT%H:%M:%S') || '${WIB_OFFSET}'`;
+
+/** Jam dinding WIB untuk sebuah instan — bentuk yang sama dengan isi kolomnya. */
+function wibWallClock(at: Date): string {
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hourCycle: "h23",
+  }).format(at);
+  // sv-SE memberi "YYYY-MM-DD HH:MM:SS" — format yang sama dengan kolomnya.
+  return parts.replace("T", " ");
+}
+
 /** Sumber pergerakan yang sudah ber-scope, terstandardisasi, dan bertanda. */
 function movementSource(): string {
   return `${WH_MAP()}, mv AS (
@@ -1614,7 +1650,10 @@ function movementWhere(filter: MovementFilter): { sql: string; params: unknown[]
   const clauses: string[] = [];
   const params: unknown[] = [];
   const hours = RANGE_HOURS[filter.range];
-  if (hours !== null) clauses.push(`mv.created_at >= now() - INTERVAL ${Number(hours)} HOUR`);
+  if (hours !== null) {
+    clauses.push("mv.created_at >= ?");
+    params.push(wibWallClock(new Date(Date.now() - hours * 3_600_000)));
+  }
   if (filter.wh) { clauses.push("mv.wh = ?"); params.push(filter.wh); }
   if (filter.type.length) {
     // Nilai berasal dari daftar tertutup MOVEMENT_TYPES; tetap diikat sebagai
@@ -1681,7 +1720,7 @@ function movementRowsQuery(
   const dir = filter.dir === "asc" ? "ASC" : "DESC";
   return movementQuery<MovementRow>(
     `${movementSource()}
-     SELECT movement_uid, created_at::VARCHAR AS at, updated_at::VARCHAR AS updated_at,
+     SELECT movement_uid, ${wibIso("created_at")} AS at, ${wibIso("updated_at")} AS updated_at,
             wh, location_name, invoice_number, product_id, product_name, sku_number,
             l1_category, product_type, source_sloc, destination_sloc, action_raw,
             movement_type, direction, flow, from_package, to_package,
@@ -1704,50 +1743,58 @@ export async function getMovementRows(
   );
 }
 
+/**
+ * Ringkasan + rincian per tipe dalam SATU pemindaian.
+ *
+ * Sumbernya besar: 356 ribu baris masuk per hari, jadi retensi 14 hari berarti
+ * beberapa juta baris per kueri. Dua kueri terpisah — total dan per tipe —
+ * berarti memindai tabel itu dua kali untuk satu tampilan layar. GROUPING SETS
+ * menghasilkan keduanya sekaligus: baris dengan `grouping()` = 1 adalah
+ * totalnya, sisanya per tipe.
+ */
 export async function getMovementSummary(filter: MovementFilter): Promise<MovementSummary> {
   const where = movementWhere(filter);
-  const [totals, byType] = await Promise.all([
-    movementQuery<{
-      events: number; qty_in: number; qty_out: number; sku_count: number;
-      operator_count: number; invoice_count: number; sloc_count: number;
-      first_at: string | null; last_at: string | null;
-    }>(
-      `${movementSource()}
-       SELECT count(*)::INT AS events,
-              coalesce(sum(CASE WHEN direction = 'OUT' THEN 0 ELSE qty END), 0)::DOUBLE AS qty_in,
-              coalesce(sum(CASE WHEN direction = 'OUT' THEN qty ELSE 0 END), 0)::DOUBLE AS qty_out,
-              count(DISTINCT product_id)::INT AS sku_count,
-              count(DISTINCT nullif(operator, ''))::INT AS operator_count,
-              count(DISTINCT nullif(invoice_number, ''))::INT AS invoice_count,
-              count(DISTINCT coalesce(destination_sloc, source_sloc))::INT AS sloc_count,
-              min(created_at)::VARCHAR AS first_at,
-              max(created_at)::VARCHAR AS last_at
-       FROM mv ${where.sql}`,
-      where.params,
-    ),
-    movementQuery<{ movement_type: MovementType; events: number }>(
-      `${movementSource()}
-       SELECT movement_type, count(*)::INT AS events
-       FROM mv ${where.sql} GROUP BY movement_type`,
-      where.params,
-    ),
-  ]);
-  const row = totals[0];
-  if (!row) return EMPTY_MOVEMENT_SUMMARY;
-  const qtyIn = Number(row.qty_in ?? 0);
-  const qtyOut = Number(row.qty_out ?? 0);
+  const rows = await movementQuery<{
+    movement_type: MovementType | null; is_total: number;
+    events: number; qty_in: number; qty_out: number; sku_count: number;
+    operator_count: number; invoice_count: number; sloc_count: number;
+    first_at: string | null; last_at: string | null;
+  }>(
+    `${movementSource()}
+     SELECT movement_type,
+            grouping(movement_type)::INT AS is_total,
+            count(*)::INT AS events,
+            coalesce(sum(CASE WHEN direction = 'OUT' THEN 0 ELSE qty END), 0)::DOUBLE AS qty_in,
+            coalesce(sum(CASE WHEN direction = 'OUT' THEN qty ELSE 0 END), 0)::DOUBLE AS qty_out,
+            count(DISTINCT product_id)::INT AS sku_count,
+            count(DISTINCT nullif(operator, ''))::INT AS operator_count,
+            count(DISTINCT nullif(invoice_number, ''))::INT AS invoice_count,
+            count(DISTINCT coalesce(destination_sloc, source_sloc))::INT AS sloc_count,
+            ${wibIso("min(created_at)")} AS first_at,
+            ${wibIso("max(created_at)")} AS last_at
+     FROM mv ${where.sql}
+     GROUP BY GROUPING SETS ((), (movement_type))`,
+    where.params,
+  );
+  const total = rows.find((row) => Number(row.is_total) === 1);
+  if (!total) return EMPTY_MOVEMENT_SUMMARY;
+  const qtyIn = Number(total.qty_in ?? 0);
+  const qtyOut = Number(total.qty_out ?? 0);
   return {
-    events: Number(row.events ?? 0),
+    events: Number(total.events ?? 0),
     qty_in: r1(qtyIn),
     qty_out: r1(qtyOut),
     qty_net: r1(qtyIn - qtyOut),
-    sku_count: Number(row.sku_count ?? 0),
-    operator_count: Number(row.operator_count ?? 0),
-    invoice_count: Number(row.invoice_count ?? 0),
-    sloc_count: Number(row.sloc_count ?? 0),
-    by_type: Object.fromEntries(byType.map((t) => [t.movement_type, Number(t.events)])),
-    first_at: row.first_at ?? null,
-    last_at: row.last_at ?? null,
+    sku_count: Number(total.sku_count ?? 0),
+    operator_count: Number(total.operator_count ?? 0),
+    invoice_count: Number(total.invoice_count ?? 0),
+    sloc_count: Number(total.sloc_count ?? 0),
+    by_type: Object.fromEntries(
+      rows.filter((row) => Number(row.is_total) === 0 && row.movement_type)
+        .map((row) => [row.movement_type as MovementType, Number(row.events)]),
+    ),
+    first_at: total.first_at ?? null,
+    last_at: total.last_at ?? null,
   };
 }
 
@@ -1770,7 +1817,7 @@ export async function getMovementByWarehouse(
             coalesce(sum(CASE WHEN direction = 'OUT' THEN qty ELSE 0 END), 0)::DOUBLE AS qty_out,
             count(DISTINCT product_id)::INT AS sku_count,
             count(DISTINCT nullif(operator, ''))::INT AS operator_count,
-            max(created_at)::VARCHAR AS last_at
+            ${wibIso("max(created_at)")} AS last_at
      FROM mv ${where.sql}
      GROUP BY wh ORDER BY events DESC, wh`,
     where.params,
@@ -1798,7 +1845,7 @@ export async function getMovementActivity(filter: MovementFilter): Promise<Movem
   const unit = hours !== null && hours <= 72 ? "hour" : "day";
   return movementQuery<MovementBucket>(
     `${movementSource()}
-     SELECT date_trunc('${unit}', created_at)::VARCHAR AS t,
+     SELECT ${wibIso(`date_trunc('${unit}', created_at)`)} AS t,
             coalesce(sum(CASE WHEN direction = 'OUT' THEN 0 ELSE qty END), 0)::DOUBLE AS qty_in,
             coalesce(sum(CASE WHEN direction = 'OUT' THEN qty ELSE 0 END), 0)::DOUBLE AS qty_out,
             count(*)::INT AS events
@@ -1816,8 +1863,8 @@ export async function getMovementActivity(filter: MovementFilter): Promise<Movem
  * sebuah ejaan baru dari WMS sudah terpetakan dengan benar atau masih jatuh ke
  * "Lainnya".
  */
-export async function getMovementFacets(): Promise<MovementFacets> {
-  const scope = movementWhere({ ...EMPTY_MOVEMENT_FILTER, range: "30d" });
+async function loadMovementFacets(): Promise<MovementFacets> {
+  const scope = movementWhere({ ...EMPTY_MOVEMENT_FILTER, range: "14d" });
   const [warehouses, categories, productTypes, statuses, operators, actions] = await Promise.all([
     movementQuery<{ wh: string; events: number }>(
       `${movementSource()} SELECT wh, count(*)::INT AS events FROM mv ${scope.sql}
@@ -1853,7 +1900,22 @@ export async function getMovementFacets(): Promise<MovementFacets> {
   };
 }
 
-/** Semua baris yang cocok — hanya untuk ekspor Excel, dengan batas keras. */
+/**
+ * Facet di-cache karena harganya tidak sebanding dengan lajunya berubah: enam
+ * agregasi DISTINCT di atas jutaan baris, untuk daftar dropdown yang isinya
+ * hanya bertambah ketika WMS memperkenalkan kategori atau ejaan aksi baru.
+ * Cache-nya tetap ikut versi database, jadi sinkronisasi berikutnya
+ * menyegarkannya sendiri.
+ */
+export async function getMovementFacets(): Promise<MovementFacets> {
+  return readModelCached(
+    "movement-facets-v1",
+    readModelVersion(),
+    loadMovementFacets,
+    { freshMs: DASHBOARD_TTL },
+  );
+}
+
 /**
  * Satu kueri, bukan paginasi.
  *
@@ -1885,7 +1947,7 @@ export async function getRecentMovements(
   const lim = Math.min(MOVEMENT_PAGE_MAX, Math.max(1, Math.trunc(limit)));
   return movementQuery<MovementRow>(
     `${movementSource()}
-     SELECT movement_uid, created_at::VARCHAR AS at, updated_at::VARCHAR AS updated_at,
+     SELECT movement_uid, ${wibIso("created_at")} AS at, ${wibIso("updated_at")} AS updated_at,
             wh, location_name, invoice_number, product_id, product_name, sku_number,
             l1_category, product_type, source_sloc, destination_sloc, action_raw,
             movement_type, direction, flow, from_package, to_package,

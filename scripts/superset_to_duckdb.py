@@ -366,6 +366,52 @@ def load_runtime_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
+# Ambang satuan epoch. Nilai "sekarang" kira-kira 1,79e9 detik / 1,79e12 ms /
+# 1,79e15 mikrodetik, sehingga batas di antaranya memisahkan keempatnya tanpa
+# perlu menebak.
+_EPOCH_UNITS = ((1e11, 1.0), (1e14, 1e3), (1e17, 1e6), (float("inf"), 1e9))
+
+
+def epoch_to_timestamp_text(value: Any) -> Any:
+    """Ubah epoch numerik menjadi teks timestamp; nilai lain dikembalikan apa adanya.
+
+    MENGAPA PERLU
+    -------------
+    Chart Data API Superset men-serialisasi kolom waktu sebagai ANGKA epoch
+    milidetik (`json_int_dttm_ser`), bukan teks ISO. pandas membacanya sebagai
+    float, dan DuckDB menolaknya dengan `Unimplemented type for cast
+    (DOUBLE -> TIMESTAMP)` — persis kegagalan job pergerakan.
+
+    ZONA WAKTU — SENGAJA TIDAK DIGESER
+    ----------------------------------
+    Superset mengubah datetime naif menjadi epoch dengan menganggapnya UTC, jadi
+    `utcfromtimestamp` mengembalikan JAM DINDING yang persis sama dengan yang
+    tersimpan di sumber. Menggesernya ke zona lain justru akan membuat nilai di
+    DuckDB berbeda dari nilai yang sama di Superset — dan nilai inilah yang
+    dikirim kembali sebagai filter watermark pada pass berikutnya, sehingga
+    pergeseran apa pun akan melewatkan atau menarik ulang berjam-jam data.
+    """
+    if value is None or isinstance(value, (bool, str, datetime)):
+        return value
+    # Skalar numpy (np.int64/np.float64) tidak mewarisi int/float Python, jadi
+    # pemeriksaan isinstance saja akan melewatkan seluruh kolom dari pandas.
+    number = value.item() if hasattr(value, "item") else value
+    if isinstance(number, bool) or not isinstance(number, (int, float)):
+        return value
+    if number != number:  # NaN
+        return None
+    magnitude = abs(float(number))
+    divisor = next(div for limit, div in _EPOCH_UNITS if magnitude < limit)
+    try:
+        moment = datetime.fromtimestamp(float(number) / divisor, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return value
+    moment = moment.replace(tzinfo=None)
+    if moment.microsecond:
+        return moment.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _iso_after(seconds: float) -> str:
     return datetime.fromtimestamp(time.time() + max(0, seconds), tz=timezone.utc).isoformat()
 
@@ -791,24 +837,58 @@ class SupersetDatasetClient(SupersetClient):
 
     _MISSING_RE = re.compile(r"Columns missing in dataset: \[([^\]]*)\]")
 
+    _TEMPORAL_TYPE_RE = re.compile(r"date|time", re.I)
+
+    def dataset_meta(self, dataset_id: int) -> Dict[str, Any]:
+        """Metadata dataset (nama kolom + kolom waktu), di-cache per proses."""
+        cache = getattr(self, "_dataset_meta_cache", None)
+        if cache is None:
+            cache = self._dataset_meta_cache = {}
+        key = int(dataset_id)
+        if key in cache:
+            return cache[key]
+        r = self._http("GET", f"{self.base}/api/v1/dataset/{key}")
+        res = r.json().get("result", {})
+        names: List[str] = []
+        temporal: set = set()
+        for c in res.get("columns", []) or []:
+            name = c.get("column_name")
+            if not name:
+                continue
+            names.append(name)
+            if c.get("is_dttm") or self._TEMPORAL_TYPE_RE.search(str(c.get("type") or "")):
+                temporal.add(name)
+        meta = {"columns": names, "temporal": temporal}
+        cache[key] = meta
+        return meta
+
     def dataset_columns(self, dataset_id: int) -> List[str]:
         """Skema ASLI dataset dari API metadata — sumber kebenaran nama kolom."""
-        r = self._http("GET", f"{self.base}/api/v1/dataset/{int(dataset_id)}")
-        res = r.json().get("result", {})
-        return [c.get("column_name") for c in res.get("columns", []) if c.get("column_name")]
+        return list(self.dataset_meta(dataset_id)["columns"])
 
     @staticmethod
     def _finalize(rows: List[Dict[str, Any]], colmap: Dict[str, str],
                   metric_labels: List[str], d: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Rename raw→target + derivasi kolom yang tak dimiliki dataset:
-        rack_zone/aisle/bay/level/bin dari sloc_code (PGS-ABB1-01-02-L1-01),
-        occupied_cbm = stock_qty × sku_cbm bila kosong."""
+        """Rename raw→target + normalisasi waktu + derivasi kolom yang tak
+        dimiliki dataset: rack_zone/aisle/bay/level/bin dari sloc_code
+        (PGS-ABB1-01-02-L1-01), occupied_cbm = stock_qty × sku_cbm bila kosong.
+
+        Kolom waktu diubah dari epoch numerik menjadi teks timestamp DI SINI,
+        sebelum DataFrame dibentuk. Letaknya penting: watermark incremental
+        diambil dari `df[watermark_column].max()`, jadi konversi yang terlambat
+        akan menyimpan watermark berupa angka seperti `1787321220699.0` dan
+        pass berikutnya mengirim angka itu kembali ke Superset sebagai filter
+        waktu."""
         derive = d.get("derive_from_sloc_code", True)
+        temporal = set(d.get("_temporal_targets") or ())
         out: List[Dict[str, Any]] = []
         for r in rows:
             o = {tgt: r.get(raw) for raw, tgt in colmap.items()}
             for lb in metric_labels:
                 o[lb] = r.get(lb)
+            for tgt in temporal:
+                if tgt in o:
+                    o[tgt] = epoch_to_timestamp_text(o[tgt])
             if derive:
                 code = o.get("sloc_code")
                 if code:
@@ -1050,11 +1130,27 @@ class SupersetDatasetClient(SupersetClient):
 
         # --- Selaraskan dengan skema dataset ASLI (introspeksi; anti tebak-tebakan) ---
         real: set = set()
+        temporal_raw: set = set()
         try:
-            real = set(self.dataset_columns(d["id"]))
+            meta = self.dataset_meta(d["id"])
+            real = set(meta["columns"])
+            temporal_raw = set(meta["temporal"])
         except Exception as ie:  # noqa: BLE001 — endpoint metadata bisa saja dibatasi
             log.info("[%s] introspeksi dataset %s gagal (%s) — lanjut, mengandalkan "
                      "pemangkasan dari pesan error server", job.name, d["id"], str(ie)[:90])
+
+        # Kolom waktu: hasil introspeksi DIGABUNG dengan daftar eksplisit di
+        # config. Introspeksi bisa ditolak server atau melewatkan kolom yang
+        # tidak ditandai `is_dttm`, dan job tetap harus menulis TIMESTAMP yang
+        # sah — jadi config berlaku sebagai jaring pengaman, bukan pengganti.
+        temporal_targets = {tgt for raw, tgt in colmap.items() if raw in temporal_raw}
+        temporal_targets.update(d.get("timestamp_columns") or [])
+        if temporal_targets:
+            log.info("[%s] kolom waktu (epoch -> timestamp): %s",
+                     job.name, sorted(temporal_targets))
+        d["_temporal_targets"] = sorted(temporal_targets)
+        if isinstance(job.dataset, dict):  # jalur legacy membaca job.dataset asli
+            job.dataset["_temporal_targets"] = sorted(temporal_targets)
         if real:
             gone = [c for c in raw_cols if c not in real]
             if gone:
@@ -1413,6 +1509,14 @@ class DuckDBSink:
             "SELECT column_name FROM information_schema.columns WHERE table_name = ?", [table]
         ).fetchall()]
 
+    def _column_types(self, table: str) -> Dict[str, str]:
+        return {r[0]: str(r[1]).upper() for r in self.con.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = ?", [table]
+        ).fetchall()}
+
+    _TEMPORAL_DUCKDB_TYPES = ("TIMESTAMP", "DATE", "DATETIME")
+
     def _ensure_table_from_df(self, table: str, df: "pd.DataFrame", stamp: bool) -> None:
         if not self._table_exists(table):
             # DuckDB types an object column by SAMPLING the registered frame, so
@@ -1449,7 +1553,26 @@ class DuckDBSink:
         if stamp:
             df = df.copy()
             df[self.SYNCED_AT] = synced_at
-        tbl_cols = self._columns(table)
+        tbl_types = self._column_types(table)
+        # Jaring pengaman terakhir untuk kolom waktu yang masih berupa epoch
+        # numerik — mis. ketika introspeksi dataset ditolak server dan config
+        # belum menyebut kolomnya. Tanpa ini seluruh sync berhenti dengan
+        # "Unimplemented type for cast (DOUBLE -> TIMESTAMP)"; dengan ini
+        # datanya masuk dan penyebabnya tercatat di log.
+        numeric_temporal = [
+            column for column, kind in tbl_types.items()
+            if column in df.columns
+            and any(kind.startswith(t) for t in self._TEMPORAL_DUCKDB_TYPES)
+            and pd.api.types.is_numeric_dtype(df[column])
+        ]
+        if numeric_temporal:
+            log.warning("  kolom waktu %s pada %s masih berupa angka epoch — dikonversi "
+                        "saat menulis; sebutkan di dataset.timestamp_columns agar "
+                        "watermark incremental juga benar", numeric_temporal, table)
+            df = df.copy()
+            for column in numeric_temporal:
+                df[column] = df[column].map(epoch_to_timestamp_text)
+        tbl_cols = list(tbl_types.keys())
         # only insert columns the table knows; fill missing with NULL via SELECT list
         self.con.register("_df_ins", df)
         select_list = ", ".join(
@@ -1885,6 +2008,8 @@ class SyncEngine:
                     if not rows:
                         continue
                     df = pd.DataFrame(rows)
+                    # Diisi oleh dataset_pages saat halaman pertama disusun.
+                    temporal_targets = set((job.dataset or {}).get("_temporal_targets") or ())
                     pulled += len(df)
                     batch_idx += 1
                     for row in rows:
@@ -1894,7 +2019,15 @@ class SyncEngine:
                         staged.write("\n")
 
                     if job.watermark_column and job.watermark_column in df.columns:
-                        wm = str(df[job.watermark_column].max())
+                        # Watermark dikirim kembali ke Superset sebagai nilai
+                        # filter pada pass berikutnya, jadi ia harus berupa
+                        # timestamp yang dapat dibaca sumber — bukan epoch
+                        # mentah seperti "1787407699826.0".
+                        cursor = df[job.watermark_column].max()
+                        if (job.watermark_column in temporal_targets
+                                or job.key_type == "timestamp"):
+                            cursor = epoch_to_timestamp_text(cursor)
+                        wm = str(cursor)
                         max_watermark = wm if not max_watermark else max(max_watermark, wm)
                     if job.key_col in df.columns:
                         max_key = str(df[job.key_col].max())

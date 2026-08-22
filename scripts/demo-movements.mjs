@@ -26,25 +26,38 @@ const run = (sql, params = []) =>
   new Promise((res, rej) => c.all(sql, ...params, (e, r) => (e ? rej(e) : res(r))));
 
 const ACTIONS = [
-  ["Goods Receipt", "+", false, true],
-  ["Penerimaan Barang", "+", false, true],
-  ["Putaway", "+", true, true],
-  ["PUT_AWAY", "+", true, true],
-  ["Picking", "-", true, false],
-  ["Pengambilan Order", "-", true, false],
-  ["Packing", "-", true, false],
-  ["Outbound Delivery", "-", true, false],
-  ["Internal Transfer", "+", true, true],
-  ["Pemindahan Rak", "+", true, true],
-  ["Stock Opname Adjustment", "-", true, true],
-  ["Return to Vendor", "-", true, false],
-  ["Change Status Good to Bad", "-", true, true],
-  ["Kegiatan Khusus Gudang", "+", true, true],
+  // Kosakata NYATA dataset 705 (diperiksa 2026-08-22) beserta tanda operator
+  // dan pola rak asal/tujuan yang menyertainya. Memakai daftar ini — bukan
+  // nama kegiatan gudang yang terdengar masuk akal — membuat data demo benar
+  // benar menguji standardisasi yang dipakai produksi.
+  // [aksi mentah, tanda, punya rak asal, punya rak tujuan]
+  ["Create supply order", "-", true, false],
+  ["Create supply order by upload", "-", true, false],
+  ["Cancel supply order", "+", true, false],
+  ["Update supply order to complete", "+", true, false],
+  ["Update supply order to incoming", "+", false, true],
+  ["Substitute supply order item packing", "-", true, false],
+  ["Substitute supply order item packing return", "+", false, true],
+  ["Adjust in stock from supply order partial", "+", false, true],
+  ["Submit purchase order inbound", "+", false, true],
+  ["Update purchase order to complete", "+", false, true],
+  ["Adjust in stock for putaway task", "+", true, true],
+  ["Adjust out stock for putaway task", "-", true, true],
+  ["Update putaway task to complete", "+", true, true],
+  ["Adjust in stock for replenishment task", "+", true, true],
+  ["Adjust out stock for replenishment task", "-", true, true],
+  ["Update Inventory", "+", true, true],
+  ["Create/update stock inventory by upload", "-", true, true],
+  ["Rollback Create supply order", "+", true, false],
 ];
-const OPS = ["Budi Santoso", "Sari Rahayu", "Andi Pratama", "Dewi Lestari",
-  "Rizki Ramadhan", "Tono Wijaya", "Maya Kusuma", "Agus Setiawan"];
-const STATUSES = ["Available", "Available", "Available", "Bad", "Quarantine"];
-const TYPES = ["Consumer Goods", "Fresh", "Frozen Food", "Beverage"];
+// `inventory_created_by` di sumber berisi nama pengguna WMS, bukan nama orang.
+const OPS = ["admin", "wh.cbt01", "wh.stl02", "wh.pgs01", "spv.bgo", "wh.bit03",
+  "wh.srg01", "system"];
+// Catatan status hampir selalu kosong (352.893 dari 356.085 baris di sumber);
+// yang terisi adalah alasan barang bermasalah.
+const STATUSES = ["", "", "", "", "", "", "", "", "Dalam Pencarian",
+  "Kemasan Rusak / Robek / Berlubang / Loss Vacum", "Barang Hilang", "Destruktif Produk"];
+const TYPES = ["Frozen", "Chilled", "Ambient", "Fresh"];
 
 function mulberry32(a) {
   return function () {
@@ -108,7 +121,7 @@ async function main() {
       q(action), q(sign),
       hasFrom ? q(`PKG-${String(10000 + Math.floor(rand() * 89999))}`) : "NULL",
       hasTo ? q(`PKG-${String(10000 + Math.floor(rand() * 89999))}`) : "NULL",
-      q(fromStatus), q(action.includes("Bad") ? "Bad" : fromStatus),
+      q(fromStatus), q(fromStatus),
       q(pick(OPS)), Math.round(1 + rand() * 47),
     ]);
   }

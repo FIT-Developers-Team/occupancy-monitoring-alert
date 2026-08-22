@@ -64,6 +64,10 @@ const DatasetSchema = z.object({
   key: z.string().trim().optional(),
   orderby: z.array(z.string().trim().min(1)).optional(),
   columns: z.record(z.string(), z.string().trim().min(1)),
+  // Kolom TUJUAN yang harus ditulis sebagai TIMESTAMP. Chart Data API Superset
+  // mengirim waktu sebagai angka epoch milidetik; tanpa daftar ini worker hanya
+  // dapat mengandalkan introspeksi dataset, yang bisa ditolak server.
+  timestamp_columns: z.array(z.string().trim().min(1)).optional(),
   metrics: z.array(MetricSchema).optional(),
   filters: z.array(FilterSchema).default([]),
   inherit_chart_filters: z.boolean().default(true),

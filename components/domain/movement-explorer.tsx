@@ -47,24 +47,24 @@ const PAGE_SIZES = [25, 50, 100, 200];
  * gudang membaca kolom ini sambil lalu — warnanya harus berarti sesuatu.
  */
 const TYPE_TONE: Record<MovementType, "in" | "out" | "move" | "control"> = {
-  RECEIVING: "in",
+  PURCHASE_ORDER: "in",
   PUTAWAY: "in",
-  RETURN: "out",
-  PICKING: "out",
-  PACKING: "out",
-  DISPATCH: "out",
+  REPLENISHMENT: "move",
+  SUPPLY_ORDER: "out",
   TRANSFER: "move",
   ADJUSTMENT: "control",
+  CANCELLATION: "control",
+  RETURN: "control",
   STATUS_CHANGE: "control",
   OTHER: "control",
 };
 
 /** Preset satu klik untuk pertanyaan yang paling sering diajukan. */
 const PRESETS: Array<{ id: string; labelKey: string; patch: Partial<MovementFilter> }> = [
-  { id: "inbound", labelKey: "mv.preset.inbound", patch: { type: ["RECEIVING", "PUTAWAY"], direction: "", flow: "" } },
-  { id: "outbound", labelKey: "mv.preset.outbound", patch: { type: ["PICKING", "PACKING", "DISPATCH"], direction: "", flow: "" } },
-  { id: "internal", labelKey: "mv.preset.internal", patch: { type: ["TRANSFER"], flow: "INTERNAL", direction: "" } },
-  { id: "control", labelKey: "mv.preset.control", patch: { type: ["ADJUSTMENT", "STATUS_CHANGE"], direction: "", flow: "" } },
+  { id: "inbound", labelKey: "mv.preset.inbound", patch: { type: ["PURCHASE_ORDER", "PUTAWAY"], direction: "", flow: "" } },
+  { id: "outbound", labelKey: "mv.preset.outbound", patch: { type: ["SUPPLY_ORDER"], direction: "", flow: "" } },
+  { id: "internal", labelKey: "mv.preset.internal", patch: { type: ["TRANSFER", "REPLENISHMENT"], direction: "", flow: "" } },
+  { id: "control", labelKey: "mv.preset.control", patch: { type: ["ADJUSTMENT", "CANCELLATION", "STATUS_CHANGE"], direction: "", flow: "" } },
 ];
 
 export default function MovementExplorer({

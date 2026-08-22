@@ -300,26 +300,39 @@ async function main() {
   // dan "Penempatan". Demo ini yang membuktikan standardisasi tipe di
   // lib/movements.ts benar-benar bekerja, bukan sekadar meneruskan teks rapi.
   const mv = [];
-  const ops = ["Budi Santoso","Sari Rahayu","Andi Pratama","Dewi Lestari",
-    "Rizki Ramadhan","Tono Wijaya","Maya Kusuma","Agus Setiawan"];
+  // `inventory_created_by` berisi nama pengguna WMS, bukan nama orang.
+  const ops = ["admin","wh.cbt01","wh.stl02","wh.pgs01","spv.bgo","wh.bit03",
+    "wh.srg01","system"];
   const ACTIONS = [
-    // [aksi mentah, tanda operator, punya rak asal, punya rak tujuan]
-    ["Goods Receipt", "+", false, true],
-    ["Penerimaan Barang", "+", false, true],
-    ["Putaway", "+", true, true],
-    ["PUT_AWAY", "+", true, true],
-    ["Picking", "-", true, false],
-    ["Pengambilan Order", "-", true, false],
-    ["Packing", "-", true, false],
-    ["Outbound Delivery", "-", true, false],
-    ["Internal Transfer", "+", true, true],
-    ["Pemindahan Rak", "+", true, true],
-    ["Stock Opname Adjustment", "-", true, true],
-    ["Return to Vendor", "-", true, false],
-    ["Change Status Good to Bad", "-", true, true],
+    // Kosakata NYATA dataset 705 (diperiksa 2026-08-22) beserta tanda operator
+    // dan pola rak asal/tujuan yang menyertainya. Memakai daftar ini — bukan
+    // nama kegiatan gudang yang terdengar masuk akal — membuat data demo benar
+    // benar menguji standardisasi yang dipakai produksi.
+    // [aksi mentah, tanda, punya rak asal, punya rak tujuan]
+    ["Create supply order", "-", true, false],
+    ["Create supply order by upload", "-", true, false],
+    ["Cancel supply order", "+", true, false],
+    ["Update supply order to complete", "+", true, false],
+    ["Update supply order to incoming", "+", false, true],
+    ["Substitute supply order item packing", "-", true, false],
+    ["Substitute supply order item packing return", "+", false, true],
+    ["Adjust in stock from supply order partial", "+", false, true],
+    ["Submit purchase order inbound", "+", false, true],
+    ["Update purchase order to complete", "+", false, true],
+    ["Adjust in stock for putaway task", "+", true, true],
+    ["Adjust out stock for putaway task", "-", true, true],
+    ["Update putaway task to complete", "+", true, true],
+    ["Adjust in stock for replenishment task", "+", true, true],
+    ["Adjust out stock for replenishment task", "-", true, true],
+    ["Update Inventory", "+", true, true],
+    ["Create/update stock inventory by upload", "-", true, true],
+    ["Rollback Create supply order", "+", true, false],
   ];
-  const STATUSES = ["Available", "Available", "Available", "Bad", "Quarantine"];
-  const TYPES = ["Consumer Goods", "Fresh", "Frozen Food", "Beverage"];
+
+  // Catatan status hampir selalu kosong di sumber; yang terisi adalah alasan.
+  const STATUSES = ["", "", "", "", "", "Dalam Pencarian", "Barang Hilang",
+    "Kemasan Rusak / Robek / Berlubang / Loss Vacum"];
+  const TYPES = ["Frozen", "Chilled", "Ambient", "Fresh"];
   const pool = slocs.filter((x) => !x.staging);
   for (let i = 0; i < 900; i++) {
     const s = pick(pool);
@@ -341,7 +354,7 @@ async function main() {
       hasFrom ? q(`PKG-${String(10000 + Math.floor(rand() * 89999))}`) : "NULL",
       hasTo ? q(`PKG-${String(10000 + Math.floor(rand() * 89999))}`) : "NULL",
       q(fromStatus),
-      q(action.includes("Bad") ? "Bad" : fromStatus),
+      q(fromStatus),
       q(pick(ops)),
       Math.round(between(1, 48)),
     ]);

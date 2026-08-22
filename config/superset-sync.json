@@ -196,7 +196,7 @@
       "watermark_column": "updated_at",
       "primary_key": [],
       "history_table": null,
-      "retention_days": 60,
+      "retention_days": 14,
       "min_interval_seconds": 0,
       "dataset": {
         "id": 705,
@@ -251,7 +251,11 @@
             ]
           }
         ],
-        "inherit_chart_filters": true,
+        "timestamp_columns": [
+          "created_at",
+          "updated_at"
+        ],
+        "inherit_chart_filters": false,
         "derive_from_sloc_code": false,
         "segment_by": [
           "inventory_origin_location_id"

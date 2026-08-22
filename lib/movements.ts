@@ -11,23 +11,43 @@
 //
 // STANDARDISASI `inventory_action`
 // --------------------------------
-// Dataset sumber (Superset 705) menyimpan aksi apa adanya seperti yang diketik
-// WMS: satu gudang menulis "Putaway", yang lain "PUT_AWAY", "Penempatan", atau
-// "Putaway from Staging". Menampilkannya mentah membuat filter tidak berguna —
-// puluhan nilai untuk enam kegiatan yang sama. Karena itu setiap aksi dipetakan
-// ke SATU tipe kanonik di bawah, sementara teks aslinya tetap disimpan dan
-// ditampilkan pada panel detail supaya tidak ada informasi yang hilang.
+// Dataset sumber (Superset 705) menyimpan aksi apa adanya seperti yang ditulis
+// WMS. Kosakata nyatanya — diperiksa langsung pada dataset, 2026-08-22, 356 ribu
+// baris dalam 24 jam — berpusat pada OBJEK BISNIS yang disentuh, bukan pada nama
+// kegiatan gudang:
+//
+//   Create supply order · Cancel supply order · Update supply order to complete
+//   Update supply order to incoming · Create supply order by upload
+//   Substitute supply order item packing (+ … return)
+//   Adjust in stock from supply order partial
+//   Submit purchase order inbound · Update purchase order to complete
+//   Adjust in/out stock for putaway task · Update putaway task to complete
+//   Adjust in/out stock for replenishment task
+//   Update Inventory · Create/update stock inventory by upload
+//   Rollback <aksi apa pun>
+//
+// Karena itu tipe kanonik di bawah mengikuti objek bisnis itu. Memaksakan
+// taksonomi gudang generik (picking/packing/dispatch) akan salah dua kali:
+// tak satu pun nama itu muncul di data, dan seluruh 356 ribu baris akan jatuh
+// ke "Lainnya". Arah stok (+/−) TIDAK ikut ke dalam tipe — ia kolom sendiri
+// (`inventory_operator`), karena satu objek bisnis yang sama bisa menambah
+// maupun mengurangi stok.
+//
+// Kata kunci gudang generik tetap dipertahankan pada setiap aturan supaya
+// dataset lain — atau kosakata WMS yang berubah — tetap tergolong dengan benar.
+// Teks aslinya tidak pernah hilang: `action_raw` tampil pada panel detail,
+// ekspor Excel, dan tabel padanan di halaman Pergerakan.
 
 /** Tipe pergerakan kanonik — urutannya juga urutan tampil pada filter. */
 export const MOVEMENT_TYPES = [
-  "RECEIVING",
+  "PURCHASE_ORDER",
   "PUTAWAY",
-  "PICKING",
-  "PACKING",
-  "DISPATCH",
+  "REPLENISHMENT",
+  "SUPPLY_ORDER",
   "TRANSFER",
-  "RETURN",
   "ADJUSTMENT",
+  "CANCELLATION",
+  "RETURN",
   "STATUS_CHANGE",
   "OTHER",
 ] as const;
@@ -35,8 +55,10 @@ export type MovementType = (typeof MOVEMENT_TYPES)[number];
 
 /**
  * Aturan pemetaan aksi mentah → tipe kanonik, dievaluasi BERURUTAN (yang cocok
- * pertama menang). Urutannya disengaja: "Stock Opname Transfer" adalah kegiatan
- * penyesuaian, bukan pemindahan, sehingga ADJUSTMENT harus diuji lebih dulu.
+ * pertama menang). Urutannya menentukan arti: hampir setiap aksi WMS menyebut
+ * lebih dari satu kata kunci, dan yang harus menang adalah yang paling
+ * spesifik. "Adjust in stock for putaway task" adalah pekerjaan PUTAWAY, bukan
+ * penyesuaian umum — karena itu PUTAWAY diuji sebelum ADJUSTMENT.
  *
  * Teks aksi DINORMALKAN lebih dulu: setiap rangkaian karakter bukan
  * huruf/angka menjadi satu spasi. Tanpa itu "PUT_AWAY" — ejaan yang benar-benar
@@ -51,56 +73,62 @@ export type MovementType = (typeof MOVEMENT_TYPES)[number];
  * bukan dihapus.
  */
 const RULES: Array<{ type: MovementType; keywords: string[] }> = [
+  // Pembatalan diuji PALING DULU dan sengaja menang atas objek bisnisnya:
+  // "Rollback Adjust in stock for putaway task" adalah pembatalan, dan yang
+  // dicari operasional saat menelusuri selisih stok justru daftar pembatalan
+  // itu sendiri — bukan menemukannya berserakan di antara enam tipe lain.
   {
-    type: "ADJUSTMENT",
-    keywords: [
-      "opname", "stock take", "stocktake", "cycle count", "counting", "recount",
-      "adjust", "penyesuaian", "koreksi", "correct", "variance", "selisih",
-    ],
-  },
-  {
-    type: "RETURN",
-    keywords: ["return", "retur", "rto", "refund", "pengembalian", "reverse", "cancel"],
-  },
-  {
-    type: "RECEIVING",
-    keywords: [
-      "receiv", "receipt", "inbound", "grn", "goods in", "penerimaan", "terima",
-      "unload", "arrival", "check in", "checkin", "gate in",
-    ],
+    type: "CANCELLATION",
+    keywords: ["cancel", "rollback", "roll back", "batal", "pembatalan", "revert", "undo"],
   },
   {
     type: "PUTAWAY",
     keywords: ["putaway", "put away", "penempatan", "storing", "stow", "binning"],
   },
   {
-    type: "PICKING",
-    keywords: ["pick", "pengambilan", "ambil", "allocat", "reserv"],
+    type: "REPLENISHMENT",
+    keywords: ["replenish", "penambahan stok", "refill"],
   },
   {
-    type: "PACKING",
-    keywords: ["pack", "pengepakan", "consolidat", "sorting", "sortir", "labell", "labeling"],
-  },
-  {
-    type: "DISPATCH",
+    type: "PURCHASE_ORDER",
     keywords: [
-      "dispatch", "outbound", "ship", "delivery", "deliver", "loading", "handover",
-      "pengiriman", "kirim", "goods out", "gate out", "issue", "sales",
+      "purchase order", "inbound", "receiv", "receipt", "grn", "goods in",
+      "penerimaan", "terima", "unload", "gate in",
+    ],
+  },
+  {
+    type: "SUPPLY_ORDER",
+    keywords: [
+      "supply order", "sales order", "delivery order", "pick", "pengambilan",
+      "pack", "pengepakan", "dispatch", "outbound", "ship", "delivery", "deliver",
+      "loading", "pengiriman", "kirim", "goods out", "gate out",
     ],
   },
   {
     type: "TRANSFER",
     keywords: [
       "transfer", "move", "relocat", "pemindahan", "pindah", "shift", "mutasi",
-      "internal", "bin to bin", "rack to rack", "replenish",
+      "internal", "bin to bin", "rack to rack",
+    ],
+  },
+  {
+    type: "RETURN",
+    keywords: ["return", "retur", "rto", "refund", "pengembalian", "tukar guling"],
+  },
+  {
+    type: "ADJUSTMENT",
+    keywords: [
+      "update inventory", "stock inventory", "adjust", "opname", "stock take",
+      "stocktake", "cycle count", "counting", "recount", "penyesuaian", "koreksi",
+      "correct", "variance", "selisih",
     ],
   },
   {
     type: "STATUS_CHANGE",
     keywords: [
       "status", "quarantine", "karantina", "damage", "rusak", "bad stock", "expire",
-      "kadaluarsa", "kedaluwarsa", "disposal", "scrap", "block", "hold", "quality",
-      "lost", "hilang", "found",
+      "kadaluarsa", "kedaluwarsa", "disposal", "destruk", "scrap", "block", "hold",
+      "quality", "lost", "hilang", "found",
     ],
   },
 ];
@@ -203,7 +231,12 @@ export function movementFlowSQL(from: string, to: string): string {
 
 // ---- kontrak filter --------------------------------------------------------
 
-export const MOVEMENT_RANGES = ["24h", "72h", "7d", "30d", "all"] as const;
+/**
+ * Rentang yang ditawarkan mengikuti retensi tabel (14 hari, lihat
+ * config/superset-sync.json). Menawarkan "30 hari" pada tabel yang hanya
+ * menyimpan 14 hari adalah janji yang tidak dapat ditepati.
+ */
+export const MOVEMENT_RANGES = ["24h", "72h", "7d", "14d", "all"] as const;
 export type MovementRange = (typeof MOVEMENT_RANGES)[number];
 
 export const MOVEMENT_SORTS = ["at", "qty", "product", "type", "wh", "operator", "invoice"] as const;
@@ -256,7 +289,7 @@ export const RANGE_HOURS: Record<MovementRange, number | null> = {
   "24h": 24,
   "72h": 72,
   "7d": 24 * 7,
-  "30d": 24 * 30,
+  "14d": 24 * 14,
   all: null,
 };
 

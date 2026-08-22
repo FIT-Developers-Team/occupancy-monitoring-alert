@@ -67,7 +67,7 @@ Dua dataset sumber (kolom persis seperti yang kamu kirim):
 `location_id, product_id, product_name, sku_number, l1_category_name, rack_storage_name, length, width, height, rack_name, product_detail_status_name (Available/Bad/Lost), SUM(stock), sku_cbm, occupied_cbm`
 
 **Dataset PERGERAKAN** (dataset `705`, slice `23640`) → tabel `movement_events`
-(incremental, watermark `inventory_updated_at`, retensi 60 hari)
+(incremental, watermark `inventory_updated_at`, retensi 14 hari)
 `inventory_created_at, inventory_updated_at, inventory_origin_location_id, origin_location_name, inventory_invoice_number, inventory_product_id, product_name, product_sku_number, parent_category_name, product_type_name, from_rack_name, to_rack_name, inventory_action, inventory_operator, from_package_label, to_package_label, from_status_notes, to_status_notes, inventory_created_by, SUM(inventory_quantity)`
 
 Pemetaan kolomnya:
@@ -92,6 +92,44 @@ Pemetaan kolomnya:
 Karena kolom scope-nya bernama `inventory_origin_location_id` — bukan
 `location_id` — allowlist gudang dipasang pada **kolom sumber yang benar-benar
 dimiliki dataset**; penghubungnya adalah peta kolom job itu sendiri.
+
+Tiga hal pada dataset ini berbeda dari dua dataset lain, dan ketiganya sudah
+diverifikasi langsung ke sumber (2026-08-22):
+
+**1. Waktu dikirim sebagai angka epoch, bukan teks.** Chart Data API Superset
+men-serialisasi kolom waktu lewat `json_int_dttm_ser` menjadi epoch milidetik
+(`1787321220699.0`). Tanpa konversi, DuckDB menolaknya:
+`Conversion Error: Unimplemented type for cast (DOUBLE -> TIMESTAMP)`. Worker
+kini mengubahnya menjadi teks timestamp **sebelum** DataFrame dibentuk — letak
+itu penting, karena watermark incremental diambil dari kolom yang sama dan
+harus berupa nilai yang dapat dikirim balik ke Superset sebagai filter. Kolom
+mana yang temporal ditentukan dari introspeksi dataset (`is_dttm`) **digabung**
+dengan `dataset.timestamp_columns` di config, dan `DuckDBSink` masih memasang
+jaring pengaman terakhir bila keduanya luput.
+
+**2. `inherit_chart_filters` DIMATIKAN untuk job ini.** Chart 23640 menyimpan
+filter `inventory_created_at TEMPORAL_RANGE "Current day"`. Mewarisinya
+menimbulkan dua masalah sekaligus: tarikan terkunci pada hari berjalan (job
+incremental tidak dapat mengejar ketertinggalan setelah worker mati), dan —
+terukur — Superset mengembalikan kolom waktunya **tergeser +7 jam** begitu
+filter temporal aktif. Dengan warisan dimatikan, nilai yang masuk sama persis
+dengan jam dinding sumber. Scope gudang tidak ikut hilang karena filternya
+sudah ditulis eksplisit di config.
+
+**3. Volumenya besar dan sumbernya hanya menyimpan 24 jam.** Dalam scope 8
+gudang: **±356.000 baris per hari**, dan dataset sumber adalah jendela bergulir
+24 jam. Nilai salinan DuckDB justru ada di situ — ia menyimpan riwayat yang
+dibuang sumbernya. Retensi 14 hari (≈5 juta baris) adalah kompromi antara
+jangkauan operasional dan ukuran database pada VPS kecil; ubah
+`retention_days` pada job bila perlu, dan sesuaikan pilihan rentang di
+`MOVEMENT_RANGES` (lib/movements.ts) agar tidak menjanjikan rentang yang
+datanya sudah dibuang.
+
+Tarikan pertama (state kosong) mengambil seluruh jendela 24 jam itu — terukur
+±356.500 baris dalam 18 halaman, sekitar 7 menit. Pass berikutnya hanya
+mengambil baris di atas watermark, jadi hanya ribuan baris dan selesai dalam
+hitungan detik. Bila job dibiarkan mati berhari-hari, ia tetap hanya dapat
+mengejar sebanyak yang masih ada di jendela 24 jam sumber.
 
 Langkah (mode default `superset_dataset` — **tanpa SQL Lab, tanpa Google Sheet, tanpa kredensial DB**):
 
@@ -379,17 +417,35 @@ sehingga tidak pernah memaksa unduhan bertahap.
 `inventory_action` ditulis bebas oleh WMS: satu kegiatan yang sama muncul
 sebagai `Putaway`, `PUT_AWAY`, dan `Penempatan`. Menampilkannya apa adanya
 membuat filter tidak berguna — puluhan nilai untuk enam kegiatan. Karena itu
-`lib/movements.ts` memetakan setiap aksi ke **satu** tipe kanonik:
+`lib/movements.ts` memetakan setiap aksi ke **satu** tipe kanonik.
 
-`RECEIVING · PUTAWAY · PICKING · PACKING · DISPATCH · TRANSFER · RETURN ·
-ADJUSTMENT · STATUS_CHANGE · OTHER`
+Tipenya diturunkan dari kosakata NYATA dataset — diperiksa langsung, bukan
+ditebak. WMS ini menamai aksinya menurut **objek bisnis** yang disentuh
+(`Create supply order`, `Adjust in stock for putaway task`,
+`Update purchase order to complete`, `Rollback …`), bukan menurut nama kegiatan
+gudang. Taksonomi generik picking/packing/dispatch akan salah dua kali: tak satu
+pun nama itu muncul di data, dan seluruh 356 ribu baris akan jatuh ke
+"Lainnya". Karena itu:
 
-Aturannya berurutan (yang cocok pertama menang), teksnya dinormalkan lebih dulu
-(`_`, `-`, `/` menjadi spasi), lalu kata kunci dicocokkan sebagai **awalan
-kata** — sehingga `remove` tidak tergolong sebagai `move`. Tabel aturan yang
-sama membangkitkan ekspresi SQL DuckDB dan fungsi TypeScript, jadi filter di
-server dan label di layar tidak mungkin menyimpang; `tests/movement-taxonomy.test.mjs`
-menjaga keduanya tetap sepakat.
+`PURCHASE_ORDER · PUTAWAY · REPLENISHMENT · SUPPLY_ORDER · TRANSFER ·
+ADJUSTMENT · CANCELLATION · RETURN · STATUS_CHANGE · OTHER`
+
+Arah stok tidak ikut ke dalam tipe — ia kolom sendiri (`inventory_operator`,
+`+`/`−`), karena satu objek bisnis yang sama dapat menambah maupun mengurangi
+stok (`Create supply order` = −, `Cancel supply order` = +).
+
+Aturannya berurutan (yang cocok pertama menang) dan urutan itulah artinya:
+hampir setiap aksi menyebut lebih dari satu kata kunci, dan yang harus menang
+adalah yang paling spesifik — `Adjust in stock for putaway task` adalah
+pekerjaan **putaway**, bukan penyesuaian umum. Pembatalan diuji paling dulu
+sehingga seluruh `Rollback …` berkumpul di satu tempat. Teksnya dinormalkan
+lebih dulu (`_`, `-`, `/` menjadi spasi) — tanpa itu `PUT_AWAY` tidak cocok
+dengan kata kunci mana pun — lalu kata kunci dicocokkan sebagai **awalan kata**,
+sehingga `remove` tidak tergolong sebagai `move`. Tabel aturan yang sama
+membangkitkan ekspresi SQL DuckDB dan fungsi TypeScript, jadi filter di server
+dan label di layar tidak mungkin menyimpang.
+`tests/movement-taxonomy.test.mjs` menguji SELURUH 21 aksi nyata dan gagal bila
+salah satunya jatuh ke "Lainnya".
 
 Teks aslinya tidak pernah hilang: kolom `action_raw` tetap tampil pada panel
 detail dan berkas Excel, dan halaman `/movements` menutup dengan tabel padanan
@@ -397,12 +453,21 @@ detail dan berkas Excel, dan halaman `/movements` menutup dengan tabel padanan
 dikenali jatuh ke `OTHER` dan langsung terlihat di sana — tambahkan kata
 kuncinya di `lib/movements.ts`.
 
-Arah stok dibaca dari `inventory_operator` (`+` menambah, `−` mengurangi) dan
-alur lokasi diturunkan dari pasangan rak asal/tujuan (masuk gudang, antar-lokasi,
-keluar gudang). Karena job incremental dapat menarik ulang transaksi yang
-di-update, view `vw_movement` mendedupe berdasarkan kunci alami kejadian dan
-menyimpan versi `updated_at` paling akhir — tanpa itu, satu kejadian dapat
-terhitung dua kali pada KPI masuk/keluar.
+Alur lokasi diturunkan dari pasangan rak asal/tujuan (masuk gudang,
+antar-lokasi, keluar gudang). Karena job incremental dapat menarik ulang
+transaksi yang di-update, view `vw_movement` mendedupe berdasarkan kunci alami
+kejadian dan menyimpan versi `updated_at` paling akhir — tanpa itu, satu
+kejadian dapat terhitung dua kali pada KPI masuk/keluar.
+
+**Zona waktu.** `created_at`/`updated_at` disimpan persis seperti di WMS: jam
+dinding WIB tanpa zona. Itu disengaja — nilai yang sama dikirim balik ke
+Superset sebagai watermark, jadi menggesernya ke UTC akan melewatkan atau
+menarik ulang tujuh jam data setiap pass. Konsekuensinya ditangani di read
+model, bukan dibiarkan ke pemanggil: batas rentang waktu dihitung sebagai jam
+dinding WIB di Node lalu diikat sebagai parameter (memakai `now()` DuckDB akan
+meleset tujuh jam di kontainer produksi yang jamnya UTC), dan setiap timestamp
+yang dikirim ke browser diberi offset `+07:00` supaya tidak diurai sebagai
+waktu lokal peramban.
 
 Dua trigger aktif: **OCC-ZONE-BREACH** (satu alert per warehouse/zona) dan
 **OCC-SLOC-BREACH** (lokasi terparah, dibatasi `sloc_alerts.max_alerts` per pass).
