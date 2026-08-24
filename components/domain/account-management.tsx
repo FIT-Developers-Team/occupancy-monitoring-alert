@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import PasswordField from "@/components/ui/password-field";
 import { useT } from "@/lib/i18n-client";
+import { trapFocus } from "@/lib/focus-trap";
 import type { Role } from "@/types";
 
 type Status = "pending" | "active" | "rejected" | "disabled";
@@ -213,7 +214,17 @@ export default function AccountManagement() {
       {formOpen && (
         <div className="modal-backdrop" onMouseDown={() => setFormOpen(false)}>
           <form className="modal-card" role="dialog" aria-modal="true" aria-labelledby="create-account-title"
-            onSubmit={create} onMouseDown={(event) => event.stopPropagation()}>
+            onSubmit={create} onMouseDown={(event) => event.stopPropagation()}
+            // Dua dialog di berkas ini menjanjikan `aria-modal` tanpa menepatinya:
+            // Tab menembus ke daftar akun di belakangnya, sehingga pengguna
+            // keyboard dapat menonaktifkan akun lain dari dalam formulir yang
+            // sedang terbuka, dan Escape — refleks pertama untuk menutup apa pun
+            // — tidak melakukan apa-apa. Keduanya kini memakai jebakan fokus yang
+            // sama dengan panel heatmap, alert, dan penjelajah SLOC.
+            onKeyDown={(event) => {
+              trapFocus(event);
+              if (event.key === "Escape") setFormOpen(false);
+            }}>
             <div className="modal-head">
               <div><span className="eyebrow">{t("accounts.adminBypass")}</span><h2 id="create-account-title">{t("accounts.createTitle")}</h2></div>
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => setFormOpen(false)}>{t("action.close")}</button>
@@ -246,7 +257,11 @@ export default function AccountManagement() {
         <div className="modal-backdrop" onMouseDown={() => setResetAccount(null)}>
           <form className="modal-card modal-card-sm" role="dialog" aria-modal="true" aria-labelledby="reset-password-title"
             onSubmit={(event) => { event.preventDefault(); void act(resetAccount, "reset_password", { password: resetPassword }); }}
-            onMouseDown={(event) => event.stopPropagation()}>
+            onMouseDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              trapFocus(event);
+              if (event.key === "Escape") setResetAccount(null);
+            }}>
             <div className="modal-head">
               <div><span className="eyebrow">@{resetAccount.username}</span><h2 id="reset-password-title">{t("accounts.resetPassword")}</h2></div>
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => setResetAccount(null)}>{t("action.close")}</button>

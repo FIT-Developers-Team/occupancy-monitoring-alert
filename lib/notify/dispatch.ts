@@ -14,15 +14,25 @@ const severityIcon: Record<string, string> = {
   EMERGENCY: "\uD83D\uDEA8",
 };
 
+/**
+ * Bentuk teks polos untuk email dan webhook generik.
+ *
+ * Isinya sama persis dengan kartu Google Chat — judul, cakupan, detail — supaya
+ * satu kejadian tidak pernah terbaca berbeda tergantung saluran mana yang
+ * dipakai orang untuk menerimanya. Nomor alert dan hitungan kejadian dibuang
+ * dari sini juga: keduanya baru berguna setelah alertnya dibuka.
+ */
 export function alertText(alert: Alert, escalationPrefix?: string): string {
+  const scope = [
+    alert.warehouse_code,
+    alert.zone ? `Zona ${alert.zone}` : null,
+    escalationPrefix,
+  ].filter(Boolean).join(" · ");
   return [
-    `${severityIcon[alert.severity] ?? ""} [${alert.severity}] ${alert.rule_name}${escalationPrefix ? ` — ${escalationPrefix}` : ""}`,
-    `Gudang: ${alert.warehouse_code}${alert.zone ? ` · Zona ${alert.zone}` : ""}${alert.sloc_code ? ` · ${alert.sloc_code}` : ""}${alert.sku ? ` · ${alert.sku}` : ""}`,
-    alert.title,
+    `${severityIcon[alert.severity] ?? ""} ${alert.title}`.trim(),
+    scope,
     "",
     alert.detail,
-    "",
-    `Alert ${alert.alert_id} · kejadian ke-${alert.occurrences}`,
   ].join("\n");
 }
 
@@ -157,7 +167,7 @@ async function dispatchToLevels(
   for (const email of tier.emails) {
     const result = await sendEmail(
       email,
-      `[${alert.severity}] ${alert.rule_name} — ${alert.warehouse_code}`,
+      `[${alert.severity}] ${alert.title}`,
       alertText(alert, escalationPrefix),
     );
     await log(alert.alert_id, "email", email, result.ok ? "SENT" : "FAILED", result.ok ? "ok" : result.error || "");

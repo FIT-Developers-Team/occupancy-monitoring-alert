@@ -530,14 +530,24 @@ export default function SlocExplorer({
               </thead>
               <tbody>
                 {rows.map((row) => (
+                  // Lihat catatan yang sama di movement-explorer: yang dapat
+                  // difokus adalah tombol di sel pertama, bukan barisnya.
                   <tr
                     key={`${row.wh}-${row.sloc_code}`}
                     className="row-link"
-                    tabIndex={0}
                     onClick={() => openRow(row)}
-                    onKeyDown={(event) => event.key === "Enter" && openRow(row)}
                   >
-                    <td className="num font-semibold">{row.sloc_code}</td>
+                    <td className="num font-semibold">
+                      <button
+                        type="button"
+                        className="row-open"
+                        aria-haspopup="dialog"
+                        aria-label={`${t("slocx.detail")}: ${row.sloc_code}`}
+                        onClick={(event) => { event.stopPropagation(); openRow(row); }}
+                      >
+                        {row.sloc_code}
+                      </button>
+                    </td>
                     {!lockedWh && <td className="num">{row.wh}</td>}
                     {!lockedZone && <td>{row.zone}</td>}
                     <td className="num">{row.rack_zone || "—"}</td>

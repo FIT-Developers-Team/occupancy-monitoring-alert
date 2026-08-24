@@ -34,6 +34,8 @@ export default function Topbar({
   const { t, lang } = useT();
   const [paused, setPaused] = useState(false);
   const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
+  const accountRef = useRef<HTMLDetailsElement>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
   const nextRefresh = useRef(Date.now() + FALLBACK_REFRESH_MS);
   const roleLabel = t(`shell.role.${role}`, role);
 
@@ -125,6 +127,46 @@ export default function Topbar({
     };
   }, []);
 
+  /**
+   * Menu akun memakai `<details>`, dan `<details>` tidak tahu apa-apa tentang
+   * "di luar".
+   *
+   * Elemen itu hanya menutup kalau ringkasannya diklik lagi. Akibatnya menu
+   * tetap menggantung di atas halaman setelah pengguna berpindah perhatian —
+   * mengklik tabel di belakangnya, menekan Escape, atau membuka menu lain
+   * semuanya tidak melakukan apa pun. Itu bukan yang diharapkan siapa pun dari
+   * sebuah popover, dan pada layar sempit menu yang tertinggal terbuka menutupi
+   * isi halaman.
+   *
+   * Pendengarnya hanya terpasang selagi menunya terbuka, jadi tidak ada biaya
+   * saat menu tertutup — yaitu hampir sepanjang waktu.
+   */
+  useEffect(() => {
+    if (!accountOpen) return;
+    const element = accountRef.current;
+    if (!element) return;
+    const dismiss = () => {
+      element.open = false;
+      setAccountOpen(false);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!element.contains(event.target as Node)) dismiss();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      dismiss();
+      // Escape harus mengembalikan fokus ke pemicunya, bukan membuangnya ke
+      // body — pengguna keyboard baru saja berada di dalam menu ini.
+      element.querySelector("summary")?.focus();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [accountOpen]);
+
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
     router.replace("/login");
@@ -166,6 +208,10 @@ export default function Topbar({
           onClick={() => setPaused((p) => !p)}
           title={`${syncTitle} · ${paused ? t("shell.autoRefreshResume") : t("shell.autoRefreshPause")}`}
           aria-label={paused ? t("shell.autoRefreshResume") : t("shell.autoRefreshPause")}
+          // Tombolnya menyimpan keadaan, bukan sekadar menjalankan aksi. Tanpa
+          // ini pembaca layar hanya mendengar labelnya berganti dan tidak pernah
+          // diberi tahu bahwa muat ulang otomatis sedang aktif atau dijeda.
+          aria-pressed={paused}
         >
           <span className="inline-block h-1.5 w-1.5 rounded-full"
             style={{ background: syncAttention ? "var(--st-warning-fg)" : paused ? "var(--text-muted)" : "var(--st-normal-fg)" }} />
@@ -175,7 +221,11 @@ export default function Topbar({
         </button>
         <button className="btn btn-sm topbar-refresh" onClick={refresh}>{t("action.refresh")}</button>
 
-        <details className="account-menu">
+        <details
+          className="account-menu"
+          ref={accountRef}
+          onToggle={(event) => setAccountOpen(event.currentTarget.open)}
+        >
           <summary className="account-trigger" aria-label={t("shell.account")}>
             <span>{userName}</span>
             <small>{roleLabel}</small>

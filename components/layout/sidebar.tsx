@@ -14,7 +14,6 @@ const NAV = [
   { href: "/forecast", key: "nav.forecast", icon: "M3 17l6-6 4 4 8-8M15 7h6v6" },
   { href: "/density", key: "nav.density", icon: "M12 3l9 16H3l9-16zM12 10v4M12 17v.5" },
   { href: "/alerts", key: "nav.alerts", icon: "M12 3a6 6 0 016 6v3l2 3H4l2-3V9a6 6 0 016-6zM10 19a2 2 0 004 0" },
-  { href: "/integrity", key: "nav.integrity", icon: "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM8.5 12l2.5 2.5 4.5-4.5" },
   { href: "/audit", key: "nav.audit", icon: "M6 3h9l4 4v14H6zM14 3v5h5M9 12h6M9 16h6" },
   { href: "/guide", key: "nav.guide", icon: "M4 5a2 2 0 012-2h6v18H6a2 2 0 01-2-2V5zM12 3h6a2 2 0 012 2v14a2 2 0 01-2 2h-6M8 8h1M8 12h1" },
   { href: "/settings", key: "nav.settings", icon: "M12 8a4 4 0 100 8 4 4 0 000-8zM4 12h2M18 12h2M12 4v2M12 18v2M6.3 6.3l1.4 1.4M16.3 16.3l1.4 1.4M17.7 6.3l-1.4 1.4M7.7 16.3l-1.4 1.4" },
@@ -64,10 +63,23 @@ export default function Sidebar({
       className={[
         "z-40 flex flex-col border-r",
         // mobile: drawer penuh
-        "fixed inset-y-0 left-0 w-60 transition-transform duration-200 ease-out",
-        mobileOpen ? "translate-x-0" : "-translate-x-full",
-        // desktop: kolom sticky, lebar animasi open⇄rail
-        "md:sticky md:top-0 md:h-screen md:translate-x-0 md:transition-[width] md:duration-200",
+        "fixed inset-y-0 left-0 w-60 ease-out",
+        // Transisinya menyertakan `visibility`, dan itu bukan hiasan: lihat
+        // alasan `invisible` di bawah. Visibility berpindah secara diskret di
+        // AKHIR transisi saat menutup, sehingga laci tetap terlihat selama ia
+        // menggeser keluar, lalu baru benar-benar hilang.
+        "[transition:transform_200ms_ease-out,visibility_200ms_ease-out]",
+        // Laci yang tertutup hanya digeser keluar layar — ia masih ada di DOM,
+        // masih dapat difokus, dan masih dibacakan pembaca layar. Di ponsel itu
+        // berarti Tab pertama pada halaman mana pun jatuh ke sepuluh tautan
+        // navigasi yang tidak terlihat siapa pun, dan pengguna keyboard harus
+        // menembusnya sebelum sampai ke konten. `visibility: hidden` mengangkat
+        // seluruhnya dari urutan fokus maupun pohon aksesibilitas — dan karena
+        // ini murni CSS, ia sudah benar sejak render pertama, sebelum hidrasi.
+        mobileOpen ? "translate-x-0 visible" : "-translate-x-full invisible",
+        // desktop: kolom sticky, lebar animasi open⇄rail. Sidebar selalu tampak
+        // di sini, jadi `visible` harus dikembalikan bersama posisinya.
+        "md:visible md:sticky md:top-0 md:h-screen md:translate-x-0 md:transition-[width] md:duration-200",
         rail ? "md:w-[60px]" : "md:w-56",
       ].join(" ")}
       style={{ borderColor: "var(--border)", background: "var(--surface-raised)", overflow: "hidden" }}

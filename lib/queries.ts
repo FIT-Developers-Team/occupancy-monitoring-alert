@@ -6,7 +6,7 @@
 import { historyDbVersion, queryHistory } from "@/lib/db";
 import { createHash } from "node:crypto";
 import { statusFor } from "@/lib/occupancy";
-import { wmaRatePctPerHour, hoursToTarget } from "@/lib/forecast";
+import { hoursToTarget } from "@/lib/forecast";
 import { resolveSloc, categoryCounted, countedStatuses } from "@/lib/capacity";
 import type { SlocScope } from "@/lib/capacity";
 import {
@@ -14,7 +14,7 @@ import {
 } from "@/lib/config";
 import { clearReadModelMemory, readModelCached } from "@/lib/read-model-cache";
 import { CAPACITY_LIMIT_PCT, CAPACITY_MATCH_TOLERANCE_PCT } from "@/lib/alerts/severity";
-import { DRIFT_TYPES, type SlocFilter, type SlocSort } from "@/lib/sloc-filter";
+import { type SlocFilter, type SlocSort } from "@/lib/sloc-filter";
 import {
   EMPTY_MOVEMENT_FILTER,
   EMPTY_MOVEMENT_SUMMARY,
@@ -186,6 +186,62 @@ function sqlList(vals: string[]): string {
 }
 const sqlString = (value: string) => `'${value.replace(/'/g, "''")}'`;
 
+/**
+ * ZONA WAKTU BASIS DATA RIWAYAT
+ * =============================
+ * SETIAP timestamp naif di history DuckDB adalah JAM DINDING WIB — bukan UTC.
+ * Diverifikasi terhadap basis data ini: job `movement_incremental` selesai pada
+ * `2026-08-22 14:30:38` dan berkas `.duckdb`-nya bertanggal ubah
+ * `14:30:38 GMT+0700` — persis sama. Berlaku untuk `created_at`, `updated_at`,
+ * `_synced_at`, dan seluruh kolom `_sync_audit`/`_sync_state`.
+ *
+ * Dua konsekuensinya sama-sama mudah dilanggar tanpa terlihat di mesin
+ * pengembang yang jamnya kebetulan WIB, lalu meleset TUJUH JAM begitu dideploy
+ * ke kontainer yang jamnya UTC:
+ *
+ * 1. TIMESTAMP YANG DIKIRIM KE LUAR harus lewat `wibIso()`. Binding DuckDB
+ *    mengubah timestamp naif menjadi `Date` dengan menganggap jam dindingnya
+ *    UTC, jadi `SELECT _synced_at` saja sudah tujuh jam terlalu awal. Bahkan
+ *    `::VARCHAR` tidak menyelamatkan: `new Date("2026-08-22 14:24:59")` diurai
+ *    sebagai waktu LOKAL proses yang merender — benar di laptop WIB, tujuh jam
+ *    meleset di kontainer UTC.
+ * 2. BATAS RENTANG WAKTU tidak boleh memakai `now()` DuckDB, yang mengembalikan
+ *    UTC. Membandingkannya dengan kolom berjam WIB menggeser jendelanya tujuh
+ *    jam. Batasnya dihitung di Node sebagai jam dinding WIB lalu diikat sebagai
+ *    parameter — lihat `wibCutoff()`.
+ *
+ * Nilai `created_at` juga dikirim kembali ke Superset sebagai watermark sinkron,
+ * jadi menormalkannya ke UTC di dalam basis data bukan pilihan: itu akan
+ * melewatkan atau menarik ulang tujuh jam data pada setiap pass.
+ */
+const WIB_OFFSET = "+07:00";
+
+/** Ekspresi SQL yang mengubah kolom timestamp naif menjadi ISO 8601 ber-offset. */
+const wibIso = (column: string) =>
+  `strftime(${column}, '%Y-%m-%dT%H:%M:%S') || '${WIB_OFFSET}'`;
+
+/** Jam dinding WIB untuk sebuah instan — bentuk yang sama dengan isi kolomnya. */
+function wibWallClock(at: Date): string {
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hourCycle: "h23",
+  }).format(at);
+  // sv-SE memberi "YYYY-MM-DD HH:MM:SS" — format yang sama dengan kolomnya.
+  return parts.replace("T", " ");
+}
+
+/**
+ * Batas bawah jendela waktu, dalam jam dinding WIB.
+ *
+ * Pengganti `now() - INTERVAL n HOUR` untuk setiap kolom riwayat. Dipakai
+ * sebagai parameter terikat, bukan disisipkan ke teks SQL.
+ */
+function wibCutoff(hoursBack: number): string {
+  return wibWallClock(new Date(Date.now() - hoursBack * 3_600_000));
+}
+
 function locationScopePredicateSQL(
   scope: {
     wh?: string; zone?: string; rack_zone?: string; aisle?: string; bay?: string;
@@ -213,6 +269,26 @@ function locationScopePredicateSQL(
  * SQL mirror of resolveSloc(). Keeping validity and effective capacity in the
  * database lets aggregate numerators use exactly the same SLOC population as
  * their denominators without materialising 143k locations in Node.js.
+ *
+ * KENAPA CTE `effective` DITANDAI `MATERIALIZED`
+ * ----------------------------------------------
+ * Ekspresi yang dibangun di bawah bukan ekspresi biasa: dengan 58 aturan
+ * kapasitas aktif, masing-masing `basis`, `capQty`, `capCbm`, `qtyValid`, dan
+ * `cbmValid` menjadi CASE bersarang sepanjang ~6 KB teks SQL. DuckDB secara
+ * bawaan MENYISIPKAN CTE ke setiap tempat ia dirujuk, dan setiap kueri okupansi
+ * merujuk `effective` dua sampai tiga kali (stok, kapasitas, hitungan bin).
+ * Akibatnya lima pohon CASE itu dievaluasi ulang atas 145 ribu lokasi sebanyak
+ * jumlah rujukannya — pekerjaan yang hasilnya persis sama setiap kali.
+ *
+ * `AS MATERIALIZED` hanyalah petunjuk perencana: ia memaksa CTE dihitung sekali
+ * lalu dipakai bersama, dan tidak mengubah satu baris pun hasilnya (diverifikasi
+ * dengan membandingkan jawaban JSON /api/sloc/explore, /api/occupancy/heatmap,
+ * dan /api/occupancy/zone-detail sebelum dan sesudah — identik byte per byte).
+ *
+ * Tandanya sengaja TIDAK dipasang pada tren dan laju aliran: keduanya merujuk
+ * `effective` sekali lalu men-join-nya ke `stock_history`, dan memaksa
+ * materialisasi di sana justru menutup jalan bagi DuckDB mendorong filter waktu
+ * ke bawah join.
  */
 interface CapacitySqlExpressions {
   basis: string; capQty: string; capCbm: string; capCbmNominal: string;
@@ -314,7 +390,6 @@ const TTL = 20_000;
 // Source snapshots refresh every ten minutes. A five-minute server cache cuts
 // repeated DuckDB scans while keeping the UI inside one half-refresh window.
 const DASHBOARD_TTL = 300_000;
-const trendCache = new Map<number, { at: number; rows: TrendPoint[] }>();
 let cacheHistoryVersion = historyDbVersion();
 
 function setBoundedCache<K, V>(cache: Map<K, V>, key: K, value: V, maxEntries: number) {
@@ -331,7 +406,6 @@ function setBoundedCache<K, V>(cache: Map<K, V>, key: K, value: V, maxEntries: n
 export function invalidateOccupancyReadCaches(): void {
   occCache.clear();
   heatPreviewCache.clear();
-  trendCache.clear();
   zoneCache.clear();
   warehouseBaseCache = null;
   clearReadModelMemory();
@@ -339,6 +413,7 @@ export function invalidateOccupancyReadCaches(): void {
   // batal dengan sendirinya. Dibersihkan di sini juga supaya satu pemanggilan
   // benar-benar mengembalikan proses ke keadaan tanpa turunan yang tersimpan.
   capacitySqlMemo.clear();
+  movementAggregateCache.clear();
   versionMemo = null;
   cacheHistoryVersion = historyDbVersion();
 }
@@ -451,7 +526,7 @@ async function loadWarehouseBase(): Promise<WarehouseBase[]> {
   warehouseBaseInFlight = (async () => {
     const cap = capacitySqlExpressions();
     const aggregateRows = await queryHistory<WarehouseAggregateRow>(
-      `${WH_MAP()}, effective AS (
+      `${WH_MAP()}, effective AS MATERIALIZED (
          SELECT v.sloc_id, v.location_id, v.sloc_code, m.wh,
                 coalesce(v.zone, '') AS zone, coalesce(v.rack_zone, '') AS rack_zone,
                 coalesce(v.aisle, '') AS aisle, coalesce(v.bay, '') AS bay,
@@ -533,49 +608,141 @@ async function getWarehouseBase(): Promise<WarehouseBase[]> {
   );
 }
 
-async function whCaps() {
-  const caps = new Map<string, { capQ: number; capV: number; basis: Basis; slocs: number }>();
-  for (const w of await getWarehouseBase()) {
-    caps.set(w.code, { capQ: w.cap_qty, capV: w.cap_cbm, basis: w.basis, slocs: w.sloc_total });
+/**
+ * Lintasan okupansi + laju per gudang, disusun dari PERGERAKAN.
+ *
+ * Satu sumber untuk grafik tren di Ringkasan, kolom "→ 95%", halaman Proyeksi,
+ * dan simulator What-If. Sebelumnya ketiganya bergantung pada deretan snapshot
+ * stok — dan tabel snapshot pada instalasi ini selalu berisi SATU snapshot,
+ * sehingga semuanya diam-diam mati: grafiknya berupa titik tunggal, lajunya
+ * nol, dan horizonnya selalu "—". Tidak ada satu pun pesan di layar yang
+ * menjelaskan bahwa riwayatnya memang tidak akan pernah datang.
+ *
+ * Lihat loadMovementFlowSeries() untuk alasan lengkapnya.
+ */
+interface WarehouseProjection {
+  trail: TrendPoint[];
+  /** Unit per jam, rata-rata jendela laju. */
+  in_per_hour: number;
+  out_per_hour: number;
+  net_per_hour: number;
+  /** Δ okupansi %/jam pada basis kebijakan gudang. */
+  rate_pct_per_hour: number;
+  buckets: number;
+  span_hours: number;
+  ready: boolean;
+}
+
+async function loadWarehouseProjections(): Promise<Map<string, WarehouseProjection>> {
+  const [base, series] = await Promise.all([
+    getWarehouseBase(),
+    loadMovementFlowSeries(FORECAST_WINDOW_HOURS),
+  ]);
+  const byWarehouse = new Map<string, MovementFlowBucket[]>();
+  for (const bucket of series) {
+    const list = byWarehouse.get(bucket.wh);
+    if (list) list.push(bucket);
+    else byWarehouse.set(bucket.wh, [bucket]);
   }
-  return caps;
+
+  const projections = new Map<string, WarehouseProjection>();
+  for (const warehouse of base) {
+    const buckets = (byWarehouse.get(warehouse.code) ?? [])
+      .slice()
+      .sort((a, b) => a.t.localeCompare(b.t));
+
+    // Rata-rata m³ per unit pada isi gudang saat ini. Pergerakan hanya membawa
+    // jumlah unit, jadi ini satu-satunya jembatan ke basis CBM — jujur selama
+    // bauran produknya tidak berubah drastis dalam rentang jendela.
+    const cbmPerUnit = warehouse.occ_qty > 0 ? warehouse.occ_cbm / warehouse.occ_qty : 0;
+    const capBasis = warehouse.basis === "qty" ? warehouse.cap_qty : warehouse.cap_cbm;
+    const toBasis = (qty: number) => (warehouse.basis === "qty" ? qty : qty * cbmPerUnit);
+
+    // Disusun MUNDUR dari keadaan sekarang: isi pada akhir jam ke-k adalah isi
+    // sekarang dikurangi seluruh perubahan bersih sesudah jam itu. Titik
+    // terakhirnya karena itu selalu sama persis dengan angka okupansi yang
+    // tampil di halaman lain — proyeksi tidak boleh berangkat dari titik yang
+    // berbeda dengan kenyataan.
+    const trail: TrendPoint[] = [];
+    let runningQty = warehouse.occ_qty;
+    let runningCbm = warehouse.occ_cbm;
+    for (let index = buckets.length - 1; index >= 0; index -= 1) {
+      const bucket = buckets[index];
+      const pctQty = warehouse.cap_qty > 0 ? r1((runningQty / warehouse.cap_qty) * 100) : null;
+      const pctCbm = warehouse.cap_cbm > 0 ? r1((runningCbm / warehouse.cap_cbm) * 100) : null;
+      trail.unshift({
+        t: bucket.t,
+        warehouse: warehouse.code,
+        pct: (warehouse.basis === "qty" ? pctQty : pctCbm) ?? pctQty ?? pctCbm ?? 0,
+        pct_qty: pctQty,
+        pct_cbm: pctCbm,
+        qty: Math.round(runningQty),
+      });
+      const net = bucket.qty_in - bucket.qty_out;
+      runningQty -= net;
+      runningCbm -= net * cbmPerUnit;
+    }
+
+    const recent = buckets.slice(-RATE_LOOKBACK_HOURS);
+    const hours = recent.length || 1;
+    const inPerHour = recent.reduce((sum, b) => sum + b.qty_in, 0) / hours;
+    const outPerHour = recent.reduce((sum, b) => sum + b.qty_out, 0) / hours;
+    const netPerHour = inPerHour - outPerHour;
+    // Tiga jam pergerakan adalah batas paling longgar yang masih dapat
+    // membedakan tren dari satu kejadian tunggal.
+    const ready = buckets.length >= 3 && capBasis > 0;
+    const spanHours = buckets.length >= 2
+      ? (new Date(buckets[buckets.length - 1].t).getTime() - new Date(buckets[0].t).getTime()) / 3_600_000
+      : 0;
+
+    projections.set(warehouse.code, {
+      trail,
+      in_per_hour: inPerHour,
+      out_per_hour: outPerHour,
+      net_per_hour: netPerHour,
+      rate_pct_per_hour: capBasis > 0 ? (toBasis(netPerHour) / capBasis) * 100 : 0,
+      buckets: buckets.length,
+      span_hours: spanHours,
+      ready,
+    });
+  }
+  return projections;
+}
+
+async function getWarehouseProjections(): Promise<Map<string, WarehouseProjection>> {
+  const entries = await readModelCached(
+    "warehouse-projection-v1",
+    readModelVersion(),
+    async () => [...(await loadWarehouseProjections()).entries()],
+    { freshMs: DASHBOARD_TTL },
+  );
+  return new Map(entries);
 }
 
 function withWarehouseTrend(
   base: Array<WarehouseBase | WarehouseSummary>,
-  trend: TrendPoint[],
+  projections: Map<string, WarehouseProjection>,
 ): WarehouseSummary[] {
   return base.map((w) => {
-    const pts = trend.filter((t) => t.warehouse === w.code).map((t) => ({ t: t.t, pct: t.pct }));
-    const rate = pts.length >= 3 ? wmaRatePctPerHour(pts) : 0;
+    const projection = projections.get(w.code);
+    const ready = Boolean(projection?.ready);
+    const rate = ready ? projection!.rate_pct_per_hour : 0;
     return {
-      ...w, rate_pct_per_hour: r3(rate),
-      hours_to_95: pts.length >= 3 ? hoursToTarget(w.pct, rate, 95) : null,
-      hours_to_100: pts.length >= 3 ? hoursToTarget(w.pct, rate, 100) : null,
+      ...w,
+      rate_pct_per_hour: r3(rate),
+      hours_to_95: ready ? hoursToTarget(w.pct, rate, 95) : null,
+      hours_to_100: ready ? hoursToTarget(w.pct, rate, 100) : null,
     };
   });
 }
 
-/**
- * Rentang riwayat yang menghasilkan laju okupansi dan horizon "menuju 95%".
- *
- * Satu angka untuk seluruh aplikasi, dan itu memang harus begitu. Sebelumnya
- * Ringkasan memakai 48 jam sementara halaman detail gudang, ekspor Excel, dan
- * ringkasan harian memakai 36 jam — sehingga KPI "→ 95%" untuk gudang yang sama
- * menunjukkan angka berbeda tergantung halaman mana yang sedang dibuka, tanpa
- * ada apa pun di layar yang menjelaskan mengapa. Rentang yang sama juga berarti
- * hanya ada satu read model tren yang perlu dihitung dan disimpan, bukan dua.
- */
-export const TREND_WINDOW_HOURS = 48;
-
-export async function getWarehouseDashboard(
-  hoursBack = TREND_WINDOW_HOURS,
-): Promise<{
+export async function getWarehouseDashboard(): Promise<{
   summaries: WarehouseSummary[];
   trend: TrendPoint[];
 }> {
-  const [base, trend] = await Promise.all([getWarehouseBase(), getWarehouseTrend(hoursBack)]);
-  return { summaries: withWarehouseTrend(base, trend), trend };
+  const [base, projections] = await Promise.all([getWarehouseBase(), getWarehouseProjections()]);
+  const trend = [...projections.values()].flatMap((projection) => projection.trail);
+  return { summaries: withWarehouseTrend(base, projections), trend };
 }
 
 export async function getWarehouseSummaries(): Promise<WarehouseSummary[]> {
@@ -679,7 +846,7 @@ async function loadZoneSummary(wh?: string): Promise<ZoneSummary[]> {
   const params: unknown[] = [];
   const cap = capacitySqlExpressions();
   const rows = await queryHistory<ZoneAggregateRow>(
-    `${WH_MAP()}, effective AS (
+    `${WH_MAP()}, effective AS MATERIALIZED (
        SELECT v.sloc_id, v.location_id, v.sloc_code, m.wh, v.zone,
               coalesce(v.rack_zone, '') AS rack_zone, coalesce(v.aisle, '') AS aisle,
               coalesce(v.bay, '') AS bay, coalesce(v.level, '') AS level,
@@ -1074,7 +1241,7 @@ export async function getZoneDetail(
     sku_number: string; product_name: string; l1_category: string; status: string;
     qty: number; cbm: number; sloc_pct: number; sloc_basis: Basis;
   }>(
-    `${WH_MAP()}, effective AS (
+    `${WH_MAP()}, effective AS MATERIALIZED (
        SELECT v.sloc_id, v.location_id, v.sloc_code, m.wh, v.zone,
               coalesce(v.rack_zone, '') AS rack_zone, coalesce(v.aisle, '') AS aisle,
               coalesce(v.bay, '') AS bay, coalesce(v.level, '') AS level,
@@ -1211,225 +1378,125 @@ export async function getZoneDetailFacets(wh: string, zone: string): Promise<Zon
 }
 
 /**
- * Deret okupansi per snapshot untuk grafik tren dan laju proyeksi.
+ * Deret aliran stok per jam, dari PERGERAKAN — bukan dari snapshot stok.
  *
- * MENGAPA HITUNGAN UNIK DIPECAH MENJADI SUB-AGREGAT
- * -------------------------------------------------
- * Bentuk sebelumnya memakai dua `count(DISTINCT …)` di dalam satu agregasi
- * berkelompok. Di DuckDB jalur itu tidak dapat tumpah ke disk: ia menyimpan
- * seluruh himpunan nilai uniknya di memori, apa pun isi `temp_directory`.
- * Terhadap jendela 48 jam pada basis data ini — 2,5 juta baris riwayat — kueri
- * itu menabrak batas 320 MB yang dipakai layanan web dan gagal dengan
- * "Out of Memory".
+ * KENAPA BUKAN DARI stock_history
+ * -------------------------------
+ * Job `stock_snapshot` berjalan dengan mode "snapshot": setiap pass mengganti
+ * isi tabelnya, sehingga `stock_history` hanya pernah memuat SATU snapshot.
+ * Diperiksa pada basis data ini: 90.573 baris, seluruhnya dengan `_synced_at`
+ * yang sama. Akibatnya seluruh proyeksi mati diam-diam — `wmaRatePctPerHour()`
+ * menuntut minimal tiga titik, `lag()` pada satu snapshot hanya menghasilkan
+ * NULL, dan halaman Proyeksi menampilkan "menunggu riwayat" untuk kedelapan
+ * gudang tanpa pernah menjelaskan bahwa riwayatnya memang tidak akan pernah
+ * datang.
  *
- * Akibatnya tidak terlihat sebagai halaman error, dan itulah yang membuatnya
- * berbahaya: read model tren jatuh kembali ke hasil valid terakhir, sehingga
- * grafik tren, laju, dan horizon "menuju 95%" membeku pada angka lama sementara
- * setiap read model lain terus segar. Pada berkas cache mesin ini, tren
- * tertinggal 22 jam dan proyeksi 28 jam di belakang sisa dasbor.
- *
- * Menghitung baris unik lewat `SELECT DISTINCT` lalu `count(*)` memakai jalur
- * agregasi biasa, yang MEMANG dapat tumpah ke disk. Hasilnya identik —
- * diverifikasi baris per baris terhadap bentuk lama pada batas memori longgar —
- * sementara puncak pemakaian memorinya turun dari 305 MiB menjadi 66 MiB dan
- * kueri justru selesai lebih cepat.
+ * Pergerakan menyimpan yang justru dibutuhkan: 356 ribu kejadian bertanda waktu
+ * dengan arah (+/-) dan jumlahnya, retensi 14 hari. Dari sana laju masuk dan
+ * keluar per jam dapat dihitung langsung, dan lintasan okupansi disusun ulang
+ * mundur dari keadaan sekarang. Angka yang dihasilkan juga konsisten dengan
+ * halaman Pergerakan, karena keduanya membaca kolom `direction` yang sama.
  */
-async function loadWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
-  refreshCachesForHistoryChange();
-  const safeHours = Math.max(1, Math.floor(hoursBack));
-  const cached = trendCache.get(safeHours);
-  if (cached && Date.now() - cached.at < DASHBOARD_TTL) return cached.rows;
-  const caps = await whCaps();
-  const cap = capacitySqlExpressions();
-  const rows = await queryHistory<{
-    t: string; wh: string; qty: number; cbm: number; sku: number; bins: number;
-  }>(
-    `${WH_MAP()}, effective AS (
-       SELECT v.location_id, v.sloc_code, m.wh,
-              coalesce(v.zone, '') AS zone, coalesce(v.rack_zone, '') AS rack_zone,
-              coalesce(v.aisle, '') AS aisle, coalesce(v.bay, '') AS bay,
-              coalesce(v.level, '') AS level, coalesce(v.bin, '') AS bin,
-              coalesce(v.storage_handling, '') AS storage_handling,
-              ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
-       FROM vw_sloc v ${JOIN_WH}
-       WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()}
-     ), snapshot AS (
-       SELECT s._synced_at AS t, e.wh, s.location_id, s.sloc_code, s.product_id,
-              CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END AS qty,
-              CASE WHEN e.cbm_valid THEN s.occupied_cbm ELSE 0 END AS cbm,
-              (s.stock_qty > 0 OR s.occupied_cbm > 0) AS filled
-       FROM stock_history s
-       JOIN effective e
-         ON e.location_id = s.location_id AND e.sloc_code = s.sloc_code
-       WHERE s._synced_at >= now() - INTERVAL ${safeHours} HOUR
-         AND ${statusPredicateSQL("s.status")}
-         AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
-     ), totals AS (
-       SELECT t, wh, sum(qty)::DOUBLE AS qty, sum(cbm)::DOUBLE AS cbm
-       FROM snapshot GROUP BY 1, 2
-     ), skus AS (
-       SELECT t, wh, count(*)::INT AS sku
-       FROM (SELECT DISTINCT t, wh, product_id FROM snapshot)
-       GROUP BY 1, 2
-     ), bins AS (
-       SELECT t, wh, count(*)::INT AS bins
-       FROM (SELECT DISTINCT t, wh, location_id, sloc_code FROM snapshot WHERE filled)
-       GROUP BY 1, 2
-     )
-     SELECT totals.t::VARCHAR AS t, totals.wh, totals.qty, totals.cbm,
-            coalesce(skus.sku, 0)::INT AS sku,
-            coalesce(bins.bins, 0)::INT AS bins
-     FROM totals
-     LEFT JOIN skus USING (t, wh)
-     LEFT JOIN bins USING (t, wh)
-     ORDER BY 1 ASC`
-  );
-  const out = rows.map((r) => {
-    const c = caps.get(r.wh) ?? { capQ: 0, capV: 0, basis: "qty" as Basis, slocs: 0 };
-    const pq = c.capQ > 0 ? (r.qty / c.capQ) * 100 : 0;
-    const pv = c.capV > 0 ? (r.cbm / c.capV) * 100 : 0;
-    const pb = c.slocs > 0 ? (r.bins / c.slocs) * 100 : 0;
-    const pct = c.basis === "qty" ? (c.capQ > 0 ? pq : pv) : (c.capV > 0 ? pv : pq);
-    return { t: r.t, warehouse: r.wh, pct: r1(pct), pct_qty: r1(pq), pct_cbm: r1(pv),
-      pct_bin: r1(pb), qty: Math.round(r.qty), sku: r.sku, bins: r.bins };
-  });
-  setBoundedCache(trendCache, safeHours, { at: Date.now(), rows: out }, 6);
-  return out;
-}
-
-export async function getWarehouseTrend(hoursBack = 96): Promise<TrendPoint[]> {
-  const safeHours = Math.max(1, Math.floor(hoursBack));
-  return readModelCached(
-    `warehouse-trend-v1-${safeHours}h`,
-    readModelVersion(),
-    () => loadWarehouseTrend(safeHours),
-    { freshMs: DASHBOARD_TTL },
-  );
-}
-
-/** Estimasi inbound/outbound per jam dari delta snapshot (26 jam terakhir). */
-export interface FlowRate { wh: string; in_qty: number; out_qty: number; in_cbm: number; out_cbm: number }
-
-interface FlowRateRow {
-  wh: string; in_qty: number; out_qty: number; in_cbm: number; out_cbm: number; hours: number;
+export interface MovementFlowBucket {
+  wh: string;
+  /** Awal jamnya, ISO ber-offset WIB. */
+  t: string;
+  qty_in: number;
+  qty_out: number;
+  events: number;
 }
 
 /**
- * Delta per lokasi/SKU antar snapshot, dijumlahkan menjadi laju masuk & keluar.
+ * Jendelanya diikat ke PERGERAKAN TERBARU, bukan ke jam dinding sekarang.
  *
- * DIJALANKAN PER GUDANG, BUKAN SEKALIGUS
- * --------------------------------------
- * Fungsi jendela di bawah mengurutkan seluruh jendela 26 jam — dua juta baris
- * riwayat — dalam satu operasi. Diukur pada basis data ini, puncaknya mencapai
- * 305 MiB dari batas 320 MB yang dipakai layanan web: lolos pada koneksi yang
- * baru dibuka, gagal begitu ada kueri lain yang memorinya masih dipegang buffer
- * manager. Itu bukan margin yang dapat diandalkan, dan ia akan menyempit lagi
- * setiap kali riwayat bertambah panjang.
+ * Kalau sinkronisasi tertinggal — dan itu terjadi: pada mesin ini data terakhir
+ * berumur dua hari — jendela yang diikat ke `now()` menghasilkan nol baris, dan
+ * seluruh halaman Proyeksi kembali kosong persis seperti sebelum diperbaiki.
+ * Yang benar-benar ingin dijawab halaman itu adalah "bagaimana laju gudang ini
+ * pada 48 jam terakhir yang DIKETAHUI", dan jawaban itu tetap ada meski
+ * sinkronnya terlambat.
  *
- * Partisi jendelanya sendiri tidak pernah melintasi gudang — sebuah location_id
- * hanya dimiliki satu gudang — sehingga memecahnya per gudang menghasilkan
- * angka yang identik (diverifikasi terhadap bentuk satu-kueri) sambil mengikat
- * puncak memori pada gudang terbesar, bukan pada seluruh jaringan.
+ * Konsekuensinya harus terlihat, bukan disembunyikan: titik terakhir lintasan
+ * membawa stempel waktunya sendiri, dan halaman Proyeksi menampilkannya supaya
+ * proyeksi dari data lama tidak pernah terbaca sebagai proyeksi dari data baru.
  */
-export async function getFlowRates(): Promise<Map<string, FlowRate>> {
-  const cap = capacitySqlExpressions();
-  const flows = new Map<string, FlowRate>();
-  // Berurutan, bukan Promise.all: kueri riwayat memang sudah diserialkan oleh
-  // antrean di lib/db, dan menjalankannya beriringan hanya akan menyusun
-  // kembali beban memori yang justru ingin dipecah pemisahan ini.
-  for (const warehouse of getWarehouses().warehouses) {
-    const rows = await queryHistory<FlowRateRow>(
-      `${WH_MAP()}, effective AS (
-         SELECT v.location_id, v.sloc_code, m.wh,
-                coalesce(v.zone, '') AS zone, coalesce(v.rack_zone, '') AS rack_zone,
-                coalesce(v.aisle, '') AS aisle, coalesce(v.bay, '') AS bay,
-                coalesce(v.level, '') AS level, coalesce(v.bin, '') AS bin,
-                coalesce(v.storage_handling, '') AS storage_handling,
-                ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
-         FROM vw_sloc v ${JOIN_WH}
-         WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()} AND m.wh = ?
-       ), series AS (
-         SELECT e.wh, s.location_id, s.sloc_code, s.product_id, s.status, s._synced_at AS t,
-                CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END AS qty,
-                CASE WHEN e.cbm_valid THEN s.occupied_cbm ELSE 0 END AS cbm
-         FROM stock_history s
-         JOIN effective e
-           ON e.location_id = s.location_id AND e.sloc_code = s.sloc_code
-         WHERE s._synced_at >= now() - INTERVAL 26 HOUR
-           AND ${statusPredicateSQL("s.status")}
-           AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
-       ), d AS (
-         SELECT wh, t,
-                qty - lag(qty) OVER w AS dq,
-                cbm - lag(cbm) OVER w AS dv
-         FROM series
-         -- Status ikut mempartisi deretnya. Riwayat menyimpan satu baris per
-         -- (lokasi, SKU, status); selama hanya satu status yang dihitung hal itu
-         -- tidak terlihat, tetapi begitu admin menambah status kedua di
-         -- Pengaturan, dua deret berbeda akan bercampur dalam satu partisi
-         -- dengan stempel waktu yang sama dan delta-nya menjadi bergantung pada
-         -- urutan baris yang kebetulan terbaca.
-         WINDOW w AS (PARTITION BY location_id, sloc_code, product_id, status ORDER BY t)
-       )
-       SELECT wh,
-              coalesce(sum(CASE WHEN dq > 0 THEN dq END), 0)::DOUBLE  AS in_qty,
-              coalesce(-sum(CASE WHEN dq < 0 THEN dq END), 0)::DOUBLE AS out_qty,
-              coalesce(sum(CASE WHEN dv > 0 THEN dv END), 0)::DOUBLE  AS in_cbm,
-              coalesce(-sum(CASE WHEN dv < 0 THEN dv END), 0)::DOUBLE AS out_cbm,
-              greatest(1.0, (epoch(max(t)) - epoch(min(t))) / 3600.0)  AS hours
-       FROM d WHERE dq IS NOT NULL GROUP BY wh`,
-      [warehouse.code],
-    );
-    for (const row of rows) {
-      flows.set(row.wh, {
-        wh: row.wh,
-        in_qty: r1(row.in_qty / row.hours), out_qty: r1(row.out_qty / row.hours),
-        in_cbm: r3(row.in_cbm / row.hours), out_cbm: r3(row.out_cbm / row.hours),
-      });
-    }
-  }
-  return flows;
+async function loadMovementFlowSeries(hoursBack: number): Promise<MovementFlowBucket[]> {
+  const window = Math.max(1, Math.floor(hoursBack));
+  return movementQuery<MovementFlowBucket>(
+    `${movementSource()}, span AS (SELECT max(created_at) AS latest FROM mv)
+     SELECT mv.wh,
+            ${wibIso("date_trunc('hour', mv.created_at)")} AS t,
+            coalesce(sum(CASE WHEN mv.direction = 'OUT' THEN 0 ELSE mv.qty END), 0)::DOUBLE AS qty_in,
+            coalesce(sum(CASE WHEN mv.direction = 'OUT' THEN mv.qty ELSE 0 END), 0)::DOUBLE AS qty_out,
+            count(*)::INT AS events
+     FROM mv, span
+     WHERE mv.created_at >= span.latest - INTERVAL ${window} HOUR
+     GROUP BY mv.wh, date_trunc('hour', mv.created_at)
+     ORDER BY mv.wh, date_trunc('hour', mv.created_at)`,
+  );
 }
 
+/** Jendela yang dipakai proyeksi. Sama untuk laju, lintasan, dan simulator. */
+export const FORECAST_WINDOW_HOURS = 48;
+
+/**
+ * Berapa banyak jam terakhir yang menentukan laju.
+ *
+ * Gudang punya irama harian yang kuat — puncaknya 09:00–13:00 pada basis data
+ * ini. Merata-ratakan seluruh 48 jam meredam irama itu sampai proyeksinya tidak
+ * lagi menggambarkan shift yang sedang berjalan, sementara memakai satu jam
+ * terakhir membuatnya melompat-lompat mengikuti satu truk yang kebetulan
+ * datang. Enam jam adalah kompromi yang mengikuti shift tanpa mengikuti
+ * kebisingannya.
+ */
+const RATE_LOOKBACK_HOURS = 6;
+
 async function loadForecastRows(): Promise<ForecastRow[]> {
-  const [base, trend, flows] = await Promise.all([
-    getWarehouseOccupancySummary(), getWarehouseTrend(TREND_WINDOW_HOURS), getFlowRates(),
+  // Lintasan dan lajunya berasal dari read model yang sama dengan grafik tren di
+  // Ringkasan. Menghitungnya dua kali adalah cara paling pasti membuat halaman
+  // Proyeksi dan halaman Ringkasan menyebut angka berbeda untuk gudang yang sama.
+  const [base, projections] = await Promise.all([
+    getWarehouseOccupancySummary(),
+    getWarehouseProjections(),
   ]);
-  const sums = withWarehouseTrend(base, trend);
-  return sums.map((s) => {
-    const pts = trend.filter((t) => t.warehouse === s.code);
-    const firstT = pts[0] ? +new Date(pts[0].t) : 0;
-    const lastT = pts.length ? +new Date(pts[pts.length - 1].t) : 0;
-    const historySpanHours = firstT && lastT > firstT ? (lastT - firstT) / 3_600_000 : 0;
-    const forecastReady = pts.length >= 4 && historySpanHours >= 0.25;
-    const f = flows.get(s.code) ?? { wh: s.code, in_qty: 0, out_qty: 0, in_cbm: 0, out_cbm: 0 };
-    const capBasis = s.basis === "qty" ? s.cap_qty : s.cap_cbm;
+
+  return base.map((warehouse) => {
+    const projection = projections.get(warehouse.code);
+    const capBasis = warehouse.basis === "qty" ? warehouse.cap_qty : warehouse.cap_cbm;
+    const ready = Boolean(projection?.ready);
+    const cbmPerUnit = warehouse.occ_qty > 0 ? warehouse.occ_cbm / warehouse.occ_qty : 0;
+    const toBasis = (qty: number) => (warehouse.basis === "qty" ? qty : qty * cbmPerUnit);
+    const rate = ready ? projection!.rate_pct_per_hour : 0;
+    const asFlow = (qty: number) =>
+      warehouse.basis === "qty" ? r1(qty) : r3(toBasis(qty));
+
     return {
-      warehouse: s.code, name: s.name, basis: s.basis,
-      current_pct: s.pct, rate_pct_per_hour: forecastReady ? s.rate_pct_per_hour : 0,
-      qty_now: s.occ_qty,
-      sku_now: pts.length ? pts[pts.length - 1].sku : 0,
-      qty_rate_per_hour: forecastReady ? r1(wmaRatePctPerHour(pts.map((p) => ({ t: p.t, pct: p.qty })))) : 0,
-      sku_rate_per_hour: forecastReady ? r3(wmaRatePctPerHour(pts.map((p) => ({ t: p.t, pct: p.sku })))) : 0,
-      bin_rate_per_hour: forecastReady ? r3(wmaRatePctPerHour(pts.map((p) => ({ t: p.t, pct: p.bins })))) : 0,
-      bins_now: s.sloc_occupied, sloc_total: s.sloc_total,
+      warehouse: warehouse.code,
+      name: warehouse.name,
+      basis: warehouse.basis,
+      current_pct: warehouse.pct,
+      rate_pct_per_hour: ready ? r3(rate) : 0,
+      qty_now: warehouse.occ_qty,
+      net_rate: ready ? asFlow(projection!.net_per_hour) : 0,
+      bins_now: warehouse.sloc_occupied,
+      sloc_total: warehouse.sloc_total,
       cap_basis: capBasis,
-      in_rate: s.basis === "qty" ? f.in_qty : f.in_cbm,
-      out_rate: s.basis === "qty" ? f.out_qty : f.out_cbm,
-      flow_unit: s.basis === "qty" ? "unit" : "m³",
-      hours_to_95: forecastReady ? s.hours_to_95 : null,
-      hours_to_100: forecastReady ? s.hours_to_100 : null,
-      history_points: pts.length,
-      history_span_hours: r1(historySpanHours),
-      forecast_ready: forecastReady,
-      trend: pts.map((t) => ({ t: t.t, pct: t.pct })),
-    };
+      in_rate: ready ? asFlow(projection!.in_per_hour) : 0,
+      out_rate: ready ? asFlow(projection!.out_per_hour) : 0,
+      flow_unit: warehouse.basis === "qty" ? "unit" : "m³",
+      hours_to_95: ready ? hoursToTarget(warehouse.pct, rate, 95) : null,
+      hours_to_100: ready ? hoursToTarget(warehouse.pct, rate, 100) : null,
+      history_points: projection?.buckets ?? 0,
+      history_span_hours: r1(projection?.span_hours ?? 0),
+      forecast_ready: ready,
+      trend: (projection?.trail ?? []).map((point) => ({ t: point.t, pct: point.pct })),
+    } satisfies ForecastRow;
   });
 }
 
 export async function getForecastRows(): Promise<ForecastRow[]> {
   return readModelCached(
-    "forecast-rows-v1",
+    "forecast-rows-v2-movement",
     readModelVersion(),
     loadForecastRows,
     { freshMs: DASHBOARD_TTL },
@@ -1463,99 +1530,15 @@ export async function getSlocDetail(
   return { stock, movements };
 }
 
-export interface IntegrityRow {
-  warehouse: string; counted: number; matched: number; integrity_pct: number;
-  phantom: number; ghost: number; last_count: string | null;
-}
-const whFilter = (wh?: string) => (wh ? `AND m.wh = '${wh.replace(/'/g, "''")}'` : "");
-
-async function loadIntegrity(wh?: string): Promise<IntegrityRow[]> {
-  return queryHistory<IntegrityRow>(
-    `${WH_MAP()}, latest_count AS (
-       SELECT *, row_number() OVER (PARTITION BY sloc_code ORDER BY count_date DESC) rn
-       FROM cycle_count
-     ), c AS (SELECT * FROM latest_count WHERE rn = 1)
-     SELECT m.wh AS warehouse,
-            count(*)::INT AS counted,
-            sum(CASE WHEN abs(c.system_qty - c.physical_qty) <= greatest(1, 0.02*c.system_qty) THEN 1 ELSE 0 END)::INT AS matched,
-            round(100.0 * sum(CASE WHEN abs(c.system_qty - c.physical_qty) <= greatest(1, 0.02*c.system_qty) THEN 1 ELSE 0 END) / count(*), 1) AS integrity_pct,
-            sum(CASE WHEN c.system_qty > 0 AND c.physical_qty = 0 THEN 1 ELSE 0 END)::INT AS phantom,
-            sum(CASE WHEN c.system_qty = 0 AND c.physical_qty > 0 THEN 1 ELSE 0 END)::INT AS ghost,
-            max(c.count_date)::VARCHAR AS last_count
-     FROM c JOIN vw_sloc v ON v.sloc_code = c.sloc_code ${JOIN_WH}
-      WHERE ${OPERATIONAL_SLOC} ${whFilter(wh)}
-     GROUP BY 1 ORDER BY 1`
-  );
-}
-
-export async function getIntegrity(wh?: string): Promise<IntegrityRow[]> {
-  const scope = cleanScope({ wh });
-  if (wh && !scope.wh) return [];
-  return readModelCached(
-    `integrity-v1-${scope.wh ?? "all"}`,
-    readModelVersion(),
-    () => loadIntegrity(scope.wh),
-    { freshMs: DASHBOARD_TTL },
-  );
-}
-
-export interface IntegrityDriftRow {
-  warehouse: string; sloc_code: string; count_date: string;
-  system_qty: number; physical_qty: number; diff: number; drift_type: string;
-}
-
-export interface IntegrityDriftOptions {
-  wh?: string;
-  /** Pencarian kode SLOC. */
-  query?: string;
-  /** PHANTOM · GHOST · SELISIH. */
-  driftType?: string;
-  limit?: number;
-}
-
-export async function getIntegrityDrift(
-  limit = 30,
-  wh?: string,
-  options: Omit<IntegrityDriftOptions, "wh" | "limit"> = {},
-): Promise<IntegrityDriftRow[]> {
-  const scope = cleanScope({ wh });
-  if (wh && !scope.wh) return [];
-  const safeLimit = Number.isFinite(limit)
-    ? Math.min(200_000, Math.max(1, Math.floor(limit)))
-    : 30;
-  const query = (options.query ?? "").trim().toLocaleLowerCase().slice(0, 80);
-  const driftType = (options.driftType ?? "").trim().toUpperCase();
-  const safeDriftType = (DRIFT_TYPES as readonly string[]).includes(driftType) ? driftType : "";
-  return queryHistory<IntegrityDriftRow>(
-    `${WH_MAP()}, latest_count AS (
-       SELECT *, row_number() OVER (PARTITION BY sloc_code ORDER BY count_date DESC) rn
-       FROM cycle_count
-     ), drift AS (
-       SELECT m.wh AS warehouse, c.sloc_code, c.count_date::VARCHAR AS count_date,
-              c.system_qty, c.physical_qty, (c.physical_qty - c.system_qty) AS diff,
-              CASE WHEN c.system_qty > 0 AND c.physical_qty = 0 THEN 'PHANTOM'
-                   WHEN c.system_qty = 0 AND c.physical_qty > 0 THEN 'GHOST'
-                   ELSE 'SELISIH' END AS drift_type
-       FROM latest_count c JOIN vw_sloc v ON v.sloc_code = c.sloc_code ${JOIN_WH}
-       WHERE c.rn = 1 AND ${OPERATIONAL_SLOC}
-         AND abs(c.system_qty - c.physical_qty) > greatest(1, 0.02*c.system_qty)
-         ${whFilter(scope.wh)}
-     )
-     SELECT * FROM drift
-     WHERE (? = '' OR lower(sloc_code || ' ' || warehouse) LIKE ?)
-       AND (? = '' OR drift_type = ?)
-     ORDER BY abs(diff) DESC, warehouse, sloc_code
-     LIMIT ${safeLimit}`,
-    [query, `%${query}%`, safeDriftType, safeDriftType],
-  );
-}
-
 export async function getSyncHealth() {
+  // Keduanya berjam WIB. Tanpa offset eksplisit, halaman yang dirender di
+  // kontainer UTC melaporkan snapshot tujuh jam lebih lambat daripada
+  // kenyataannya — dan pemeriksaan umur di /api/health ikut salah sebanyak itu.
   const snap = await queryHistory<{ last: string | null; rows: number }>(
-    `SELECT max(_synced_at)::VARCHAR AS last, count(*)::BIGINT AS rows FROM stock_history`
+    `SELECT ${wibIso("max(_synced_at)")} AS last, count(*)::BIGINT AS rows FROM stock_history`
   );
   const audit = await queryHistory(
-    `SELECT job, mode, finished_at::VARCHAR AS finished_at, rows_written, status
+    `SELECT job, mode, ${wibIso("finished_at")} AS finished_at, rows_written, status
      FROM _sync_audit ORDER BY finished_at DESC LIMIT 8`
   ).catch(() => []);
   return { last_snapshot: snap[0]?.last ?? null, snapshot_rows: snap[0]?.rows ?? 0, recent_syncs: audit };
@@ -1576,42 +1559,6 @@ export async function getSyncHealth() {
 // dihitung di SQL dari tabel aturan yang sama dengan yang dipakai antarmuka
 // (lib/movements.ts), jadi filter di server dan label di layar tidak mungkin
 // memakai taksonomi yang berbeda.
-
-/**
- * ZONA WAKTU PERGERAKAN
- * ---------------------
- * `created_at`/`updated_at` disimpan PERSIS seperti di WMS: jam dinding WIB,
- * tanpa zona. Itu disengaja — nilai yang sama dikirim kembali ke Superset
- * sebagai filter watermark, jadi menggesernya ke UTC akan melewatkan atau
- * menarik ulang tujuh jam data pada setiap pass.
- *
- * Konsekuensinya dua hal harus ditangani DI SINI, bukan dibiarkan ke pemanggil:
- *
- * 1. Batas rentang waktu tidak boleh memakai `now()` DuckDB. Di kontainer
- *    produksi jam prosesnya UTC, sehingga "24 jam terakhir" akan membandingkan
- *    jam dinding WIB dengan instan UTC dan meleset tujuh jam. Batasnya dihitung
- *    di Node sebagai jam dinding WIB lalu diikat sebagai parameter.
- * 2. Timestamp yang dikirim ke browser diberi offset `+07:00`. Tanpa itu
- *    `new Date("2026-08-22 14:08:19")` diurai sebagai waktu LOKAL peramban, dan
- *    pengguna di luar WIB melihat jam yang salah.
- */
-const WIB_OFFSET = "+07:00";
-
-/** Ekspresi SQL yang mengubah kolom timestamp naif menjadi ISO 8601 ber-offset. */
-const wibIso = (column: string) =>
-  `strftime(${column}, '%Y-%m-%dT%H:%M:%S') || '${WIB_OFFSET}'`;
-
-/** Jam dinding WIB untuk sebuah instan — bentuk yang sama dengan isi kolomnya. */
-function wibWallClock(at: Date): string {
-  const parts = new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "Asia/Jakarta",
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hourCycle: "h23",
-  }).format(at);
-  // sv-SE memberi "YYYY-MM-DD HH:MM:SS" — format yang sama dengan kolomnya.
-  return parts.replace("T", " ");
-}
 
 /** Sumber pergerakan yang sudah ber-scope, terstandardisasi, dan bertanda. */
 function movementSource(): string {
@@ -1643,6 +1590,48 @@ function movementSource(): string {
     FROM vw_movement v
     JOIN wh_map m ON m.location_id = v.location_id
   )`;
+}
+
+/**
+ * Agregat pergerakan yang TIDAK bergantung pada paginasi maupun pengurutan.
+ *
+ * Ringkasan, grafik aktivitas, dan strip per gudang semuanya dihitung dari
+ * klausa WHERE yang sama — `movementWhere()` tidak pernah membaca `sort`,
+ * `dir`, `offset`, atau `limit`. Namun halaman Pergerakan menembakkan
+ * keempatnya lagi pada SETIAP klik, termasuk klik yang hanya memindahkan
+ * halaman atau membalik urutan kolom, dan antrean riwayat menjalankannya
+ * berurutan. Terukur pada basis data ini: satu klik "halaman berikutnya"
+ * membayar tiga pemindaian penuh untuk mendapatkan angka yang sudah ada di
+ * layar dan tidak berubah sedikit pun.
+ *
+ * Kuncinya sengaja hanya memuat medan yang benar-benar masuk ke WHERE, plus
+ * sidik jari read model, sehingga snapshot baru atau perubahan kebijakan
+ * membatalkannya sendiri. Isinya kecil (angka, bukan baris), jadi batas entri
+ * yang rendah sudah cukup untuk menampung perpindahan bolak-balik antar filter
+ * yang lazim dalam satu sesi.
+ */
+const movementAggregateCache = new Map<string, { at: number; value: unknown }>();
+
+function movementFilterKey(filter: MovementFilter): string {
+  return JSON.stringify([
+    filter.range, filter.wh, [...filter.type].sort(), filter.direction, filter.flow,
+    filter.category, filter.productType, filter.status, filter.operator,
+    filter.sloc, filter.q,
+  ]);
+}
+
+async function cachedMovementAggregate<T>(
+  name: string,
+  filter: MovementFilter,
+  load: () => Promise<T>,
+): Promise<T> {
+  refreshCachesForHistoryChange();
+  const key = `${name}|${readModelVersion()}|${movementFilterKey(filter)}`;
+  const cached = movementAggregateCache.get(key);
+  if (cached && Date.now() - cached.at < DASHBOARD_TTL) return cached.value as T;
+  const value = await load();
+  setBoundedCache(movementAggregateCache, key, { at: Date.now(), value }, 48);
+  return value;
 }
 
 /** Klausa WHERE + parameter dari kontrak filter bersama. */
@@ -1753,6 +1742,10 @@ export async function getMovementRows(
  * totalnya, sisanya per tipe.
  */
 export async function getMovementSummary(filter: MovementFilter): Promise<MovementSummary> {
+  return cachedMovementAggregate("summary", filter, () => loadMovementSummary(filter));
+}
+
+async function loadMovementSummary(filter: MovementFilter): Promise<MovementSummary> {
   const where = movementWhere(filter);
   const rows = await movementQuery<{
     movement_type: MovementType | null; is_total: number;
@@ -1808,6 +1801,16 @@ export async function getMovementSummary(filter: MovementFilter): Promise<Moveme
 export async function getMovementByWarehouse(
   filter: MovementFilter,
 ): Promise<MovementWarehouseRow[]> {
+  // Filter gudang memang diabaikan oleh kuerinya, jadi kuncinya pun harus
+  // mengabaikannya — kalau tidak, delapan kunci berbeda menyimpan hasil yang
+  // persis sama dan tidak satu pun dapat saling dipakai.
+  return cachedMovementAggregate("by-warehouse", { ...filter, wh: "" },
+    () => loadMovementByWarehouse(filter));
+}
+
+async function loadMovementByWarehouse(
+  filter: MovementFilter,
+): Promise<MovementWarehouseRow[]> {
   const where = movementWhere({ ...filter, wh: "" });
   const rows = await movementQuery<Omit<MovementWarehouseRow, "name" | "qty_net">>(
     `${movementSource()}
@@ -1840,6 +1843,10 @@ export async function getMovementByWarehouse(
  * per jam pada rentang 30 hari menghasilkan 720 batang yang tidak terbaca.
  */
 export async function getMovementActivity(filter: MovementFilter): Promise<MovementBucket[]> {
+  return cachedMovementAggregate("activity", filter, () => loadMovementActivity(filter));
+}
+
+async function loadMovementActivity(filter: MovementFilter): Promise<MovementBucket[]> {
   const where = movementWhere(filter);
   const hours = RANGE_HOURS[filter.range];
   const unit = hours !== null && hours <= 72 ? "hour" : "day";
@@ -1960,6 +1967,144 @@ export async function getRecentMovements(
   );
 }
 
+/**
+ * Lokasi yang MELEWATI kapasitas karena ada barang benar-benar masuk ke sana.
+ *
+ * INI SATU-SATUNYA PEMICU ALERT KAPASITAS
+ * ---------------------------------------
+ * Versi sebelumnya memindai seluruh lokasi padat pada setiap tick dan
+ * memberitakan apa pun yang kebetulan berada di atas ambang. Itu memberitakan
+ * KEADAAN, bukan KEJADIAN — dan keadaan tidak berubah di antara tick. Sebuah
+ * lokasi yang sudah penuh sejak minggu lalu terus muncul, sementara satu-satunya
+ * hal yang benar-benar layak ditindak — seseorang baru saja menaruh barang di
+ * tempat yang tidak muat — tenggelam di antaranya. Gudang yang kronis penuh
+ * membuat papan alert menjadi daftar yang tidak pernah bisa dikosongkan, dan
+ * daftar seperti itu berhenti dibaca.
+ *
+ * Kueri ini membalik urutannya: mulai dari PERGERAKAN, bukan dari okupansi.
+ * Hanya lokasi yang MENERIMA barang di dalam jendela evaluasi yang diperiksa,
+ * lalu disaring ke yang kini benar-benar melewati kapasitas. Hasilnya setiap
+ * alert selalu dapat menjawab "apa yang berubah, dan siapa yang melakukannya".
+ *
+ * Ambang "Breach"-nya memakai `statusLadderSQL()` — tangga yang sama persis
+ * dengan heatmap, tabel kepadatan, dan ekspor Excel. Alert tidak mungkin
+ * menyebut sebuah lokasi Breach sementara layar menyebutnya Kritis.
+ */
+export interface MovementBreach {
+  wh: string;
+  sloc_code: string;
+  zone: string;
+  storage: string;
+  basis: Basis;
+  pct_qty: number | null;
+  pct_cbm: number | null;
+  occ_qty: number;
+  cap_qty: number;
+  occ_cbm: number;
+  cap_cbm: number;
+  sku_count: number;
+  /** Unit yang masuk ke lokasi ini selama jendela evaluasi. */
+  qty_in: number;
+  /** Berapa kali barang masuk selama jendela itu. */
+  events: number;
+  /** Pergerakan terakhir yang menambah isi lokasi — penyebab yang disebut alert. */
+  last_at: string;
+  last_qty: number;
+  last_operator: string;
+  last_action: string;
+  last_product: string;
+}
+
+/** Batas kandidat per tick; jendela sepuluh menit tidak pernah mendekatinya. */
+export const MOVEMENT_BREACH_MAX = 200;
+
+export async function getMovementBreaches(
+  windowHours = 1,
+  limit = MOVEMENT_BREACH_MAX,
+): Promise<MovementBreach[]> {
+  const safeHours = Number.isFinite(windowHours) ? Math.min(72, Math.max(0.1, windowHours)) : 1;
+  const safeLimit = Number.isFinite(limit)
+    ? Math.min(MOVEMENT_BREACH_MAX, Math.max(1, Math.floor(limit)))
+    : MOVEMENT_BREACH_MAX;
+  const cap = capacitySqlExpressions();
+  return movementQuery<MovementBreach>(
+    `${WH_MAP()}, inbound AS (
+       SELECT m.wh, v.location_id, trim(v.destination_sloc) AS sloc_code,
+              abs(coalesce(v.qty, 0))::DOUBLE AS qty,
+              v.created_at,
+              coalesce(v.operator, '') AS operator,
+              coalesce(v.action_raw, '') AS action_raw,
+              coalesce(v.product_name, '') AS product_name
+       FROM vw_movement v
+       JOIN wh_map m ON m.location_id = v.location_id
+       WHERE v.created_at >= ?
+         AND nullif(trim(coalesce(v.destination_sloc, '')), '') IS NOT NULL
+     ), touched AS (
+       SELECT wh, location_id, sloc_code,
+              sum(qty)::DOUBLE AS qty_in, count(*)::INT AS events
+       FROM inbound GROUP BY 1, 2, 3
+     ), latest AS (
+       SELECT location_id, sloc_code, created_at, qty, operator, action_raw, product_name
+       FROM inbound
+       QUALIFY row_number() OVER (
+         PARTITION BY location_id, sloc_code ORDER BY created_at DESC
+       ) = 1
+     ), effective AS MATERIALIZED (
+       SELECT v.location_id, v.sloc_code, m.wh, coalesce(v.zone, '') AS zone,
+              coalesce(v.rack_zone, '') AS rack_zone, coalesce(v.aisle, '') AS aisle,
+              coalesce(v.bay, '') AS bay, coalesce(v.level, '') AS level,
+              coalesce(v.bin, '') AS bin,
+              coalesce(v.storage_handling, '') AS storage_handling,
+              ${cap.basis} AS basis, ${cap.capQty} AS cap_qty, ${cap.capCbm} AS cap_cbm,
+              ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
+       FROM vw_sloc v ${JOIN_WH}
+       JOIN touched tc ON tc.location_id = v.location_id AND tc.sloc_code = v.sloc_code
+       WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()}
+     ), stock_agg AS (
+       SELECT e.location_id, e.sloc_code,
+              coalesce(sum(s.stock_qty), 0)::DOUBLE AS occ_qty,
+              coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS occ_cbm,
+              count(DISTINCT s.product_id)::INT AS sku_count
+       FROM effective e
+       JOIN vw_stock_latest s
+         ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
+       WHERE ${statusPredicateSQL("s.status")}
+         AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
+       GROUP BY 1, 2
+     ), scored AS (
+       SELECT e.*, coalesce(a.occ_qty, 0)::DOUBLE AS occ_qty,
+              coalesce(a.occ_cbm, 0)::DOUBLE AS occ_cbm,
+              coalesce(a.sku_count, 0)::INT AS sku_count,
+              CASE WHEN e.qty_valid AND e.cap_qty > 0
+                THEN 100.0 * coalesce(a.occ_qty, 0) / e.cap_qty END AS pct_qty,
+              CASE WHEN e.cbm_valid AND e.cap_cbm > 0
+                THEN 100.0 * coalesce(a.occ_cbm, 0) / e.cap_cbm END AS pct_cbm
+       FROM effective e
+       LEFT JOIN stock_agg a
+         ON a.location_id = e.location_id AND a.sloc_code = e.sloc_code
+     )
+     SELECT sc.wh, sc.sloc_code, sc.zone, sc.storage_handling AS storage, sc.basis,
+            CASE WHEN sc.pct_qty IS NULL THEN NULL ELSE round(sc.pct_qty, 1) END AS pct_qty,
+            CASE WHEN sc.pct_cbm IS NULL THEN NULL ELSE round(sc.pct_cbm, 1) END AS pct_cbm,
+            round(sc.occ_qty, 1)::DOUBLE AS occ_qty, round(sc.cap_qty, 1)::DOUBLE AS cap_qty,
+            round(sc.occ_cbm, 3)::DOUBLE AS occ_cbm, round(sc.cap_cbm, 3)::DOUBLE AS cap_cbm,
+            sc.sku_count, round(tc.qty_in, 1)::DOUBLE AS qty_in, tc.events,
+            ${wibIso("la.created_at")} AS last_at,
+            round(la.qty, 1)::DOUBLE AS last_qty,
+            la.operator AS last_operator, la.action_raw AS last_action,
+            la.product_name AS last_product
+     FROM scored sc
+     JOIN touched tc ON tc.location_id = sc.location_id AND tc.sloc_code = sc.sloc_code
+     JOIN latest la ON la.location_id = sc.location_id AND la.sloc_code = sc.sloc_code
+     WHERE ${statusLadderSQL("sc.pct_qty", "sc.wh")} = 'BREACH'
+        OR ${statusLadderSQL("sc.pct_cbm", "sc.wh")} = 'BREACH'
+     ORDER BY greatest(coalesce(sc.pct_qty, 0), coalesce(sc.pct_cbm, 0)) DESC,
+              sc.wh, sc.sloc_code
+     LIMIT ${safeLimit}`,
+    [wibCutoff(safeHours)],
+  );
+}
+
 /** Pencarian cepat untuk command palette: SLOC & produk (dalam allowlist). */
 export async function searchData(q: string) {
   const like = `%${q.replace(/'/g, "''")}%`;
@@ -1985,160 +2130,6 @@ export async function searchData(q: string) {
        LIMIT 6`, [like, like]),
   ]);
   return { slocs, products };
-}
-
-/** Lokasi padat / over-kapasitas + isi SKU-nya (menu Kepadatan). */
-export interface DenseSloc {
-  sloc_code: string; wh: string; zone: string; storage: string; basis: Basis;
-  pct: number; status: string; occ_qty: number; cap_qty: number;
-  occ_cbm: number; cap_cbm: number; sku_count: number;
-  pct_qty: number | null; pct_cbm: number | null; pct_bin: number;
-  qty_valid: boolean; cbm_valid: boolean;
-  /** Persentase pada basis yang dipakai untuk memeringkat baris ini. */
-  ranking_pct: number;
-}
-interface DenseAggregateRow {
-  sloc_code: string; wh: string; zone: string; storage: string; basis: Basis;
-  occ_qty: number; cap_qty: number; occ_cbm: number; cap_cbm: number;
-  sku_count: number; pct_qty: number | null; pct_cbm: number | null;
-  pct_bin: number; view_pct: number; qty_valid: boolean; cbm_valid: boolean;
-}
-
-/**
- * Basis pemeringkatan lokasi padat.
- *
- * Selain empat basis tampilan, mesin alert memakai `"worst"`: yang tertinggi di
- * antara Qty dan CBM. Memeringkat pada basis kebijakan saja adalah cacat asli
- * logika alert — sebuah lokasi yang 5.000% penuh menurut CBM tidak pernah masuk
- * daftar sama sekali bila basis kebijakannya Qty dan Qty-nya masih longgar.
- * Mode ini tidak diekspos ke UI: ia menjawab "mana yang paling parah pada basis
- * apa pun", bukan "apa yang sedang saya lihat".
- *
- * Mode ini juga MENGURUTKAN berbeda: lihat `overflowReachSQL()`.
- */
-export type DenseRanking = BasisMode | "worst";
-
-/**
- * Berapa banyak basis kapasitas yang sudah dicapai lokasi ini (0, 1, atau 2).
- *
- * Anggaran alert per pass dibatasi `sloc_alerts.max_alerts`, jadi URUTAN daftar
- * menentukan lokasi mana yang benar-benar diberitakan. Mengurutkan pada
- * persentase saja membelanjakan seluruh anggaran itu pada angka terbesar —
- * padahal justru angka terbesar (satu basis 5.000% penuh) yang paling sering
- * berarti kapasitas master salah, sementara lokasi yang Qty DAN CBM-nya
- * sama-sama pas di kapasitas maksimum — dua pengukuran independen yang sepakat,
- * dan kondisi paling layak ditindak — terdampar di dasar daftar dan tidak
- * pernah muncul sama sekali di gudang yang memang kronis penuh.
- *
- * Peringkat ini hanya URUTAN, bukan perhitungan severity: tingkat keparahan
- * tetap ditentukan sepenuhnya oleh classifyOverflow() supaya tidak ada dua
- * sumber kebenaran yang bisa menyimpang. Keduanya berbagi satu tombol yang
- * sama, batas fisik 100%, dan toleransi kesetaraan yang sama.
- */
-function overflowReachSQL(): string {
-  const cut = CAPACITY_LIMIT_PCT - CAPACITY_MATCH_TOLERANCE_PCT;
-  // pct NULL (kapasitas basis itu tidak sahih) menghasilkan CASE NULL → 0,
-  // sehingga lokasi tanpa kapasitas CBM tidak pernah terhitung "dua basis".
-  return `(CASE WHEN pct_qty >= ${cut} THEN 1 ELSE 0 END`
-    + ` + CASE WHEN pct_cbm >= ${cut} THEN 1 ELSE 0 END)`;
-}
-
-async function loadDenseSlocs(
-  wh?: string, minPct = 90, limit = 200, view: DenseRanking = "policy"
-): Promise<DenseSloc[]> {
-  const scope = cleanScope({ wh, operational: true });
-  if (wh && !scope.wh) return [];
-  const safeMinimum = Number.isFinite(minPct) ? Math.max(0, minPct) : 90;
-  const safeLimit = Number.isFinite(limit) ? Math.min(1_000, Math.max(1, Math.floor(limit))) : 200;
-  const cap = capacitySqlExpressions();
-  const viewExpression =
-    view === "qty" ? "pct_qty"
-    : view === "cbm" ? "pct_cbm"
-    : view === "bin" ? "pct_bin"
-    // greatest() di DuckDB mengabaikan NULL, jadi lokasi yang hanya punya satu
-    // kapasitas sahih tetap dinilai dari basis itu alih-alih hilang.
-    : view === "worst" ? "greatest(pct_qty, pct_cbm)"
-    : "pct";
-  // Basis tampilan tetap diurut murni pada persentasenya; hanya mesin alert
-  // yang mendahulukan kesepakatan dua basis (lihat overflowReachSQL()).
-  const rankExpression = view === "worst" ? overflowReachSQL() : "0";
-  const params: unknown[] = scope.wh ? [scope.wh, safeMinimum, safeLimit] : [safeMinimum, safeLimit];
-
-  // Rank at source instead of materialising every operational SLOC in Node.
-  // CBT alone can approach 100k active locations; this keeps both memory and
-  // response time bounded to the requested priority rows.
-  const rows = await queryHistory<DenseAggregateRow>(
-    `${WH_MAP()}, effective AS (
-       SELECT v.sloc_id, v.location_id, v.sloc_code, m.wh, v.zone,
-              coalesce(v.rack_zone, '') AS rack_zone, coalesce(v.aisle, '') AS aisle,
-              coalesce(v.bay, '') AS bay, coalesce(v.level, '') AS level,
-              coalesce(v.bin, '') AS bin,
-              coalesce(v.storage_handling, '') AS storage_handling,
-              ${cap.basis} AS basis, ${cap.capQty} AS cap_qty, ${cap.capCbm} AS cap_cbm,
-              ${cap.qtyValid} AS qty_valid, ${cap.cbmValid} AS cbm_valid
-       FROM vw_sloc v ${JOIN_WH}
-       WHERE ${OPERATIONAL_SLOC} AND ${zoneEnabledSQL()}${scope.wh ? " AND m.wh = ?" : ""}
-     ), stock_agg AS (
-       SELECT e.location_id, e.sloc_code,
-              coalesce(sum(s.stock_qty), 0)::DOUBLE AS occ_qty,
-              coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS occ_cbm,
-              count(DISTINCT s.product_id)::INT AS sku_count
-       FROM effective e
-       JOIN vw_stock_latest s
-         ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
-       WHERE ${statusPredicateSQL("s.status")}
-         AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
-       GROUP BY 1, 2
-     ), occupancy AS (
-       SELECT e.*, coalesce(s.occ_qty, 0)::DOUBLE AS occ_qty,
-              coalesce(s.occ_cbm, 0)::DOUBLE AS occ_cbm,
-              coalesce(s.sku_count, 0)::INT AS sku_count
-       FROM effective e
-       LEFT JOIN stock_agg s
-         ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
-     ), percentages AS (
-       SELECT *,
-              CASE WHEN qty_valid AND cap_qty > 0 THEN 100.0 * occ_qty / cap_qty END AS pct_qty,
-              CASE WHEN cbm_valid AND cap_cbm > 0 THEN 100.0 * occ_cbm / cap_cbm END AS pct_cbm,
-              CASE WHEN occ_qty > 0 OR occ_cbm > 0 THEN 100.0 ELSE 0.0 END AS pct_bin
-       FROM occupancy
-     ), policy_scored AS (
-       SELECT *,
-              coalesce(
-                CASE WHEN basis = 'qty' THEN pct_qty ELSE pct_cbm END,
-                CASE WHEN basis = 'qty' THEN pct_cbm ELSE pct_qty END,
-                0
-              ) AS pct
-       FROM percentages
-     ), view_scored AS (
-       SELECT *, ${viewExpression} AS view_pct, ${rankExpression} AS overflow_rank
-       FROM policy_scored
-     )
-     SELECT sloc_code, wh, zone, storage_handling AS storage, basis,
-            round(occ_qty, 1)::DOUBLE AS occ_qty, round(cap_qty, 1)::DOUBLE AS cap_qty,
-            round(occ_cbm, 3)::DOUBLE AS occ_cbm, round(cap_cbm, 3)::DOUBLE AS cap_cbm,
-            sku_count,
-            CASE WHEN pct_qty IS NULL THEN NULL ELSE round(pct_qty, 1)::DOUBLE END AS pct_qty,
-            CASE WHEN pct_cbm IS NULL THEN NULL ELSE round(pct_cbm, 1)::DOUBLE END AS pct_cbm,
-            round(pct_bin, 1)::DOUBLE AS pct_bin,
-            round(view_pct, 1)::DOUBLE AS view_pct,
-            qty_valid, cbm_valid
-     FROM view_scored
-     WHERE view_pct IS NOT NULL AND view_pct >= ?
-     ORDER BY overflow_rank DESC, view_pct DESC, wh, sloc_code
-     LIMIT ?`,
-    params,
-  );
-  return rows.map((row) => ({
-    sloc_code: row.sloc_code, wh: row.wh, zone: row.zone, storage: row.storage,
-    basis: row.basis, pct: row.view_pct,
-    status: view === "bin" ? "NORMAL" : statusFor(row.view_pct, row.wh),
-    ranking_pct: row.view_pct,
-    occ_qty: row.occ_qty, cap_qty: row.cap_qty,
-    occ_cbm: row.occ_cbm, cap_cbm: row.cap_cbm, sku_count: row.sku_count,
-    pct_qty: row.pct_qty, pct_cbm: row.pct_cbm, pct_bin: row.pct_bin,
-    qty_valid: row.qty_valid, cbm_valid: row.cbm_valid,
-  }));
 }
 
 /** Okupansi kedua basis untuk sekumpulan lokasi tertentu. */
@@ -2182,7 +2173,7 @@ export async function getSlocBasisReadings(
     wh: string; sloc_code: string; pct_qty: number | null; pct_cbm: number | null;
   }>(
     `${WH_MAP()}, wanted(wh, sloc_code) AS (VALUES ${pairs}),
-     effective AS (
+     effective AS MATERIALIZED (
        SELECT v.location_id, v.sloc_code, m.wh,
               coalesce(v.zone, '') AS zone, coalesce(v.rack_zone, '') AS rack_zone,
               coalesce(v.aisle, '') AS aisle, coalesce(v.bay, '') AS bay,
@@ -2222,23 +2213,6 @@ export async function getSlocBasisReadings(
     });
   }
   return result;
-}
-
-export async function getDenseSlocs(
-  wh?: string, minPct = 90, limit = 200, view: DenseRanking = "policy"
-): Promise<DenseSloc[]> {
-  const scope = cleanScope({ wh });
-  if (wh && !scope.wh) return [];
-  const safeMinimum = Number.isFinite(minPct) ? Math.max(0, minPct) : 90;
-  const safeLimit = Number.isFinite(limit) ? Math.min(1_000, Math.max(1, Math.floor(limit))) : 200;
-  const safeView: DenseRanking =
-    ["qty", "cbm", "bin", "policy", "worst"].includes(view) ? view : "policy";
-  return readModelCached(
-    `dense-sloc-v1-${scope.wh ?? "all"}-${safeMinimum}-${safeLimit}-${safeView}`,
-    readModelVersion(),
-    () => loadDenseSlocs(scope.wh, safeMinimum, safeLimit, safeView),
-    { freshMs: DASHBOARD_TTL },
-  );
 }
 
 // ---- SLOC explorer: satu read-model untuk filter, pencarian, dan ekspor -----
@@ -2397,7 +2371,7 @@ function slocSqlPlan(filter: SlocFilter): SlocSqlPlan {
   }
 
   const cte =
-    `${WH_MAP()}, effective AS (
+    `${WH_MAP()}, effective AS MATERIALIZED (
        SELECT v.sloc_id, v.location_id, v.sloc_code, m.wh, coalesce(v.zone, '') AS zone,
               coalesce(v.rack_zone, '') AS rack_zone, coalesce(v.aisle, '') AS aisle,
               coalesce(v.bay, '') AS bay, coalesce(v.level, '') AS level,

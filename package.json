@@ -7,13 +7,13 @@
     "dev": "next dev",
     "build": "node scripts/clean-next.mjs && next build --webpack && node scripts/prune-standalone.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/alert-severity.test.mjs tests/occupancy-status.test.mjs tests/heatmap-page.test.mjs tests/runtime-config.test.mjs tests/movement-taxonomy.test.mjs",
+    "test": "node --test tests/alert-severity.test.mjs tests/occupancy-status.test.mjs tests/heatmap-page.test.mjs tests/runtime-config.test.mjs tests/movement-taxonomy.test.mjs tests/history-timezone.test.mjs tests/alert-message.test.mjs",
     "start": "node scripts/start-production.mjs",
     "secret:generate": "node scripts/generate-secret.mjs",
     "seed": "node scripts/seed.mjs",
     "db:init": "node scripts/seed.mjs --schema-only",
     "hash-password": "node scripts/hash-password.mjs",
-    "cron:tick": "curl -s -H \"Authorization: Bearer $CRON_SECRET\" http://localhost:3000/api/cron/tick"
+    "cron:tick": "curl -s -X POST -H \"Authorization: Bearer $CRON_SECRET\" http://localhost:3000/api/cron/tick"
   },
   "dependencies": {
     "chart.js": "^4.5.1",

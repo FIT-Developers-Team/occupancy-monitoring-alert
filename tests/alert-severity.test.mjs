@@ -37,14 +37,7 @@ new Function("require", "module", "exports", compiled)(
   moduleRecord.exports,
 );
 
-const {
-  classifyOverflow,
-  isZoneCapacityRecovered,
-  overflowReason,
-  shouldKeepSlocCapacityAlertOpen,
-  shouldTriggerSlocCapacityAlert,
-  shouldTriggerZoneCapacityAlert,
-} = moduleRecord.exports;
+const { classifyOverflow, hasExceededCapacity } = moduleRecord.exports;
 
 function classify(pct_qty, pct_cbm, policy = {}) {
   activePolicy = { ...BASE_POLICY, ...policy };
@@ -85,8 +78,6 @@ test("mixed dual-basis state is Breach without claiming both bases are over", ()
   assert.equal(verdict.severity, "EMERGENCY");
   assert.deepEqual(verdict.at_capacity, ["qty"]);
   assert.deepEqual(verdict.exceeded, ["cbm"]);
-  assert.match(overflowReason(verdict), /CBM melewati/);
-  assert.match(overflowReason(verdict), /Qty tepat/);
 });
 
 test("both bases over max remain Breach and missing bases remain explicit", () => {
@@ -101,24 +92,25 @@ test("both bases over max remain Breach and missing bases remain explicit", () =
   assert.deepEqual(unavailable.measurable, []);
 });
 
-test("zone trigger and hysteresis recovery use the same two-basis contract", () => {
-  const exact = classify(100, 100);
-  assert.equal(shouldTriggerZoneCapacityAlert(exact, 80, 100), true);
-  assert.equal(isZoneCapacityRecovered(exact, 80, 100, 3), false);
+// Kontrak pemicu setelah alert dijadikan berbasis kejadian: yang diberitakan
+// hanya lokasi yang benar-benar KELEBIHAN isi, bukan yang kebetulan penuh pas.
+// Sebuah lokasi bisa duduk berminggu-minggu tepat di angka maksimum tanpa satu
+// pun barang yang tidak punya tempat; memberitakannya membuat papan alert
+// menjadi daftar yang tidak pernah bisa dikosongkan.
+test("alert hanya dipicu ketika kapasitas benar-benar terlewati", () => {
+  assert.equal(hasExceededCapacity(classify(100, 100)), false, "tepat di max bukan alert");
+  assert.equal(hasExceededCapacity(classify(100, 80)), false, "satu basis pas di max bukan alert");
+  assert.equal(hasExceededCapacity(classify(99.9, 80)), false, "di dalam kapasitas bukan alert");
 
-  const clear = classify(99.9, 99.9);
-  assert.equal(shouldTriggerZoneCapacityAlert(clear, 99, 100), false);
-  assert.equal(isZoneCapacityRecovered(clear, 98, 100, 3), false);
-  assert.equal(isZoneCapacityRecovered(clear, 96.9, 100, 3), true);
+  assert.equal(hasExceededCapacity(classify(100.1, 80)), true, "satu basis lewat = alert");
+  assert.equal(hasExceededCapacity(classify(100.1, 120)), true, "dua basis lewat = alert");
+  assert.equal(hasExceededCapacity(classify(100, 100.1)), true, "satu lewat walau satunya pas");
 });
 
-test("SLOC creation prioritises dual max while an existing alert stays open at max", () => {
-  const dualExact = classify(100, 100);
-  const singleExact = classify(100, 80);
-  const recovered = classify(99.9, 80);
-
-  assert.equal(shouldTriggerSlocCapacityAlert(dualExact, 110), true);
-  assert.equal(shouldTriggerSlocCapacityAlert(singleExact, 110), false);
-  assert.equal(shouldKeepSlocCapacityAlertOpen(singleExact, 110), true);
-  assert.equal(shouldKeepSlocCapacityAlertOpen(recovered, 110), false);
+// Toleransi pembulatan berlaku sama untuk pemicunya: yang tampil "100,0%" di
+// layar tidak boleh diam-diam menjadi alert hanya karena angka mentahnya
+// 100,04%.
+test("pemicu memakai toleransi yang sama dengan angka di layar", () => {
+  assert.equal(hasExceededCapacity(classify(100.04, null)), false);
+  assert.equal(hasExceededCapacity(classify(100.06, null)), true);
 });

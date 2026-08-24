@@ -1,5 +1,14 @@
 "use client";
-// Papan alert per gudang + pop-up detail (sebab, dampak, tindakan, riwayat).
+// Papan alert per gudang + panel detail.
+//
+// Panel ini dulu memuat tiga blok teks: `detail` alert, lalu "Tentang aturan
+// ini", lalu "Tindakan" — dua terakhir diambil dari keterangan aturan yang
+// sama untuk setiap alert dengan rule_id yang sama. Setelah alert dijadikan
+// berbasis kejadian, `detail` sudah menyebut penyebabnya, angkanya, dan berapa
+// yang harus dipindahkan; dua blok sisanya hanya mengulang hal umum yang sudah
+// diketahui pembacanya, dan justru mendorong angka yang penting turun ke bawah
+// layar.
+import Link from "next/link";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { Alert, Severity } from "@/types";
 import { formatters, severityOrder } from "@/lib/utils";
@@ -15,13 +24,12 @@ export interface AlertEvent {
 }
 
 export default function AlertBoard({
-  alerts, events, writable, levels, ruleHints, initialId, exportGroup,
+  alerts, events, writable, levels, initialId, exportGroup,
 }: {
   alerts: Alert[];
   events: Record<string, AlertEvent[]>;
   writable: boolean;
   levels: Record<number, string>;
-  ruleHints: Record<string, { reason: string; action: string }>;
   initialId?: string;
   /** Kelompok status yang dimuat papan ini — dipakai ekspor agar cakupannya sama. */
   exportGroup?: "open" | "acknowledged" | "closed" | "all";
@@ -73,10 +81,6 @@ export default function AlertBoard({
       return tokens.every((token) => haystack.includes(token));
     });
   }, [alerts, deferredQuery, rule, severity, wh]);
-  // Penjelasan spesifik alert ini lebih dulu; keterangan aturan hanya latar
-  // belakang. Sebelumnya urutannya terbalik dan `detail` — satu-satunya tempat
-  // angka Qty/CBM sebenarnya ditulis — tidak pernah tampil sama sekali.
-  const hint = (a: Alert) => ruleHints[a.rule_id] ?? { reason: "", action: "" };
 
   const dialogTrigger = useRef<HTMLElement | null>(null);
   const openAlert = (alert: Alert) => {
@@ -234,16 +238,21 @@ export default function AlertBoard({
                     satu-satunya tempat angkanya tertulis tidak pernah terlihat. */}
                 <p className="alert-detail-body">{sel.detail}</p>
               </div>
-              {hint(sel).reason && (
-                <div>
-                  <div className="eyebrow mb-1">{t("alert.reason")}</div>
-                  <p style={{ color: "var(--text-muted)" }}>{hint(sel).reason}</p>
-                </div>
-              )}
-              {hint(sel).action && (
-                <div>
-                  <div className="eyebrow mb-1">{t("alert.action")}</div>
-                  <p style={{ color: "var(--text-muted)" }}>{hint(sel).action}</p>
+              {/* Alert kini selalu berasal dari satu pergerakan ke satu lokasi,
+                  jadi dua pertanyaan berikutnya selalu sama: "lokasinya seperti
+                  apa sekarang" dan "apa saja yang masuk ke sana". Sebelumnya
+                  keduanya menuntut orang menyalin kode SLOC lalu mencarinya
+                  sendiri di dua halaman berbeda. */}
+              {sel.sloc_code && (
+                <div className="alert-detail-links">
+                  <Link className="chip chip-accent" prefetch={false}
+                    href={`/heatmap?wh=${encodeURIComponent(sel.warehouse_code)}&sloc=${encodeURIComponent(sel.sloc_code)}`}>
+                    {t("alert.openLocation")} →
+                  </Link>
+                  <Link className="chip" prefetch={false}
+                    href={`/movements?sloc=${encodeURIComponent(sel.sloc_code)}&range=24h`}>
+                    {t("alert.openMovements")} →
+                  </Link>
                 </div>
               )}
               <div className="alert-detail-metrics">

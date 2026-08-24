@@ -240,13 +240,28 @@ async function ensureHistoryReplica(): Promise<string> {
 }
 
 /**
- * Turn the two dashboard views into real tables inside the private replica.
+ * Turn the three dashboard views into real tables inside the private replica.
  *
  * `vw_sloc` deduplicates 358k planogram rows with a window function and
  * `vw_stock_latest` re-scans 1.7M history rows for the newest snapshot — on
  * every query. Measured against this database, paying that once per snapshot
  * instead cuts the warehouse scope query by 70% and the trend and zone queries
  * by about a fifth, for ~1.4s of one-off work per sync.
+ *
+ * KENAPA `vw_movement` IKUT, MESKI PALING MAHAL
+ * ---------------------------------------------
+ * `vw_movement` menghitung md5 atas tiga belas kolom untuk SETIAP baris
+ * `movement_events`, lalu men-dedup hasilnya dengan fungsi window — dan itu
+ * dibayar ulang pada setiap kueri. Halaman Pergerakan menembakkan EMPAT kueri
+ * untuk satu tampilan (baris, ringkasan, aktivitas, per gudang), dan antrean di
+ * bawah menjalankannya berurutan, jadi biayanya berlipat empat pada setiap
+ * klik: ganti halaman, ganti urutan, ubah filter. Terukur pada basis data ini —
+ * 356 ribu baris movement — satu tarikan penuh memakan 6–10 detik.
+ *
+ * Setelah dijadikan tabel, kueri yang sama turun ke bawah 0,05 detik. Harganya
+ * ~7 detik kerja sekali per snapshot dan ~50 MB pada salinan sementara. Itu
+ * pertukaran yang jelas menguntungkan: snapshot berganti paling cepat sepuluh
+ * menit sekali, sedangkan klik pada halaman Pergerakan terjadi terus-menerus.
  *
  * The replica is a disposable process-local copy, so writing to it cannot
  * affect the source database or the sync worker. Failure is non-fatal: the
@@ -264,6 +279,16 @@ async function materialiseReplicaViews(file: string): Promise<void> {
        CREATE OR REPLACE VIEW vw_sloc AS SELECT * FROM _sloc_current;
        CREATE OR REPLACE TABLE _stock_current AS SELECT * FROM vw_stock_latest;
        CREATE OR REPLACE VIEW vw_stock_latest AS SELECT * FROM _stock_current;
+       CHECKPOINT;`,
+    );
+    // Dijalankan terpisah supaya kegagalannya — misalnya pada instalasi baru
+    // yang belum pernah menyinkronkan movement sama sekali, sehingga
+    // `movement_events` belum ada — tidak ikut membatalkan materialisasi dua
+    // view di atas yang sudah berhasil.
+    await execAsync(
+      db,
+      `CREATE OR REPLACE TABLE _movement_current AS SELECT * FROM vw_movement;
+       CREATE OR REPLACE VIEW vw_movement AS SELECT * FROM _movement_current;
        CHECKPOINT;`,
     );
   } catch (error) {

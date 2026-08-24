@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getWarehouseDashboard, getIntegrity, getOccupancyScopeQuality } from "@/lib/queries";
+import { getWarehouseDashboard, getOccupancyScopeQuality } from "@/lib/queries";
 import { thresholdsFor } from "@/lib/config";
 import { listAlerts, activeCountsBySeverity } from "@/lib/alerts/store";
 import { getBasisMode } from "@/lib/basis";
@@ -23,9 +23,8 @@ const STATUS_RANK = { BREACH: 0, CRITICAL: 1, WARNING: 2, MONITOR: 3, NORMAL: 4 
 export default async function ExecutivePage() {
   const [mode, t, lang] = await Promise.all([getBasisMode(), getT(), getLang()]);
   const f = formatters(lang);
-  const [warehouseData, integrity, active, counts, scopeQuality] = await Promise.all([
+  const [warehouseData, active, counts, scopeQuality] = await Promise.all([
     getWarehouseDashboard(),
-    getIntegrity().catch(() => []),
     listAlerts({ status: ["NEW", "NOTIFIED", "ACKNOWLEDGED"], limit: 6 }),
     activeCountsBySeverity(),
     getOccupancyScopeQuality(),
@@ -45,8 +44,6 @@ export default async function ExecutivePage() {
   const totalActive = Object.values(counts).reduce((a, b) => a + b, 0);
   const worstSev =
     (["EMERGENCY", "CRITICAL", "HIGH", "WARNING", "INFO"] as const).find((s) => counts[s]) ?? null;
-  const integrityAvg = integrity.length
-    ? integrity.reduce((s, r) => s + r.integrity_pct, 0) / integrity.length : null;
   const unzonedActive = scopeQuality.reduce((n, r) => n + r.active_without_zone, 0);
   const unmappedStock = scopeQuality.reduce((n, r) => n + r.stock_without_operational_sloc, 0);
   const topRisk = [...sums].sort((a, b) => {
@@ -69,7 +66,7 @@ export default async function ExecutivePage() {
     <div className="dashboard-page">
       <PageHeader title={t("exec.title")} />
 
-      <div className="metric-strip metric-strip-five">
+      <div className="metric-strip metric-strip-four">
         <KpiCard label={t("exec.qtyOcc")} value={netQ === null ? "—" : f.pct(netQ)} tone={tone(netQ)}
           sub={`${f.num(qOcc)} / ${f.num(qCap)} ${t("common.unit")}`} />
         {/* Penyebutnya kapasitas efektif (sudah dikali utilisasi volume);
@@ -81,9 +78,6 @@ export default async function ExecutivePage() {
         <KpiCard label={t("exec.activeAlerts")} value={f.num(totalActive)}
           tone={worstSev ? SEVERITY_TONE[worstSev] : "normal"}
           sub={worstSev ? worstSev : t("common.none")} />
-        <KpiCard label={t("exec.integrity")} value={integrityAvg === null ? "—" : f.pct(integrityAvg)}
-          tone={integrityAvg !== null && integrityAvg < 95 ? "warning" : "teal"}
-          sub={`${sums.length} ${t("common.warehouse").toLowerCase()}`} />
       </div>
 
       <div className="context-note">

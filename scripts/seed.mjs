@@ -268,33 +268,7 @@ async function main() {
   }
   await insert(db, "stock_history", cols, rows);
 
-  // -- 3) cycle_count (integritas) -------------------------------------------
-  const [latestAgg] = [null];
-  const sysMap = new Map();
-  const agg = await run(db,
-    `SELECT sloc_code, sum(stock_qty) qty FROM vw_stock_latest
-     WHERE status = 'Available' AND sloc_code IS NOT NULL GROUP BY 1`);
-  for (const r of agg) sysMap.set(r.sloc_code, Number(r.qty));
-  const cc = [];
-  let ccId = 9000;
-  const yesterday = new Date(NOW.getTime() - 24 * H).toISOString().slice(0, 10);
-  for (const code of ["PGS", "BGO", "BIT"]) {
-    const sample = slocs.filter((s) => s.wh === code && !s.staging && rand() < 0.3);
-    let phantom = code === "PGS" ? 2 : 1, ghost = code === "BGO" ? 2 : 0;
-    for (const s of sample) {
-      ccId++;
-      const sys = Math.round(sysMap.get(s.code) ?? 0);
-      let phys = sys;
-      if (sys > 10 && phantom > 0 && rand() < 0.1) { phys = 0; phantom--; }
-      else if (sys === 0 && ghost > 0 && rand() < 0.25) { phys = Math.round(between(8, 30)); ghost--; }
-      else if (rand() < 0.1 && sys > 5) phys = sys + Math.round(between(-0.12, 0.12) * sys);
-      else phys = sys + Math.round(between(-0.02, 0.02) * sys);
-      cc.push([q(`CC-${ccId}`), q(yesterday), q(s.code), sys, Math.max(0, phys)]);
-    }
-  }
-  await insert(db, "cycle_count", ["count_id","count_date","sloc_code","system_qty","physical_qty"], cc);
-
-  // -- 4) movement (Recent movements, dataset 705) ---------------------------
+  // -- 3) movement (Recent movements, dataset 705) ---------------------------
   // Aksi sengaja ditulis dengan ejaan yang berbeda-beda — persis seperti data
   // asli, di mana satu kegiatan yang sama muncul sebagai "Putaway", "PUT_AWAY",
   // dan "Penempatan". Demo ini yang membuktikan standardisasi tipe di

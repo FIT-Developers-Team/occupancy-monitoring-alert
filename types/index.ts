@@ -87,37 +87,55 @@ export interface RackZoneSummary {
   status_bin: OccupancyStatus;
 }
 
+/**
+ * Satu titik lintasan okupansi.
+ *
+ * Disusun ulang dari pergerakan stok, bukan dibaca dari deretan snapshot:
+ * tabel snapshot pada instalasi ini hanya pernah memuat satu snapshot, sehingga
+ * tren berbasis snapshot selalu berupa satu titik per gudang. Lihat
+ * loadWarehouseProjections() untuk cara penyusunannya.
+ *
+ * Jumlah SKU dan jumlah bin terisi tidak ada di sini karena keduanya tidak
+ * dapat disusun ulang dari pergerakan — pergerakan tahu berapa unit yang
+ * berpindah, bukan berapa lokasi yang berubah dari kosong menjadi terisi.
+ */
 export interface TrendPoint {
   t: string;
   warehouse: string;
-  pct: number;      // basis kebijakan WH
-  pct_qty: number;
-  pct_cbm: number;
-  pct_bin: number;  // % SLOC terisi
-  qty: number;      // total unit (utk laju qty)
-  sku: number;      // SKU aktif (utk laju sku)
-  bins: number;     // jumlah SLOC terisi
+  pct: number;             // basis kebijakan WH
+  pct_qty: number | null;
+  pct_cbm: number | null;
+  qty: number;             // total unit pada titik itu
 }
 
+/**
+ * Satu baris proyeksi, dihitung dari PERGERAKAN.
+ *
+ * Laju SKU dan laju bin sengaja tidak ada di sini. Keduanya hanya dapat dihitung
+ * dari deretan snapshot stok, dan tabel snapshot pada instalasi ini selalu
+ * berisi satu snapshot saja — angka yang dulu tampil di kolom itu selalu nol.
+ * Menghapusnya lebih jujur daripada menampilkan kolom yang tidak akan pernah
+ * terisi; lihat loadForecastRows() untuk seluruh alasannya.
+ */
 export interface ForecastRow {
   warehouse: string;
   name: string;
   basis: Basis;
   current_pct: number;
+  /** Δ okupansi %/jam pada basis kebijakan. */
   rate_pct_per_hour: number;
   qty_now: number;                 // total unit (basis-valid)
-  sku_now: number;                 // SKU aktif
-  qty_rate_per_hour: number;       // Δ unit/jam (WMA)
-  sku_rate_per_hour: number;       // Δ SKU/jam (WMA)
-  bin_rate_per_hour: number;       // Δ SLOC terisi/jam
+  /** Masuk − keluar per jam, DALAM SATUAN BASIS — sama dengan in_rate/out_rate. */
+  net_rate: number;
   bins_now: number;                // SLOC terisi sekarang
   sloc_total: number;              // SLOC aktif
   cap_basis: number;               // kapasitas efektif pada basis kebijakan
-  in_rate: number;                 // inbound per jam (metrik basis)
-  out_rate: number;                // outbound per jam (metrik basis)
+  in_rate: number;                 // inbound per jam (satuan basis)
+  out_rate: number;                // outbound per jam (satuan basis)
   flow_unit: string;               // "unit" | "m³"
   hours_to_95: number | null;
   hours_to_100: number | null;
+  /** Jumlah jam pergerakan yang menopang angka di atas. */
   history_points: number;
   history_span_hours: number;
   forecast_ready: boolean;

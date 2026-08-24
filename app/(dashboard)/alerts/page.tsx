@@ -14,17 +14,6 @@ import { pageTitle } from "@/lib/page-metadata";
 export const dynamic = "force-dynamic";
 export const generateMetadata = pageTitle("nav.alerts");
 
-const RULE_HINT_IDS = [
-  "R01", "R02", "R03", "R04", "R05", "R06", "R07",
-  "R08", "R09", "R10", "R11", "R12", "R13", "R14",
-] as const;
-const OCCUPANCY_RULE_IDS = [
-  "OCC-MONITOR", "OCC-WARNING", "OCC-CRITICAL", "OCC-BREACH",
-  // OCC-SLOC-BREACH sebelumnya tidak terdaftar, jadi setiap alert lokasi jatuh
-  // ke teks fallback generik alih-alih penjelasan aturannya sendiri.
-  "OCC-ZONE-BREACH", "OCC-SLOC-BREACH",
-] as const;
-
 export default async function AlertsPage(
   { searchParams }: { searchParams: Promise<{ id?: string }> }
 ) {
@@ -45,24 +34,6 @@ export default async function AlertsPage(
   const evMap: Record<string, AlertEvent[]> = {};
   for (const e of evs) (evMap[e.alert_id] ??= []).push(e as AlertEvent);
 
-  const hints: Record<string, { reason: string; action: string }> = {};
-  for (const ruleId of [...RULE_HINT_IDS, ...OCCUPANCY_RULE_IDS]) {
-    hints[ruleId] = {
-      reason: t(`alert.rule.${ruleId}.reason`),
-      action: t(`alert.rule.${ruleId}.action`),
-    };
-  }
-  const runtimeRuleIds = new Set([
-    ...open.map((alert) => alert.rule_id),
-    ...acked.map((alert) => alert.rule_id),
-  ]);
-  for (const ruleId of runtimeRuleIds) {
-    hints[ruleId] ??= {
-      reason: t("alert.rule.fallback.reason").replace("{rule}", ruleId),
-      action: t("alert.rule.fallback.action"),
-    };
-  }
-
   return (
     <div className="dashboard-page">
       <PageHeader
@@ -79,11 +50,11 @@ export default async function AlertsPage(
 
       <Section eyebrow={`${open.length}`} title={t("alert.open")}>
         <AlertBoard alerts={open} events={evMap} writable={writable} levels={levels}
-          ruleHints={hints} initialId={id} exportGroup="open" />
+          initialId={id} exportGroup="open" />
       </Section>
 
       <Section eyebrow={`${acked.length}`} title={t("alert.ack")}>
-        <AlertBoard alerts={acked} events={evMap} writable={writable} levels={levels} ruleHints={hints}
+        <AlertBoard alerts={acked} events={evMap} writable={writable} levels={levels}
           exportGroup="acknowledged" />
       </Section>
 

@@ -103,11 +103,6 @@ QUALIFY row_number() OVER (
     ORDER BY updated_at DESC NULLS LAST, _synced_at DESC NULLS LAST
 ) = 1;
 
-CREATE TABLE IF NOT EXISTS cycle_count (
-  count_id VARCHAR, count_date DATE, sloc_code VARCHAR,
-  system_qty DOUBLE, physical_qty DOUBLE
-);
-
 CREATE TABLE IF NOT EXISTS _sync_audit (
   job VARCHAR, mode VARCHAR, started_at TIMESTAMP, finished_at TIMESTAMP,
   rows_pulled BIGINT, rows_written BIGINT, watermark VARCHAR,

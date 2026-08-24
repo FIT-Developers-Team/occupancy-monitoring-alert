@@ -90,7 +90,10 @@ const r14Lost: Evaluator = async (ctx) => {
      FROM vw_stock_latest s
      JOIN wh_map m ON m.location_id = s.location_id
      WHERE s.status = 'Lost' AND s.stock_qty > 0
-     GROUP BY 1, 3, 4`
+     -- m.wh harus ikut dikelompokkan. Tanpa itu DuckDB menolak kuerinya
+     -- ("column \"wh\" must appear in the GROUP BY clause"), jadi rule ini
+     -- akan gagal total pada pemanggilan pertamanya.
+     GROUP BY 1, 2, 3, 4`
   );
   return rows.map((r) => ({
     rule_id: "R14", rule_name: "Stok Lost Terdeteksi", severity: ctx.severity,

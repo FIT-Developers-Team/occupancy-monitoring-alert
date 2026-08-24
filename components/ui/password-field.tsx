@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n-client";
 
 export default function PasswordField({
   id,
@@ -21,7 +22,15 @@ export default function PasswordField({
   required?: boolean;
   hint?: string;
 }) {
+  const { t } = useT();
   const [visible, setVisible] = useState(false);
+  // Tombol ini muncul di halaman masuk, tepat di sebelah pemilih bahasa, dan
+  // teksnya sebelumnya selalu Bahasa Indonesia — jadi hal pertama yang dilihat
+  // pengguna English setelah memilih bahasanya adalah kata yang tidak ikut
+  // berganti.
+  const action = visible ? t("field.hide") : t("field.show");
+  const describe = (visible ? t("field.hideValue") : t("field.showValue"))
+    .replace("{field}", label.toLocaleLowerCase());
   return (
     <label className="block space-y-1" htmlFor={id}>
       <span className="eyebrow">{label}</span>
@@ -42,9 +51,9 @@ export default function PasswordField({
           className="password-toggle"
           onClick={() => setVisible((current) => !current)}
           aria-pressed={visible}
-          aria-label={visible ? `Sembunyikan ${label.toLowerCase()}` : `Tampilkan ${label.toLowerCase()}`}
+          aria-label={describe}
         >
-          {visible ? "Sembunyikan" : "Tampilkan"}
+          {action}
         </button>
       </span>
       {hint && <span className="field-hint">{hint}</span>}

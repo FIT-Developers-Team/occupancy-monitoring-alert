@@ -46,8 +46,19 @@ const ThresholdSchema = z.object({
    */
   sloc_alerts: z.object({
     enabled: z.boolean().default(true),
-    min_pct: z.number().min(100).max(1000).default(110),
+    /**
+     * Seberapa jauh ke belakang pergerakan diperiksa bila jam evaluasi terakhir
+     * tidak diketahui — misalnya pada tick pertama sesudah deploy. Pada operasi
+     * normal jendelanya mengikuti jarak ke evaluasi sebelumnya, bukan angka ini.
+     */
+    window_hours: z.number().min(0.25).max(24).default(1),
     max_alerts: z.number().int().min(1).max(200).default(20),
+    /**
+     * Tidak lagi dipakai. Dipertahankan supaya konfigurasi lama tetap terbaca
+     * tanpa membuat aplikasi gagal start: pemicunya kini adalah pergerakan yang
+     * membuat sebuah lokasi melewati kapasitas, bukan ambang volume notifikasi.
+     */
+    min_pct: z.number().min(100).max(1000).default(110),
   }).default({}),
   /**
    * Bagaimana kelebihan kapasitas diterjemahkan menjadi tingkat keparahan.

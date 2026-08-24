@@ -49,7 +49,7 @@ export const CAPACITY_MATCH_TOLERANCE_PCT = 0.05;
 /** max_qty/max_cbm efektif adalah 100%; kebijakan alert tidak boleh menggesernya. */
 export const CAPACITY_LIMIT_PCT = 100;
 
-/** Bentuk masukan yang sama untuk zona (ZoneSummary) dan lokasi (DenseSloc). */
+/** Bentuk masukan yang sama untuk setiap bacaan okupansi dua basis. */
 export interface BasisReading {
   /** Okupansi Qty (%); null berarti kapasitas Qty tidak sahih/tidak ada. */
   pct_qty: number | null;
@@ -170,99 +170,20 @@ export function classifyOverflow(reading: BasisReading): OverflowVerdict {
   };
 }
 
-/** Qty dan CBM sama-sama mencapai kapasitas — dua pengukuran independen sepakat. */
-export function isDualBasis(verdict: OverflowVerdict): boolean {
-  return verdict.reached.length >= 2;
-}
-
-/** Mencapai kapasitas tanpa satu basis pun melebihinya (tepat di angka maksimum). */
-export function isAtCapacityOnly(verdict: OverflowVerdict): boolean {
-  return verdict.reached.length > 0 && verdict.exceeded.length === 0;
-}
-
-/** Zona memicu alert bila salah satu basis mencapai max atau ambang breach tercapai. */
-export function shouldTriggerZoneCapacityAlert(
-  verdict: OverflowVerdict,
-  policyPct: number,
-  breachPct: number,
-): boolean {
-  return verdict.reached.length > 0 || policyPct >= breachPct;
-}
-
 /**
- * Zona baru pulih sesudah seluruh basis turun dari max DAN basis kebijakan
- * melewati sisi bawah hysteresis. Pemicu dan pemulihan sengaja tidak simetris
- * satu angka agar nilai yang berosilasi dekat batas tidak membuka/menutup alert
- * pada setiap tick.
- */
-export function isZoneCapacityRecovered(
-  verdict: OverflowVerdict,
-  policyPct: number,
-  breachPct: number,
-  hysteresisBufferPct: number,
-): boolean {
-  return verdict.reached.length === 0
-    && policyPct < breachPct - hysteresisBufferPct;
-}
-
-/** Dua basis di max selalu memicu; satu basis tetap mengikuti pengendali volume. */
-export function shouldTriggerSlocCapacityAlert(
-  verdict: OverflowVerdict,
-  minPct: number,
-): boolean {
-  return isDualBasis(verdict) || (verdict.worstPct ?? 0) >= minPct;
-}
-
-/**
- * Alert lokasi yang sudah terbuka dipertahankan selama basis mana pun masih
- * penuh, meski bacaan turun dari 110% ke 100%. Ini mencegah alert yang sama
- * tutup lalu terbuka lagi akibat fluktuasi kecil di batas fisik.
- */
-export function shouldKeepSlocCapacityAlertOpen(
-  verdict: OverflowVerdict,
-  minPct: number,
-): boolean {
-  return verdict.reached.length > 0 || (verdict.worstPct ?? 0) >= minPct;
-}
-
-const BASIS_LABEL: Record<Basis, string> = { qty: "Qty", cbm: "CBM" };
-
-/** "Qty dan CBM" / "Qty" — daftar basis yang enak dibaca di kalimat. */
-export function basisNames(bases: Basis[]): string {
-  return bases.map((basis) => BASIS_LABEL[basis]).join(" dan ");
-}
-
-/**
- * Batas kapasitas sebagaimana disebut dalam kalimat.
+ * Alert kapasitas hanya dibuat ketika sebuah basis benar-benar MELEWATI
+ * kapasitas.
  *
- * 100% berarti "sama dengan kapasitas maksimum yang disetel". Angka ini adalah
- * batas fisik hasil max_qty/max_cbm efektif, bukan ambang operasional yang dapat
- * digeser dari halaman Pengaturan.
+ * Isi yang PERSIS sama dengan angka maksimum bukan kejadian yang perlu
+ * membangunkan orang: lokasinya penuh, tidak boleh menerima inbound lagi, dan
+ * itu sudah terbaca di heatmap sebagai Kritis. Yang layak diberitakan adalah
+ * saat ada barang yang benar-benar tidak punya tempat — dan itulah yang
+ * diperiksa di sini.
+ *
+ * Pembeda tepat-di-max versus melewati-max tetap hidup di classifyOverflow()
+ * karena tangga keparahannya masih memakai keduanya; yang berubah hanya
+ * ambang untuk memberitakannya.
  */
-function capacityMark(overPct: number): string {
-  return overPct === 100 ? "kapasitas maksimum" : `${overPct}% kapasitas`;
-}
-
-/** Ringkasan satu baris untuk teks alert dan tooltip. */
-export function overflowReason(verdict: OverflowVerdict): string {
-  const mark = capacityMark(verdict.overPct);
-  const reached = basisNames(verdict.reached);
-  switch (verdict.kind) {
-    case "dual_over":
-      return `Qty dan CBM sama-sama melewati ${mark} (> ${verdict.overPct}%).`;
-    case "dual_mixed":
-      return `${basisNames(verdict.exceeded)} melewati ${mark}, sementara ${basisNames(verdict.at_capacity)} tepat di ${mark}; Qty dan CBM sama-sama sudah mencapai batas.`;
-    case "dual_at_capacity":
-      return `Qty dan CBM sama-sama tepat di ${mark} — isinya persis sama dengan angka maksimum yang disetel, jadi lokasinya penuh meski belum ada yang melebihi.`;
-    case "single_over":
-      return `${reached} melewati ${mark} (> ${verdict.overPct}%), basis lainnya masih di dalam kapasitas.`;
-    case "single_at_capacity":
-      return `${reached} tepat di ${mark}, basis lainnya masih di dalam kapasitas.`;
-    case "single_measurable_over":
-      return `${reached} melewati ${mark} (> ${verdict.overPct}%). Hanya basis ini yang punya kapasitas sahih, sehingga kondisi "Qty dan CBM sama-sama lewat" tidak dapat dibuktikan — atur kapasitas basis lainnya di Pengaturan agar penilaiannya lengkap.`;
-    case "single_measurable_at_capacity":
-      return `${reached} tepat di ${mark}. Hanya basis ini yang punya kapasitas sahih, sehingga kondisi "Qty dan CBM sama-sama penuh" tidak dapat dibuktikan — atur kapasitas basis lainnya di Pengaturan agar penilaiannya lengkap.`;
-    default:
-      return `Melewati ambang breach, tetapi belum ada basis yang mencapai ${mark} (< ${verdict.overPct}%).`;
-  }
+export function hasExceededCapacity(verdict: OverflowVerdict): boolean {
+  return verdict.exceeded.length > 0;
 }

@@ -504,16 +504,24 @@ export default function MovementExplorer({
               </thead>
               <tbody>
                 {rows.map((row) => (
-                  <tr
-                    key={row.movement_uid}
-                    className="row-link"
-                    tabIndex={0}
-                    onClick={() => openRow(row)}
-                    onKeyDown={(event) => event.key === "Enter" && openRow(row)}
-                  >
+                  // Barisnya tetap sebuah baris tabel. Yang dapat difokus adalah
+                  // tombol di sel pertama — bukan `<tr>` ber-tabIndex seperti
+                  // sebelumnya, yang membuat pembaca layar mengumumkan sebuah
+                  // baris tanpa pernah menyebut bahwa ia dapat dibuka, dan hanya
+                  // menanggapi Enter sementara Space tidak melakukan apa-apa.
+                  // Klik di mana pun pada baris tetap bekerja untuk pengguna tetikus.
+                  <tr key={row.movement_uid} className="row-link" onClick={() => openRow(row)}>
                     <td className="num mvx-time">
-                      <span>{f.dateTime(row.at)}</span>
-                      <small>{relative(row.at)}</small>
+                      <button
+                        type="button"
+                        className="row-open"
+                        aria-haspopup="dialog"
+                        aria-label={`${t("mv.detail.title")}: ${row.product_name || row.sku_number || row.movement_uid}`}
+                        onClick={(event) => { event.stopPropagation(); openRow(row); }}
+                      >
+                        <span>{f.dateTime(row.at)}</span>
+                        <small>{relative(row.at)}</small>
+                      </button>
                     </td>
                     {!lockedWh && <td className="num">{row.wh}</td>}
                     <td>

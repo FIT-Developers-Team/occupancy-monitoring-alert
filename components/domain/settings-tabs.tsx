@@ -44,7 +44,14 @@ interface Thresholds {
   default: { monitor: number; warning: number; critical: number; breach: number; hysteresis_buffer: number };
   overrides: Record<string, Partial<{ monitor: number; warning: number; critical: number; breach: number; hysteresis_buffer: number }>>;
   /** Ditulis balik apa adanya saat menyimpan; hanya blok di bawah yang diedit. */
-  sloc_alerts?: { enabled: boolean; min_pct: number; max_alerts: number };
+  sloc_alerts?: {
+    enabled: boolean;
+    /** Jendela pergerakan yang diperiksa tiap evaluasi (jam). */
+    window_hours: number;
+    max_alerts: number;
+    /** Tidak lagi dipakai; dipertahankan agar konfigurasi lama tetap terbaca. */
+    min_pct: number;
+  };
   overflow_severity?: OverflowSeverity;
 }
 

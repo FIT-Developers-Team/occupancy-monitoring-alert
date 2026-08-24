@@ -18,11 +18,24 @@ export default async function ForecastPage() {
   const [rows, t, lang] = await Promise.all([getForecastRows(), getT(), getLang()]);
   const f = formatters(lang);
   const sorted = [...rows].sort((a, b) => (a.hours_to_95 ?? 1e9) - (b.hours_to_95 ?? 1e9));
+  // Jendelanya diikat ke pergerakan terbaru, bukan ke jam sekarang, supaya
+  // sinkron yang tertinggal tidak mengosongkan halaman. Konsekuensinya harus
+  // terlihat: tanpa stempel ini, proyeksi dari data dua hari lalu terbaca sama
+  // persis dengan proyeksi dari data satu menit lalu.
+  const dataThrough = rows
+    .map((row) => row.trend[row.trend.length - 1]?.t)
+    .filter(Boolean)
+    .sort()
+    .pop();
   return (
     <div className="dashboard-page">
       <PageHeader eyebrow={t("fc.method")} title={t("fc.title")}
         actions={<ExportExcelButton dataset="forecast" />} />
-      <Section eyebrow={t("fc.method")} title={t("fc.horizon")}>
+      <Section
+        eyebrow={dataThrough
+          ? `${t("fc.basedOn")} · ${t("fc.dataThrough")} ${f.dateTime(dataThrough)}`
+          : t("fc.basedOn")}
+        title={t("fc.horizon")}>
         <div className="forecast-table-wrap">
           <table className="tbl forecast-table">
             <thead>
@@ -30,10 +43,10 @@ export default async function ForecastPage() {
                 <th>{t("common.warehouse")}</th>
                 <th className="text-right">{t("common.occupancy")}</th>
                 <th className="text-right">Bin</th>
+                <th className="text-right">{t("fc.inbound")}</th>
+                <th className="text-right">{t("fc.outbound")}</th>
+                <th className="text-right">{t("fc.net")}</th>
                 <th className="text-right">{t("fc.rate")}</th>
-                <th className="text-right">{t("fc.rateQty")}</th>
-                <th className="text-right">{t("fc.rateSku")}</th>
-                <th className="text-right">{t("fc.rateBin")}</th>
                 <th>{t("fc.to95")}</th><th>{t("fc.to100")}</th>
               </tr>
             </thead>
@@ -50,16 +63,22 @@ export default async function ForecastPage() {
                   <td className="num text-right" title={`${r.bins_now}/${r.sloc_total}`}>
                     {f.pct(r.sloc_total ? (r.bins_now / r.sloc_total) * 100 : 0)}
                   </td>
+                  {/* Masuk, keluar, dan selisihnya — tiga angka yang menyusun laju
+                      di kolom berikutnya, ditampilkan supaya proyeksinya dapat
+                      ditelusuri alih-alih hanya dipercaya. */}
+                  <td className="num text-right" style={{ color: "var(--st-warning-fg)" }}>
+                    {r.forecast_ready ? `+${f.num(r.in_rate, r.flow_unit === "unit" ? 0 : 3)}` : "—"}
+                  </td>
+                  <td className="num text-right" style={{ color: "var(--st-normal-fg)" }}>
+                    {r.forecast_ready ? `−${f.num(r.out_rate, r.flow_unit === "unit" ? 0 : 3)}` : "—"}
+                  </td>
+                  <td className="num text-right font-semibold"
+                    title={`${f.num(r.qty_now)} ${t("common.unit")}`}>
+                    {r.forecast_ready
+                      ? signed(f, r.net_rate, r.flow_unit === "unit" ? 0 : 3)
+                      : "—"}
+                  </td>
                   <td className="num text-right">{r.forecast_ready ? `${signed(f, r.rate_pct_per_hour, 3)}%` : "—"}</td>
-                  <td className="num text-right" title={`${f.num(r.qty_now)} ${t("common.unit")}`}>
-                    {r.forecast_ready ? signed(f, r.qty_rate_per_hour) : "—"}
-                  </td>
-                  <td className="num text-right" title={`${f.num(r.sku_now)} SKU`}>
-                    {r.forecast_ready ? signed(f, r.sku_rate_per_hour) : "—"}
-                  </td>
-                  <td className="num text-right" title={`${r.bins_now} ${t("common.filled").toLowerCase()}`}>
-                    {r.forecast_ready ? signed(f, r.bin_rate_per_hour, 2) : "—"}
-                  </td>
                   <td>
                     <span className="chip num" style={r.hours_to_95 !== null && r.hours_to_95 < 12
                       ? { borderColor: "var(--st-critical-fg)", color: "var(--st-critical-fg)", background: "var(--st-critical-bg)" }

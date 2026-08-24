@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useT } from "@/lib/i18n-client";
+import { trapFocus } from "@/lib/focus-trap";
 
 type ItemGroup = "pages" | "warehouses" | "actions" | "data";
 
@@ -27,9 +28,36 @@ export default function CommandPalette({
   const [idx, setIdx] = useState(0);
   const [dataItems, setDataItems] = useState<Item[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const debRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Elemen yang membuka palette, supaya fokus dapat dikembalikan ke sana.
+   *
+   * Palette dapat dibuka dari tombol di topbar maupun dari ⌘K di tengah
+   * halaman mana pun. Menutupnya tanpa mengembalikan fokus membuang pengguna
+   * keyboard kembali ke `<body>`: Tab berikutnya memulai lagi dari tautan
+   * pertama di halaman, jauh dari tempat mereka tadi bekerja.
+   */
+  const openerRef = useRef<HTMLElement | null>(null);
 
-  const close = useCallback(() => { setOpen(false); setQ(""); setDataItems([]); setIdx(0); }, []);
+  const close = useCallback(() => {
+    setOpen(false);
+    setQ("");
+    setDataItems([]);
+    setIdx(0);
+    const opener = openerRef.current;
+    openerRef.current = null;
+    // Setelah React melepas dialognya, bukan sebelumnya — kalau tidak, elemen
+    // yang menerima fokus masih tertutup panel yang sedang dibongkar.
+    requestAnimationFrame(() => opener?.focus());
+  }, []);
+
+  const openPalette = useCallback(() => {
+    openerRef.current = document.activeElement as HTMLElement | null;
+    setOpen(true);
+    setQ("");
+    setIdx(0);
+  }, []);
 
   // Sinyal yang sama dengan tombol basis di topbar. Tanpa `wiom:basis`,
   // mengganti basis dari palette hanya merender ulang komponen server:
@@ -49,7 +77,6 @@ export default function CommandPalette({
     { id: "p-fc", group: "pages", label: t("nav.forecast"), hint: t("palette.forecast"), href: "/forecast" },
     { id: "p-dens", group: "pages", label: t("nav.density"), hint: t("palette.priority"), href: "/density" },
     { id: "p-al", group: "pages", label: t("nav.alerts"), hint: t("palette.alertWork"), href: "/alerts" },
-    { id: "p-int", group: "pages", label: t("nav.integrity"), hint: t("palette.dataQuality"), href: "/integrity" },
     { id: "p-aud", group: "pages", label: t("nav.audit"), hint: t("palette.auditLog"), href: "/audit" },
     { id: "p-gd", group: "pages", label: t("nav.guide"), hint: t("palette.guide"), href: "/guide" },
     { id: "p-set", group: "pages", label: t("nav.settings"), hint: t("palette.configuration"), href: "/settings" },
@@ -137,12 +164,33 @@ export default function CommandPalette({
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setOpen((o) => { if (o) close(); return !o; });
+        if (open) close(); else openPalette();
       } else if (e.key === "Escape" && open) close();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, close]);
+  }, [open, close, openPalette]);
+
+  /**
+   * Sorotan hasil harus selalu terlihat.
+   *
+   * Daftarnya bergulir di dalam kotak setinggi 52vh, sementara panah bawah
+   * hanya memindahkan indeks. Tanpa ini, menekan panah beberapa kali
+   * memindahkan pilihan ke baris yang sudah berada di luar layar: Enter
+   * membuka sesuatu yang tidak sedang dilihat siapa pun.
+   */
+  useEffect(() => {
+    if (!open) return;
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-palette-index="${idx}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [idx, open]);
+
+  // Hasil menyusut saat pencarian dipersempit atau saat hasil data tiba.
+  // Indeks yang tertinggal di luar batas membuat Enter tidak melakukan apa pun.
+  useEffect(() => {
+    setIdx((current) => (current > results.length - 1 ? Math.max(0, results.length - 1) : current));
+  }, [results.length]);
 
   useEffect(() => {
     if (!open) return;
@@ -164,7 +212,7 @@ export default function CommandPalette({
         type="button"
         className="chip shrink-0"
         aria-label={t("palette.open")}
-        onClick={() => { setOpen(true); setQ(""); setIdx(0); }}
+        onClick={openPalette}
       >
         <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" strokeLinecap="round" />
@@ -183,6 +231,10 @@ export default function CommandPalette({
             aria-modal="true"
             aria-label={t("palette.open")}
             onMouseDown={(e) => e.stopPropagation()}
+            // `aria-modal` hanyalah janji; tanpa jebakan fokus Tab menembus ke
+            // tabel dan tombol di belakang panel. Modul yang sama sudah dipakai
+            // panel heatmap, alert, pergerakan, dan penjelajah SLOC.
+            onKeyDown={trapFocus}
           >
             <div className="flex items-center gap-2 px-4"
               style={{ borderBottom: "1px solid var(--border)" }}>
@@ -192,6 +244,16 @@ export default function CommandPalette({
               <input
                 ref={inputRef}
                 aria-label={t("palette.open")}
+                // Pola combobox baku: fokus tetap di kotak ketik, panah hanya
+                // memindahkan sorotan, dan pembaca layar mengumumkan baris yang
+                // sedang disorot lewat `aria-activedescendant`. Sebelumnya
+                // sorotan itu murni visual — pengguna pembaca layar menekan
+                // Enter tanpa pernah diberi tahu apa yang akan terbuka.
+                role="combobox"
+                aria-expanded
+                aria-controls="palette-results"
+                aria-autocomplete="list"
+                aria-activedescendant={results[idx] ? `palette-option-${idx}` : undefined}
                 className="w-full bg-transparent py-3 text-sm outline-none"
                 style={{ color: "var(--text)" }}
                 placeholder={t("palette.placeholder")}
@@ -205,15 +267,29 @@ export default function CommandPalette({
               />
               <span className="kbd shrink-0">esc</span>
             </div>
-            <div className="max-h-[52vh] overflow-y-auto py-1">
+            <div
+              ref={listRef}
+              id="palette-results"
+              role="listbox"
+              aria-label={t("palette.open")}
+              className="max-h-[52vh] overflow-y-auto py-1"
+            >
               {grouped.map(({ group, items }) => (
-                <div key={group}>
-                  <div className="eyebrow px-4 pb-1 pt-2.5">{groupLabel[group]}</div>
+                <div key={group} role="group" aria-label={groupLabel[group]}>
+                  <div className="eyebrow px-4 pb-1 pt-2.5" aria-hidden>{groupLabel[group]}</div>
                   {items.map((r) => {
                     const flatIndex = results.indexOf(r);
                     const active = flatIndex === idx;
                     return (
                       <button key={r.id}
+                        id={`palette-option-${flatIndex}`}
+                        data-palette-index={flatIndex}
+                        role="option"
+                        aria-selected={active}
+                        // Fokus tinggal di kotak ketik, jadi barisnya tidak ikut
+                        // urutan Tab — kalau tidak, Tab dan panah akan menggerakkan
+                        // dua sorotan berbeda pada daftar yang sama.
+                        tabIndex={-1}
                         className="flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-[13px]"
                         style={{
                           background: active ? "var(--accent-soft)" : "transparent",
@@ -230,7 +306,8 @@ export default function CommandPalette({
                 </div>
               ))}
               {!results.length && (
-                <div className="px-4 py-8 text-center text-xs" style={{ color: "var(--text-muted)" }}>
+                <div className="px-4 py-8 text-center text-xs" role="status"
+                  style={{ color: "var(--text-muted)" }}>
                   {t("palette.noResults").replace("{query}", q)}
                 </div>
               )}

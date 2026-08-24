@@ -509,6 +509,7 @@ export default function HeatmapGrid({
   const zoneAisles = useMemo(() => groupZoneByPosition(zoneCells), [zoneCells]);
 
   const zoneAbortRef = useRef<AbortController | null>(null);
+  const lookupAbortRef = useRef<AbortController | null>(null);
   const initialLookupDoneRef = useRef(false);
   const cellTriggerRef = useRef<HTMLElement | null>(null);
   const zoneTriggerRef = useRef<HTMLElement | null>(null);
@@ -766,16 +767,28 @@ export default function HeatmapGrid({
 
   // Mencari satu kode SLOC harus menemukannya di mana pun ia berada di gudang
   // ini, bukan hanya di antara sel pratinjau yang kebetulan tergambar.
+  //
+  // Pencarian sebelumnya dibiarkan berlari sendiri. Dua pencarian berurutan —
+  // mengetik satu kode, lalu langsung mengoreksinya — berlomba, dan jawaban
+  // yang datang belakangan belum tentu jawaban yang diminta terakhir: panel
+  // dapat terbuka pada lokasi yang SUDAH TIDAK dicari lagi, tanpa satu pun
+  // petunjuk di layar bahwa yang tampil bukan yang diketik. Pola pembatalannya
+  // sama dengan setiap permintaan lain di komponen ini.
   const lookupSloc = useCallback(async (code: string) => {
     const trimmed = code.trim().toUpperCase();
     if (!trimmed) return;
+    lookupAbortRef.current?.abort();
+    const controller = new AbortController();
+    lookupAbortRef.current = controller;
     setSlocLookup("loading");
     try {
       const response = await fetch(
         `/api/occupancy/heatmap?wh=${encodeURIComponent(wh)}&sloc=${encodeURIComponent(trimmed)}`,
+        { signal: controller.signal },
       );
       if (!response.ok) throw new Error("SLOC lookup failed");
       const data = await response.json();
+      if (controller.signal.aborted) return;
       const cell = data.cell as SlocOccupancy | null;
       if (!cell) {
         setSlocLookup("missing");
@@ -783,10 +796,16 @@ export default function HeatmapGrid({
       }
       setSlocLookup("idle");
       openCell(cell);
-    } catch {
-      setSlocLookup("missing");
+    } catch (requestError) {
+      // Pembatalan bukan kegagalan: pencarian berikutnya yang akan melaporkan
+      // hasilnya, jadi menandai "tidak ditemukan" di sini justru salah.
+      if ((requestError as { name?: string })?.name !== "AbortError") setSlocLookup("missing");
     }
   }, [openCell, wh]);
+
+  // Berpindah gudang atau meninggalkan halaman membatalkan pencarian yang
+  // sedang berjalan; hasilnya tidak lagi berlaku untuk apa yang tampil.
+  useEffect(() => () => lookupAbortRef.current?.abort(), [wh]);
 
   const heatExportParams = useMemo(() => {
     const params = new URLSearchParams({ wh });

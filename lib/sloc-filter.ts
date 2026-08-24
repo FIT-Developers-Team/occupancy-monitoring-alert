@@ -150,11 +150,3 @@ export function activeSlocFilterCount(filter: SlocFilter): number {
     filter.maxPct !== null ? "max" : "",
   ].filter(Boolean).length;
 }
-
-/**
- * Jenis selisih cycle count. Berada di modul ini, bukan di lib/queries, karena
- * tabel selisih adalah komponen klien: mengimpor nilai apa pun dari read-model
- * akan menarik DuckDB ke dalam bundel browser.
- */
-export const DRIFT_TYPES = ["PHANTOM", "GHOST", "SELISIH"] as const;
-export type DriftType = (typeof DRIFT_TYPES)[number];

@@ -1,4 +1,4 @@
-// Google Chat incoming webhook — alert real-time saat breach zona tercipta/eskalasi.
+// Google Chat incoming webhook — kartu alert saat sebuah lokasi lewat kapasitas.
 // threadKey = dedup_key agar satu kejadian tetap berada dalam satu thread.
 import type { Alert } from "@/types";
 import {
@@ -150,7 +150,18 @@ async function post(url: string, body: unknown): Promise<GChatSendResult> {
   return { ok: false, error: "Google Chat tidak merespons.", retryable: true };
 }
 
-/** Kartu breach zona + fallback text yang memuat @mention per warehouse. */
+/**
+ * Kartu alert.
+ *
+ * Disusun sependek mungkin dengan sengaja. Kartu ini muncul di Space yang juga
+ * dipakai untuk percakapan lain, dibaca sambil lalu, dan yang harus sampai
+ * hanya: lokasi mana, apa yang terjadi, dan apa tindakannya. Versi sebelumnya
+ * mengulang informasi yang sama tiga kali — severity dan nama aturan di judul,
+ * lokasi di subjudul, lalu judul alert yang menyebut lokasi itu lagi — sebelum
+ * sampai ke kalimat yang benar-benar berisi. Nomor alert dan hitungan kejadian
+ * ikut dibuang: keduanya hanya berguna setelah kartunya diklik, dan tombolnya
+ * sudah menuju ke sana.
+ */
 export async function sendGChatAlert(
   webhookUrl: string,
   alert: Alert,
@@ -160,37 +171,29 @@ export async function sendGChatAlert(
 ): Promise<GChatSendResult> {
   const base = process.env.APP_BASE_URL?.replace(/\/$/, "");
   const mentionEmails = mentionEmailsOf(mentionTargets);
-  const location = [
+  // Judul alert sudah memuat kode SLOC, jadi subjudul cukup menyebut cakupannya.
+  const scope = [
     alert.warehouse_code,
     alert.zone ? `Zona ${alert.zone}` : null,
-    alert.sloc_code,
-    alert.sku,
+    escalationPrefix,
   ].filter(Boolean).join(" · ");
-  const prefix = escalationPrefix ? ` — ${escalationPrefix}` : "";
-  const fallback = addMentions(
-    `${SEV_ICON[alert.severity] ?? ""} [${alert.severity}] ${alert.rule_name}${prefix} — ${location}\n${alert.title}`,
-    mentionTargets,
-  );
+  const heading = `${SEV_ICON[alert.severity] ?? ""} ${alert.title}`.trim();
+  const fallback = addMentions([heading, scope, alert.detail].join("\n"), mentionTargets);
   const card = {
     text: fallback,
     cardsV2: [{
       cardId: alert.alert_id,
       card: {
-        header: {
-          title: `${SEV_ICON[alert.severity] ?? ""} [${alert.severity}] ${alert.rule_name}${prefix}`,
-          subtitle: location,
-        },
+        header: { title: heading, subtitle: scope },
         sections: [{
           widgets: [
-            { textParagraph: { text: `<b>${escapeHtml(alert.title)}</b>` } },
             { textParagraph: { text: escapeHtml(alert.detail) } },
             ...(mentionEmails.length ? [{
-              textParagraph: { text: `<b>PIC ${escapeHtml(alert.warehouse_code)}:</b> ${escapeHtml(mentionEmails.join(", "))}` },
+              textParagraph: { text: `<b>PIC:</b> ${escapeHtml(mentionEmails.join(", "))}` },
             }] : []),
-            { textParagraph: { text: `<i>Alert ${escapeHtml(alert.alert_id)} · kejadian ke-${alert.occurrences}</i>` } },
             ...(base ? [{
               buttonList: { buttons: [{
-                text: "Buka alert — Tangani / Selesaikan",
+                text: "Buka alert",
                 onClick: { openLink: { url: `${base}/alerts?id=${encodeURIComponent(alert.alert_id)}` } },
               }] },
             }] : []),

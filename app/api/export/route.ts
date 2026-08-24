@@ -13,8 +13,6 @@ import { parseMovementFilter } from "@/lib/movements";
 import { ALERT_EXPORT_MAX_ROWS, listAlerts } from "@/lib/alerts/store";
 import {
   getForecastRows,
-  getIntegrity,
-  getIntegrityDrift,
   getSlocExplorerAll,
   getWarehouseSummaries,
   getZoneDetail,
@@ -38,7 +36,6 @@ const DATASETS = [
   "zone",
   "zone-detail",
   "alerts",
-  "integrity",
   "forecast",
   "warehouse",
   "movements",
@@ -384,55 +381,6 @@ async function buildAlerts(params: URLSearchParams, t: TFn): Promise<Built> {
   };
 }
 
-async function buildIntegrity(params: URLSearchParams, t: TFn): Promise<Built> {
-  const wh = (params.get("wh") ?? "").trim().toUpperCase();
-  const query = params.get("q") ?? "";
-  const driftType = params.get("drift") ?? "";
-  const [summary, drift] = await Promise.all([
-    getIntegrity(wh || undefined),
-    getIntegrityDrift(50_000, wh || undefined, { query, driftType }),
-  ]);
-  return {
-    rowCount: drift.length,
-    filename: safeFilename(`wiom-integritas-${wh || "all"}-${stamp()}`),
-    sheets: [
-      {
-        name: t("export.sheet.integrityDrift"),
-        columns: [
-          { key: "warehouse", header: t("common.warehouse"), width: 10 },
-          { key: "sloc_code", header: t("common.sloc"), width: 26 },
-          { key: "count_date", header: t("export.countDate"), width: 16 },
-          { key: "system_qty", header: t("export.systemQty"), type: "number", width: 14 },
-          { key: "physical_qty", header: t("export.physicalQty"), type: "number", width: 14 },
-          { key: "diff", header: t("export.diff"), type: "number", width: 12 },
-          { key: "drift_type", header: t("export.driftType"), width: 14 },
-        ],
-        rows: drift.map((row) => ({ ...row })),
-      },
-      {
-        name: t("export.sheet.integritySummary"),
-        columns: [
-          { key: "warehouse", header: t("common.warehouse"), width: 10 },
-          { key: "counted", header: t("int.ui.countedSloc"), type: "integer", width: 16 },
-          { key: "matched", header: t("export.matched"), type: "integer", width: 14 },
-          { key: "integrity_pct", header: t("int.title"), type: "percent", width: 14 },
-          { key: "phantom", header: t("int.ui.phantomOccupancy"), type: "integer", width: 16 },
-          { key: "ghost", header: t("int.ui.ghostStock"), type: "integer", width: 14 },
-          { key: "last_count", header: t("export.lastCount"), width: 20 },
-        ],
-        rows: summary.map((row) => ({ ...row })),
-      },
-      filterSheet(t("export.sheet.filter"), [
-        { label: t("common.warehouse"), value: wh || t("common.allWarehouses") },
-        { label: t("action.search"), value: query || "—" },
-        { label: t("export.driftType"), value: driftType || t("common.all") },
-        { label: t("export.rowCount"), value: String(drift.length) },
-        { label: t("export.generatedAt"), value: stamp() },
-      ]),
-    ],
-  };
-}
-
 async function buildForecast(_params: URLSearchParams, t: TFn): Promise<Built> {
   const rows = await getForecastRows();
   return {
@@ -447,13 +395,12 @@ async function buildForecast(_params: URLSearchParams, t: TFn): Promise<Built> {
           { key: "basis", header: t("export.policyBasis"), width: 12 },
           { key: "current_pct", header: t("common.occupancy"), type: "percent", width: 14 },
           { key: "rate_pct_per_hour", header: t("fc.rate"), type: "number", width: 14 },
-          { key: "qty_rate_per_hour", header: t("fc.rateQty"), type: "number", width: 14 },
-          { key: "sku_rate_per_hour", header: t("fc.rateSku"), type: "number", width: 14 },
-          { key: "bin_rate_per_hour", header: t("fc.rateBin"), type: "number", width: 14 },
+          { key: "net_rate", header: t("fc.net"), type: "number", width: 14 },
+          { key: "in_rate", header: t("fc.inbound"), type: "number", width: 14 },
+          { key: "out_rate", header: t("fc.outbound"), type: "number", width: 14 },
           { key: "hours_to_95", header: t("fc.to95"), type: "number", width: 12 },
           { key: "hours_to_100", header: t("fc.to100"), type: "number", width: 12 },
           { key: "qty_now", header: t("export.qtyNow"), type: "number", width: 14 },
-          { key: "sku_now", header: t("export.skuNow"), type: "integer", width: 12 },
           { key: "bins_now", header: t("occ.slocOccupied"), type: "integer", width: 16 },
           { key: "sloc_total", header: t("occ.activeSloc"), type: "integer", width: 14 },
           { key: "forecast_ready", header: t("export.forecastReady"), width: 16 },
@@ -599,7 +546,6 @@ const BUILDERS: Record<Dataset, (params: URLSearchParams, t: TFn) => Promise<Bui
   zone: buildZone,
   "zone-detail": buildZoneDetail,
   alerts: buildAlerts,
-  integrity: buildIntegrity,
   forecast: buildForecast,
   warehouse: buildWarehouse,
   movements: buildMovements,
