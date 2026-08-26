@@ -1,4 +1,11 @@
-// Setiap timestamp naif di history DuckDB adalah JAM DINDING WIB, bukan UTC.
+// Dua jam berbeda hidup berdampingan di history DuckDB, dan menyamakan keduanya
+// adalah cacat tujuh jam yang paling sulit terlihat di aplikasi ini.
+//
+//  - Kolom milik PROSES SINKRON (`_synced_at`, `_sync_audit.*`) adalah jam
+//    dinding WIB yang sebenarnya  -> wibIso()
+//  - Kolom BERASAL DARI SUMBER (`created_at`/`updated_at` pergerakan) sudah
+//    menerima satu konversi +07:00 di hulu, jadi tujuh jam terlalu cepat
+//    -> sourceIso(), yang mengurangkannya kembali
 //
 // Kekeliruan ini tidak pernah terlihat di mesin pengembang yang jamnya kebetulan
 // WIB: `new Date("2026-08-22 14:24:59")` diurai sebagai waktu lokal, dan di
@@ -84,4 +91,59 @@ test("helper zona waktu tersedia untuk seluruh kueri, bukan hanya pergerakan", (
   assert.ok(flowAt > 0, "deret aliran pergerakan harus ada");
   assert.ok(helperAt < flowAt, "wibIso harus terdefinisi sebelum kueri deret aliran");
   assert.ok(helperAt < syncAt, "wibIso harus terdefinisi sebelum getSyncHealth");
+});
+
+
+test("kolom pergerakan memakai sourceIso, kolom sinkron memakai wibIso", () => {
+  // Inilah kontraknya, dan satu-satunya cara ia dapat dilanggar diam-diam
+  // adalah dengan menulis kueri baru yang memakai helper yang keliru: hasilnya
+  // tetap tampil sebagai jam yang masuk akal, hanya tujuh jam meleset.
+  const wrongHelperOnSource = [...code.matchAll(/wibIso\(([^)]*created_at[^)]*|[^)]*updated_at[^)]*)\)/g)]
+    .map(([full]) => full)
+    // Definisi sourceIso sendiri memanggil wibIso — itu memang jalurnya.
+    .filter((call) => !call.includes("INTERVAL"));
+  assert.deepEqual(
+    wrongHelperOnSource,
+    [],
+    "kolom created_at/updated_at pergerakan dibungkus wibIso() — pakai sourceIso() "
+      + "supaya koreksi jam hulu ikut diterapkan",
+  );
+
+  const wrongHelperOnSync = [...code.matchAll(/sourceIso\(([^)]*_synced_at[^)]*|[^)]*finished_at[^)]*)\)/g)]
+    .map(([full]) => full);
+  assert.deepEqual(
+    wrongHelperOnSync,
+    [],
+    "kolom milik proses sinkron dibungkus sourceIso() — jam itu sudah benar, "
+      + "menggesernya membuat 'snapshot terakhir' meleset ke arah sebaliknya",
+  );
+});
+
+test("koreksi jam sumber menggeser tepat tujuh jam ke belakang", () => {
+  // Angka acuannya nyata: baris terbaru di basis data tercatat 14:30:10,
+  // sedangkan WMS mencatat kejadian yang sama pukul 07:30 WIB.
+  const shift = 7;
+  const stored = new Date("2026-08-22T14:30:10+07:00");
+  const corrected = new Date(stored.getTime() - shift * 3_600_000);
+
+  assert.equal(
+    corrected.toLocaleString("sv-SE", { timeZone: "Asia/Jakarta" }),
+    "2026-08-22 07:30:10",
+  );
+});
+
+test("koreksi dapat dimatikan lewat environment bila hulunya diperbaiki", () => {
+  // Kalau suatu hari sumbernya berhenti mengonversi dua kali, koreksi ini harus
+  // dapat dinolkan tanpa menyentuh kode — kalau tidak, perbaikan di hulu justru
+  // menciptakan selisih tujuh jam yang baru, ke arah sebaliknya.
+  assert.match(
+    code,
+    /process\.env\.WIOM_SOURCE_CLOCK_SHIFT_HOURS/,
+    "besaran koreksi harus dapat diatur lewat environment",
+  );
+  assert.match(
+    code,
+    /Math\.abs\(raw\)\s*<=\s*14/,
+    "nilai di luar rentang zona waktu nyata harus ditolak, bukan dipakai diam-diam",
+  );
 });

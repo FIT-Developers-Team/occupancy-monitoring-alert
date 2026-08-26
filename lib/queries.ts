@@ -242,6 +242,70 @@ function wibCutoff(hoursBack: number): string {
   return wibWallClock(new Date(Date.now() - hoursBack * 3_600_000));
 }
 
+/**
+ * JAM SUMBER (WMS/Superset) BERBEDA DARI JAM SINKRON
+ * ==================================================
+ * Dua kelompok timestamp hidup berdampingan di basis data ini, dan menyamakan
+ * keduanya adalah cacat tujuh jam yang paling sulit terlihat di aplikasi ini.
+ *
+ *  - DITULIS OLEH PROSES SINKRON — `_synced_at`, `_sync_audit.*`,
+ *    `_sync_state.updated_at`. Ini jam dinding WIB yang sebenarnya. Dibuktikan:
+ *    job `movement_incremental` selesai pada `2026-08-22 14:30:38` dan berkas
+ *    `.duckdb`-nya bertanggal ubah `14:30:38 GMT+0700` — identik.
+ *
+ *  - BERASAL DARI SUMBER — `created_at` dan `updated_at` pada `movement_events`.
+ *    Nilai ini SUDAH menerima satu konversi +07:00 di hulu: WMS menyimpan jam
+ *    dinding WIB, lalu lapisan di atasnya memperlakukannya sebagai UTC dan
+ *    mengubahnya ke Asia/Jakarta sekali lagi. Akibatnya jam yang tersimpan
+ *    berada TUJUH JAM DI DEPAN kejadian sebenarnya: baris yang tercatat
+ *    `2026-08-22 14:30:10` benar-benar terjadi pukul 07.30 WIB.
+ *    Dikonfirmasi terhadap WMS pada 2026-08-26.
+ *
+ * Perbedaan itu tidak dapat disimpulkan dari data — `max(created_at)` kebetulan
+ * jatuh beberapa detik sebelum sinkron selesai, yang justru membuat keduanya
+ * tampak sejam. Karena itu koreksinya ditulis eksplisit di sini, sekali, dengan
+ * angka yang dapat diubah tanpa menyentuh kode.
+ *
+ * KOREKSINYA HANYA UNTUK TAMPILAN. Nilai di dalam basis data tidak diubah:
+ * `created_at` dikirim kembali ke Superset sebagai watermark sinkron, jadi
+ * menggesernya di sana akan melewatkan atau menarik ulang tujuh jam data pada
+ * setiap pass.
+ *
+ * Bila suatu hari hulunya diperbaiki, setel `WIOM_SOURCE_CLOCK_SHIFT_HOURS=0`
+ * dan seluruh aplikasi ikut menyesuaikan — tanpa deploy ulang kode.
+ */
+const SOURCE_CLOCK_SHIFT_HOURS = (() => {
+  const raw = Number(process.env.WIOM_SOURCE_CLOCK_SHIFT_HOURS ?? "7");
+  // Batas ±14 jam mencakup seluruh zona waktu nyata; nilai di luar itu hampir
+  // pasti salah ketik, dan diam-diam menggeser setiap jam di layar.
+  return Number.isFinite(raw) && Math.abs(raw) <= 14 ? raw : 7;
+})();
+
+/**
+ * Timestamp berasal-sumber sebagai ISO ber-offset, sesudah koreksi jam hulu.
+ *
+ * Dipakai untuk SETIAP kolom `created_at`/`updated_at` pergerakan. Kolom milik
+ * proses sinkron tetap memakai `wibIso()` — menggesernya justru akan membuat
+ * "snapshot terakhir" meleset tujuh jam ke arah sebaliknya.
+ */
+const sourceIso = (column: string) =>
+  SOURCE_CLOCK_SHIFT_HOURS === 0
+    ? wibIso(column)
+    : wibIso(`((${column}) - INTERVAL ${SOURCE_CLOCK_SHIFT_HOURS} HOUR)`);
+
+/**
+ * Batas bawah jendela waktu untuk kolom berasal-sumber.
+ *
+ * Kolomnya bergeser, jadi ambangnya harus ikut bergeser. Tanpa ini "24 jam
+ * terakhir" pada halaman Pergerakan memotong jendelanya tujuh jam meleset —
+ * dan pada rentang pendek itu berarti tabel tampak kosong padahal datanya ada.
+ */
+function sourceCutoff(hoursBack: number): string {
+  return wibWallClock(
+    new Date(Date.now() - hoursBack * 3_600_000 + SOURCE_CLOCK_SHIFT_HOURS * 3_600_000),
+  );
+}
+
 function locationScopePredicateSQL(
   scope: {
     wh?: string; zone?: string; rack_zone?: string; aisle?: string; bay?: string;
@@ -1425,7 +1489,7 @@ async function loadMovementFlowSeries(hoursBack: number): Promise<MovementFlowBu
   return movementQuery<MovementFlowBucket>(
     `${movementSource()}, span AS (SELECT max(created_at) AS latest FROM mv)
      SELECT mv.wh,
-            ${wibIso("date_trunc('hour', mv.created_at)")} AS t,
+            ${sourceIso("date_trunc('hour', mv.created_at)")} AS t,
             coalesce(sum(CASE WHEN mv.direction = 'OUT' THEN 0 ELSE mv.qty END), 0)::DOUBLE AS qty_in,
             coalesce(sum(CASE WHEN mv.direction = 'OUT' THEN mv.qty ELSE 0 END), 0)::DOUBLE AS qty_out,
             count(*)::INT AS events
@@ -1641,7 +1705,8 @@ function movementWhere(filter: MovementFilter): { sql: string; params: unknown[]
   const hours = RANGE_HOURS[filter.range];
   if (hours !== null) {
     clauses.push("mv.created_at >= ?");
-    params.push(wibWallClock(new Date(Date.now() - hours * 3_600_000)));
+    // Kolomnya berjam sumber (tujuh jam di depan WIB), jadi ambangnya juga.
+    params.push(sourceCutoff(hours));
   }
   if (filter.wh) { clauses.push("mv.wh = ?"); params.push(filter.wh); }
   if (filter.type.length) {
@@ -1709,7 +1774,7 @@ function movementRowsQuery(
   const dir = filter.dir === "asc" ? "ASC" : "DESC";
   return movementQuery<MovementRow>(
     `${movementSource()}
-     SELECT movement_uid, ${wibIso("created_at")} AS at, ${wibIso("updated_at")} AS updated_at,
+     SELECT movement_uid, ${sourceIso("created_at")} AS at, ${sourceIso("updated_at")} AS updated_at,
             wh, location_name, invoice_number, product_id, product_name, sku_number,
             l1_category, product_type, source_sloc, destination_sloc, action_raw,
             movement_type, direction, flow, from_package, to_package,
@@ -1763,8 +1828,8 @@ async function loadMovementSummary(filter: MovementFilter): Promise<MovementSumm
             count(DISTINCT nullif(operator, ''))::INT AS operator_count,
             count(DISTINCT nullif(invoice_number, ''))::INT AS invoice_count,
             count(DISTINCT coalesce(destination_sloc, source_sloc))::INT AS sloc_count,
-            ${wibIso("min(created_at)")} AS first_at,
-            ${wibIso("max(created_at)")} AS last_at
+            ${sourceIso("min(created_at)")} AS first_at,
+            ${sourceIso("max(created_at)")} AS last_at
      FROM mv ${where.sql}
      GROUP BY GROUPING SETS ((), (movement_type))`,
     where.params,
@@ -1820,7 +1885,7 @@ async function loadMovementByWarehouse(
             coalesce(sum(CASE WHEN direction = 'OUT' THEN qty ELSE 0 END), 0)::DOUBLE AS qty_out,
             count(DISTINCT product_id)::INT AS sku_count,
             count(DISTINCT nullif(operator, ''))::INT AS operator_count,
-            ${wibIso("max(created_at)")} AS last_at
+            ${sourceIso("max(created_at)")} AS last_at
      FROM mv ${where.sql}
      GROUP BY wh ORDER BY events DESC, wh`,
     where.params,
@@ -1852,7 +1917,7 @@ async function loadMovementActivity(filter: MovementFilter): Promise<MovementBuc
   const unit = hours !== null && hours <= 72 ? "hour" : "day";
   return movementQuery<MovementBucket>(
     `${movementSource()}
-     SELECT ${wibIso(`date_trunc('${unit}', created_at)`)} AS t,
+     SELECT ${sourceIso(`date_trunc('${unit}', created_at)`)} AS t,
             coalesce(sum(CASE WHEN direction = 'OUT' THEN 0 ELSE qty END), 0)::DOUBLE AS qty_in,
             coalesce(sum(CASE WHEN direction = 'OUT' THEN qty ELSE 0 END), 0)::DOUBLE AS qty_out,
             count(*)::INT AS events
@@ -1954,7 +2019,7 @@ export async function getRecentMovements(
   const lim = Math.min(MOVEMENT_PAGE_MAX, Math.max(1, Math.trunc(limit)));
   return movementQuery<MovementRow>(
     `${movementSource()}
-     SELECT movement_uid, ${wibIso("created_at")} AS at, ${wibIso("updated_at")} AS updated_at,
+     SELECT movement_uid, ${sourceIso("created_at")} AS at, ${sourceIso("updated_at")} AS updated_at,
             wh, location_name, invoice_number, product_id, product_name, sku_number,
             l1_category, product_type, source_sloc, destination_sloc, action_raw,
             movement_type, direction, flow, from_package, to_package,
@@ -2089,7 +2154,7 @@ export async function getMovementBreaches(
             round(sc.occ_qty, 1)::DOUBLE AS occ_qty, round(sc.cap_qty, 1)::DOUBLE AS cap_qty,
             round(sc.occ_cbm, 3)::DOUBLE AS occ_cbm, round(sc.cap_cbm, 3)::DOUBLE AS cap_cbm,
             sc.sku_count, round(tc.qty_in, 1)::DOUBLE AS qty_in, tc.events,
-            ${wibIso("la.created_at")} AS last_at,
+            ${sourceIso("la.created_at")} AS last_at,
             round(la.qty, 1)::DOUBLE AS last_qty,
             la.operator AS last_operator, la.action_raw AS last_action,
             la.product_name AS last_product
@@ -2101,7 +2166,7 @@ export async function getMovementBreaches(
      ORDER BY greatest(coalesce(sc.pct_qty, 0), coalesce(sc.pct_cbm, 0)) DESC,
               sc.wh, sc.sloc_code
      LIMIT ${safeLimit}`,
-    [wibCutoff(safeHours)],
+    [sourceCutoff(safeHours)],
   );
 }
 

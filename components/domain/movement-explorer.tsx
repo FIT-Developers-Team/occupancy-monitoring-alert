@@ -256,7 +256,10 @@ export default function MovementExplorer({
     `${row.direction === "OUT" ? "−" : row.direction === "IN" ? "+" : ""}${f.num(row.qty)}`;
 
   const typeLabel = (type: MovementType) => t(`mv.type.${type}`);
-  const columnCount = lockedWh ? 8 : 9;
+  // Kolom Status dihapus dari tabel: hanya 0,9% baris punya status tujuan dan
+  // 7,2% punya status asal, sementara kolomnya memakan 150px pada tabel yang
+  // memang sudah meluber ke samping. Nilainya tetap lengkap di panel detail.
+  const columnCount = lockedWh ? 7 : 8;
 
   return (
     <div className="mvx" aria-busy={loading}>
@@ -496,7 +499,9 @@ export default function MovementExplorer({
                   {head(t("common.type"), "type", "", "asc")}
                   {head(t("common.product"), "product", "", "asc")}
                   <th scope="col">{t("mv.col.route")}</th>
-                  <th scope="col">{t("mv.col.status")}</th>
+                  {/* Qty berdiri tepat di sebelah rute: "berapa banyak" dan "dari
+                      mana ke mana" adalah satu pertanyaan, dan sebelumnya kolom
+                      Status yang hampir selalu kosong duduk di antaranya. */}
                   {head("Qty", "qty", "text-right")}
                   {head(t("common.operator"), "operator", "", "asc")}
                   {head(t("mv.col.invoice"), "invoice", "", "asc")}
@@ -534,19 +539,18 @@ export default function MovementExplorer({
                       <span title={row.product_name}>{row.product_name || "—"}</span>
                       <small className="num">{row.sku_number || "—"}</small>
                     </td>
+                    {/* Hanya 5,3% pergerakan punya lokasi tujuan. Menggambar
+                        "SRC → —" pada sisanya berarti sembilan belas dari dua
+                        puluh baris memuat panah yang tidak menunjuk apa pun;
+                        panahnya kini muncul hanya ketika ada tujuannya. */}
                     <td className="num mvx-route">
-                      <span title={row.source_sloc ?? "—"}>{row.source_sloc ?? "—"}</span>
-                      <b aria-hidden>→</b>
-                      <span title={row.destination_sloc ?? "—"}>{row.destination_sloc ?? "—"}</span>
-                    </td>
-                    <td className="mvx-status">
-                      {row.from_status || row.to_status ? (
-                        <span className="num">
-                          {row.from_status ?? "—"}
-                          {row.to_status && row.to_status !== row.from_status
-                            ? ` → ${row.to_status}` : ""}
-                        </span>
-                      ) : "—"}
+                      <span title={row.source_sloc ?? undefined}>{row.source_sloc ?? "—"}</span>
+                      {row.destination_sloc && (
+                        <>
+                          <b aria-hidden>→</b>
+                          <span title={row.destination_sloc}>{row.destination_sloc}</span>
+                        </>
+                      )}
                     </td>
                     <td className={`num text-right mvx-qty mvx-${row.direction.toLowerCase()}`}>
                       {signed(row)}
@@ -584,7 +588,11 @@ export default function MovementExplorer({
                   <span className={`chip mvx-type mvx-type-${TYPE_TONE[row.movement_type]}`}>
                     {typeLabel(row.movement_type)}
                   </span>
-                  <span className="num">{row.source_sloc ?? "—"} → {row.destination_sloc ?? "—"}</span>
+                  <span className="num">
+                    {row.destination_sloc
+                      ? `${row.source_sloc ?? "—"} → ${row.destination_sloc}`
+                      : row.source_sloc ?? "—"}
+                  </span>
                   <span>{row.operator || "—"}</span>
                 </div>
               </button>

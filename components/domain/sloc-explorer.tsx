@@ -26,6 +26,8 @@ import {
 } from "@/lib/sloc-filter";
 import { formatters } from "@/lib/utils";
 import { trapFocus } from "@/lib/focus-trap";
+import SlocMovementList from "@/components/domain/sloc-movement-list";
+import type { MovementRow } from "@/lib/movements";
 import { useT } from "@/lib/i18n-client";
 import { StatusBadge } from "@/components/ui/badges";
 import ExportExcelButton from "@/components/domain/export-excel-button";
@@ -127,6 +129,10 @@ export default function SlocExplorer({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [selected, setSelected] = useState<SlocExplorerRow | null>(null);
   const [stock, setStock] = useState<StockLine[]>([]);
+  // `/api/sloc` sudah mengembalikan pergerakan lokasi ini pada setiap jawaban;
+  // sebelumnya nilainya diambil lalu dibuang, sehingga laci ini menjawab "apa
+  // isinya" tanpa pernah menjawab "apa yang membuatnya begitu".
+  const [moves, setMoves] = useState<MovementRow[]>([]);
   const [stockLoading, setStockLoading] = useState(false);
   const drawerTrigger = useRef<HTMLElement | null>(null);
 
@@ -208,12 +214,16 @@ export default function SlocExplorer({
     const controller = new AbortController();
     setStockLoading(true);
     setStock([]);
+    setMoves([]);
     fetch(
       `/api/sloc?code=${encodeURIComponent(selected.sloc_code)}&wh=${encodeURIComponent(selected.wh)}`,
       { signal: controller.signal },
     )
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error("SLOC detail failed"))))
-      .then((data) => setStock((data.stock ?? []) as StockLine[]))
+      .then((data) => {
+        setStock((data.stock ?? []) as StockLine[]);
+        setMoves((data.movements ?? []) as MovementRow[]);
+      })
       .catch(() => {})
       .finally(() => {
         if (!controller.signal.aborted) setStockLoading(false);
@@ -722,6 +732,13 @@ export default function SlocExplorer({
                 ))}
               </ul>
             )}
+
+            <div className="eyebrow mb-1.5 mt-4">{t("heat.lastMovement")}</div>
+            <SlocMovementList
+              movements={moves}
+              slocCode={selected.sloc_code}
+              loading={stockLoading}
+            />
           </aside>
         </div>
       )}

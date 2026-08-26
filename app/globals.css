@@ -290,6 +290,13 @@
     white-space: nowrap;
   }
   .tbl td { padding: 8.5px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  /* Angka yang berdiri dalam kolom harus segaris. Tanpa tabular-nums, "1.204"
+     dan "998" bergeser satu sama lain dan kolom Qty terbaca ragged. */
+  .tbl td.num, .tbl td .num { font-variant-numeric: tabular-nums; }
+  /* Belang tipis: pada tabel selebar ini mata harus menyeberangi delapan kolom
+     tanpa kehilangan barisnya. Ditulis SEBELUM aturan hover — keduanya sama
+     spesifik, jadi yang belakangan menang, dan hover-lah yang harus menang. */
+  .tbl tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface-sunken) 45%, transparent); }
   .tbl tbody tr:hover { background: var(--surface-sunken); }
 
   .badge {
@@ -795,26 +802,31 @@
   td.mvx-qty.mvx-out, .mvx-qty.mvx-out b, b.mvx-qty.mvx-out { color: var(--st-warning-fg); }
   .mvx-qty.mvx-neutral { color: var(--text-muted); }
 
-  .mvx-table { min-width: 1120px; }
+  /* Delapan kolom, bukan sembilan. Kolom Status pensiun (terisi 0,9%), dan
+     lebar minimumnya turun dari 1120px ke 980px — cukup untuk muat tanpa
+     gulir menyamping pada layar 1280px sekalipun, yang selama ini menjadi
+     keluhan utama tabel ini. */
+  .mvx-table { min-width: 980px; }
   .mvx-table thead { position: sticky; z-index: 2; top: 0; background: var(--surface-raised); }
   /* Waktu absolut dan jaraknya dari sekarang berdampingan: yang pertama untuk
      dicocokkan dengan sistem lain, yang kedua untuk dibaca sekilas. */
   .mvx-time { display: grid; gap: 1px; line-height: 1.25; white-space: nowrap; }
   .mvx-time small { color: var(--text-muted); font-size: 10px; }
-  .mvx-product { display: grid; max-width: 250px; gap: 1px; line-height: 1.25; }
+  .mvx-product { display: grid; max-width: 220px; gap: 1px; line-height: 1.25; }
   .mvx-product > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mvx-product small { color: var(--text-muted); font-size: 10px; }
   .mvx-route {
-    display: flex; max-width: 260px; align-items: center; gap: 5px; font-size: 11px;
+    display: flex; max-width: 200px; align-items: center; gap: 5px; font-size: 11px;
   }
   .mvx-route > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mvx-route > b { flex: none; color: var(--text-muted); font-weight: 400; }
-  .mvx-status { max-width: 150px; font-size: 11px; }
-  .mvx-status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mvx-operator { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mvx-operator { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mvx-invoice {
-    max-width: 150px; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 130px; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* Qty adalah angka yang dicari orang lebih dulu daripada kolom mana pun di
+     tabel ini, jadi ia diberi bobot yang sepadan. */
+  .mvx-qty { font-weight: 600; font-variant-numeric: tabular-nums; }
 
   /* Grafik aktivitas: dua deret pada satu sumbu nol, masuk ke atas, keluar ke
      bawah. Bentuk divergen ini yang membuat hari dengan arus tidak seimbang
@@ -1244,6 +1256,29 @@
   .heat-detail-list-value { display: grid; flex: none; justify-items: end; gap: 1px; }
   .heat-detail-list-value b { font-size: 11px; }
   .heat-detail-muted { margin: 0; font-size: 11px; color: var(--text-muted); }
+
+  /* Daftar pergerakan bersama — panel heatmap DAN laci Penjelajah SLOC.
+     Ukurannya mengikuti daftar heatmap yang sudah ada supaya panel itu tidak
+     berubah rupa saat markup-nya dipindah ke komponen bersama. */
+  .mvlist { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+  .mvlist li {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+    padding: 8px 9px; border: 1px solid var(--border); border-radius: 7px;
+  }
+  .mvlist-main { display: grid; min-width: 0; gap: 1px; }
+  .mvlist-main strong, .mvlist-main span,
+  .mvlist-value span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mvlist-main strong { font-size: 11.5px; }
+  .mvlist-main span { color: var(--text-muted); font-size: 9.75px; }
+  .mvlist-value { display: grid; flex: none; justify-items: end; gap: 1px; }
+  .mvlist-value b { font-size: 11px; }
+  .mvlist-value span { color: var(--text-muted); font-size: 9.75px; max-width: 110px; }
+  .mvlist-muted { margin: 0; font-size: 11px; color: var(--text-muted); }
+  .mvlist-more {
+    display: inline-block; margin-top: 6px; color: var(--accent);
+    font-size: 11px; text-decoration: none;
+  }
+  .mvlist-more:hover { text-decoration: underline; }
 
   @media (max-width: 1400px) {
     .metric-strip-seven { grid-template-columns: repeat(12, minmax(0, 1fr)); }

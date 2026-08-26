@@ -17,6 +17,7 @@ import { pickViewPct, pickViewStatus } from "@/lib/occupancy-view";
 import { useT } from "@/lib/i18n-client";
 import { trapFocus } from "@/lib/focus-trap";
 import ExportExcelButton from "@/components/domain/export-excel-button";
+import SlocMovementList from "@/components/domain/sloc-movement-list";
 
 type HeatStatus =
   | "EMPTY"
@@ -1169,40 +1170,15 @@ export default function HeatmapGrid({
 
             <section className="heat-detail-section">
               <div className="eyebrow">{t("heat.lastMovement")}</div>
-              {moves.length === 0 ? (
-                <p className="heat-detail-muted">{t("heat.noMovementSynced")}</p>
-              ) : (
-                <ul className="heat-detail-list">
-                  {moves.map((movement) => (
-                    <li key={movement.movement_uid}>
-                      <div>
-                        {/* Tipe kanonik, bukan teks aksi mentah: satu kegiatan
-                            yang sama tidak boleh tampil dengan tiga ejaan
-                            berbeda pada panel sesempit ini. Ejaan aslinya tetap
-                            tersedia sebagai tooltip. */}
-                        <strong title={movement.action_raw}>
-                          {t(`mv.type.${movement.movement_type}`)}
-                        </strong>
-                        <span className="num">
-                          {new Date(movement.at).toLocaleString(locale)}
-                        </span>
-                        <span className="num">
-                          {movement.source_sloc ?? "—"} → {movement.destination_sloc ?? "—"}
-                        </span>
-                      </div>
-                      <div className="heat-detail-list-value">
-                        <b className={`num mvx-qty mvx-${movement.direction.toLowerCase()}`}>
-                          {movement.direction === "OUT" ? "−" : movement.direction === "IN" ? "+" : ""}
-                          {f.num(movement.qty)}
-                        </b>
-                        <span title={movement.product_name}>
-                          {movement.operator || "—"}
-                        </span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              {/* Markup daftarnya kini milik komponen bersama, sehingga panel
+                  ini dan laci Penjelajah SLOC tidak dapat lagi menyimpang —
+                  termasuk pemformatan waktunya, yang di sini dulu satu-satunya
+                  yang melewatkan zona waktu. */}
+              <SlocMovementList
+                movements={moves}
+                slocCode={selectedCell.sloc_code}
+                loading={stockLoading}
+              />
             </section>
           </aside>
         </div>
