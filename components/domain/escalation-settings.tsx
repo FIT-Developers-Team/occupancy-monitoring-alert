@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "@/lib/i18n-client";
+import NumberField from "@/components/ui/number-field";
 import {
   googleChatSpaceOf,
   isGoogleChatSpaceOnlyLink,
@@ -433,13 +434,12 @@ export default function EscalationSettings() {
               </div>
               <label className="escalation-delay">
                 <span>{t("set.ui.recipients.delay")}</span>
-                <span><input
-                  type="number"
+                <span><NumberField
                   min={level.level === 1 ? 0 : 1}
                   className="input num"
                   value={level.delay_minutes}
                   disabled={level.level === 1}
-                  onChange={(event) => updateLevel(levelIndex, { delay_minutes: Number(event.target.value) })}
+                  onChange={(delay_minutes) => updateLevel(levelIndex, { delay_minutes })}
                 /> {t("set.ui.recipients.minutes")}</span>
               </label>
               <div className="escalation-level-actions" aria-label={t("set.ui.recipients.levelActions")}>

@@ -29,6 +29,7 @@
 // diatur di tab Standar SKU (components/domain/sku-standard-settings.tsx).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useT } from "@/lib/i18n-client";
+import NumberField from "@/components/ui/number-field";
 import { formatters } from "@/lib/utils";
 
 export type Basis = "qty" | "cbm";
@@ -506,12 +507,10 @@ export default function CapacitySettings() {
 
           <label className="block space-y-1">
             <span className="eyebrow">{t("set.ui.capacity.volumeUtilisation")}</span>
-            <input
-              type="number" min={10} max={100} step={1} className="input num w-24"
+            <NumberField
+              min={10} max={100} step={1} className="input num w-24"
               value={capacity.utilization_pct}
-              onChange={(event) => update({
-                ...capacity, utilization_pct: Number(event.target.value),
-              })}
+              onChange={(utilization_pct) => update({ ...capacity, utilization_pct })}
             />
             <span className="field-hint">{t("set.ui.capacity.utilisationHint")}</span>
           </label>

@@ -28,6 +28,7 @@
 //      sini menggeser angka okupansi seluruh perusahaan.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "@/lib/i18n-client";
+import NumberField from "@/components/ui/number-field";
 import { formatters } from "@/lib/utils";
 
 interface SkuStandard {
@@ -372,14 +373,14 @@ export default function SkuStandardSettings() {
             <table className="tbl sku-table">
               <thead>
                 <tr>
-                  <th>{t("set.ui.sku.colSku")}</th>
-                  <th>{t("set.ui.sku.colProduct")}</th>
-                  <th className="num">{t("set.ui.sku.colSource")}</th>
-                  <th className="num">{t("set.ui.sku.colStandard")}</th>
-                  <th className="num">{t("set.ui.sku.colStock")}</th>
-                  <th className="num">{t("set.ui.sku.colDelta")}</th>
-                  <th>{t("set.ui.column.note")}</th>
-                  <th />
+                  <th scope="col">{t("set.ui.sku.colSku")}</th>
+                  <th scope="col">{t("set.ui.sku.colProduct")}</th>
+                  <th scope="col" className="num">{t("set.ui.sku.colSource")}</th>
+                  <th scope="col" className="num">{t("set.ui.sku.colStandard")}</th>
+                  <th scope="col" className="num">{t("set.ui.sku.colStock")}</th>
+                  <th scope="col" className="num">{t("set.ui.sku.colDelta")}</th>
+                  <th scope="col">{t("set.ui.column.note")}</th>
+                  <th scope="col" />
                 </tr>
               </thead>
               <tbody>
@@ -409,13 +410,11 @@ export default function SkuStandardSettings() {
                         {source > 0 ? f.capCbm(source) : "—"}
                       </td>
                       <td>
-                        <input
-                          type="number" min={0} step="any" inputMode="decimal"
+                        <NumberField
+                          min={0} step="any" inputMode="decimal"
                           className="input num sku-input"
                           value={entry.unit_cbm}
-                          onChange={(event) => patch(index, {
-                            unit_cbm: Number(event.target.value),
-                          })}
+                          onChange={(unit_cbm) => patch(index, { unit_cbm })}
                           aria-label={`${t("set.ui.sku.colStandard")} ${entry.sku}`}
                         />
                         {ratio !== null && (

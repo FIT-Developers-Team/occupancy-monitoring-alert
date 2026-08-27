@@ -7,6 +7,7 @@
 //                 rule/hysteresis state). Singleton writer connection.
 // ---------------------------------------------------------------------------
 import duckdb from "duckdb";
+import { slocGainSQL } from "@/lib/movements";
 import path from "path";
 import fs from "fs";
 import os from "os";
@@ -289,6 +290,22 @@ async function materialiseReplicaViews(file: string): Promise<void> {
       db,
       `CREATE OR REPLACE TABLE _movement_current AS SELECT * FROM vw_movement;
        CREATE OR REPLACE VIEW vw_movement AS SELECT * FROM _movement_current;
+       CHECKPOINT;`,
+    );
+    // Penambahan terakhir per lokasi — sumber kolom "Penyebab" pada Penjelajah
+    // SLOC dan pada berkas Excel-nya. Alasannya sama persis dengan dua blok di
+    // atas, hanya lebih tajam: ekspresinya menyentuh empat kolom teks pada
+    // setiap baris pergerakan, jadi menghitungnya per permintaan memakan 8,3
+    // detik pada retensi 14 hari — sementara tabel ini hanya berisi satu baris
+    // per lokasi (22 ribu baris pada data sehari) dan dibaca lewat join kecil.
+    //
+    // Sekali lagi terpisah: instalasi yang belum pernah menyinkronkan movement
+    // tidak boleh kehilangan materialisasi yang sudah berhasil di atasnya.
+    await execAsync(
+      db,
+      `CREATE OR REPLACE VIEW vw_sloc_gain AS ${slocGainSQL()};
+       CREATE OR REPLACE TABLE _sloc_gain_current AS SELECT * FROM vw_sloc_gain;
+       CREATE OR REPLACE VIEW vw_sloc_gain AS SELECT * FROM _sloc_gain_current;
        CHECKPOINT;`,
     );
   } catch (error) {

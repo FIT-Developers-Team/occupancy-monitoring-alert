@@ -181,7 +181,7 @@ export default function ZoneDetailTable({
         </div>
         <div className="zone-detail-paging">
           <span className="num" aria-live="polite">
-            {totalRows.toLocaleString()} {t("occ.rows")}
+            {totalRows.toLocaleString(f.locale)} {t("occ.rows")}
           </span>
           <select
             className="input"
@@ -213,7 +213,7 @@ export default function ZoneDetailTable({
             dataset="zone-detail"
             params={filterParams}
             disabled={totalRows === 0}
-            label={`${t("export.excel")} (${totalRows.toLocaleString()})`}
+            label={`${t("export.excel")} (${totalRows.toLocaleString(f.locale)})`}
             title={t("export.fullHint")}
           />
         </div>

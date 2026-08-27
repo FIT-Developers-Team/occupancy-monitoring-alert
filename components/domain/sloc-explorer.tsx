@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { BasisMode, OccupancyStatus, StockLine } from "@/types";
 import { STATUS_COLOR } from "@/lib/status-tone";
-import type { SlocExplorerRow, SlocExplorerSummary, SlocFacets } from "@/lib/queries";
+import type { SlocExplorerRow, SlocExplorerSummary, SlocFacets, SlocMovementCause } from "@/lib/queries";
 import {
   EMPTY_SLOC_FILTER,
   SLOC_STATUSES,
@@ -87,6 +87,16 @@ function statusTone(status: string): string {
   if (status === "UNAVAILABLE") return "badge";
   return "";
 }
+
+/**
+ * Status yang membuat kolom penyebab benar-benar menjadi "penyebab".
+ *
+ * Pada baris lain, penambahan terakhir hanyalah riwayat: berguna, tetapi bukan
+ * sesuatu yang perlu menarik mata. Aksennya dibatasi ke dua tingkat teratas
+ * supaya kolom ini tetap membaca sebagai daftar pemicu, bukan sebagai kolom
+ * berwarna sepanjang tabel.
+ */
+const CULPRIT_STATUSES = new Set(["BREACH", "CRITICAL"]);
 
 export default function SlocExplorer({
   lockedWh,
@@ -323,6 +333,20 @@ export default function SlocExplorer({
     filter.view === "bin" ? [] : [...LADDER_STATUSES, "UNAVAILABLE"];
   const activeCount = activeSlocFilterCount(filter);
   const pctText = (value: number | null) => (value === null ? "—" : `${value}%`);
+  // Jumlah kolom sesungguhnya, bukan angka tetap. Halaman gudang dan zona
+  // menyembunyikan kolomnya masing-masing, jadi colSpan yang ditulis keras akan
+  // membuat baris "tidak ada hasil" menjulur keluar tabel.
+  const columnCount = 13 + (lockedWh ? 0 : 1) + (lockedZone ? 0 : 1);
+  /** Satu baris ringkas "apa & siapa"; rinciannya ada pada tooltip dan laci. */
+  const causeSummary = (cause: SlocMovementCause) => [
+    `${t(`mv.type.${cause.movement_type}`)} +${f.num(cause.qty)}`,
+    cause.operator || t("slocx.cause.unknownOperator"),
+    f.dateTime(cause.at),
+    cause.product_name,
+    cause.from_sloc ? `${t("slocx.cause.from")} ${cause.from_sloc}` : "",
+    cause.invoice_number,
+    cause.action_raw,
+  ].filter(Boolean).join(" · ");
   const openRow = (row: SlocExplorerRow) => {
     drawerTrigger.current = document.activeElement as HTMLElement | null;
     setSelected(row);
@@ -529,6 +553,11 @@ export default function SlocExplorer({
                   <th scope="col">{t("slocx.position")}</th>
                   {head(t("common.storage"), "storage", "", "asc")}
                   <th scope="col">{t("common.status")}</th>
+                  {/* Tidak dapat diurutkan: penyebab dilekatkan pada baris yang
+                      sudah terpilih, jadi mengurutkannya hanya akan mengurutkan
+                      satu halaman — persis kekeliruan yang dihindari seluruh
+                      filter tabel ini. */}
+                  <th scope="col" title={t("slocx.cause.hint")}>{t("slocx.cause")}</th>
                   {head(t("export.occQty"), "occ_qty", "text-right")}
                   {head(t("export.occCbm"), "occ_cbm", "text-right")}
                   {head("% Qty", "pct_qty", "text-right")}
@@ -572,6 +601,26 @@ export default function SlocExplorer({
                         ? <span className={statusTone(row.status)}>{t(`heat.legendStatus.${row.status}`)}</span>
                         : <StatusBadge status={row.status as never} />}
                     </td>
+                    {/* "Movement mana dan siapa": tipe + unit di baris atas,
+                        pelaksana + waktu di bawahnya. Seluruh rinciannya —
+                        produk, transaksi, aksi asli WMS — masuk ke tooltip dan
+                        ke laci detail, supaya kolom ini tidak melebarkan tabel
+                        lebih dari yang dapat dibaca sekilas. */}
+                    <td className="slocx-cause-cell">
+                      {row.cause ? (
+                        <span
+                          className={`slocx-cause${CULPRIT_STATUSES.has(row.status) ? " is-culprit" : ""}`}
+                          title={causeSummary(row.cause)}
+                        >
+                          <b>{t(`mv.type.${row.cause.movement_type}`)} <i className="num">+{f.num(row.cause.qty)}</i></b>
+                          <small className="num">
+                            {row.cause.operator || t("slocx.cause.unknownOperator")} · {f.dateTime(row.cause.at)}
+                          </small>
+                        </span>
+                      ) : (
+                        <span className="slocx-cause-empty" title={t("slocx.cause.none")}>—</span>
+                      )}
+                    </td>
                     <td className="num text-right">
                       {f.num(row.occ_qty)}
                       <span style={{ color: "var(--text-muted)" }}>/{row.qty_valid ? f.num(row.cap_qty) : "—"}</span>
@@ -595,7 +644,7 @@ export default function SlocExplorer({
                 ))}
                 {!loading && rows.length === 0 && (
                   <tr>
-                    <td colSpan={14} className="py-10 text-center text-xs" style={{ color: "var(--text-muted)" }}>
+                    <td colSpan={columnCount} className="py-10 text-center text-xs" style={{ color: "var(--text-muted)" }}>
                       {t("slocx.noMatches")}
                     </td>
                   </tr>
@@ -623,6 +672,15 @@ export default function SlocExplorer({
                   <span>CBM <b className="num">{pctText(row.pct_cbm)}</b></span>
                   <span>SKU <b className="num">{row.sku_count}</b></span>
                 </div>
+                {row.cause && (
+                  <div className={`slocx-mobile-cause${CULPRIT_STATUSES.has(row.status) ? " is-culprit" : ""}`}>
+                    <span>{t("slocx.cause")}</span>
+                    <b>{t(`mv.type.${row.cause.movement_type}`)} +{f.num(row.cause.qty)}</b>
+                    <small className="num">
+                      {row.cause.operator || t("slocx.cause.unknownOperator")} · {f.dateTime(row.cause.at)}
+                    </small>
+                  </div>
+                )}
               </button>
             ))}
             {!loading && rows.length === 0 && <div className="occ-empty-state">{t("slocx.noMatches")}</div>}
@@ -707,6 +765,56 @@ export default function SlocExplorer({
                 <small>{selected.occupied ? t("heat.binFilled") : t("heat.binEmpty")}</small>
               </div>
             </div>
+            {/* Laci menjawab pertanyaan yang sama dengan kolomnya, tetapi
+                lengkap: produk apa, transaksi mana, dari rak mana, dan aksi
+                asli WMS-nya — hal-hal yang tidak muat pada satu sel tabel. */}
+            {selected.cause ? (
+              <div className={`slocx-cause-card card mb-3${CULPRIT_STATUSES.has(selected.status) ? " is-culprit" : ""}`}>
+                <div className="slocx-cause-card-head">
+                  <span className="eyebrow">{t("slocx.cause")}</span>
+                  <span className="num">{f.dateTime(selected.cause.at)}</span>
+                </div>
+                <strong>
+                  {t(`mv.type.${selected.cause.movement_type}`)}
+                  <i className="num mvx-qty mvx-in"> +{f.num(selected.cause.qty)}</i>
+                </strong>
+                <dl className="slocx-cause-facts">
+                  <div>
+                    <dt>{t("slocx.cause.operator")}</dt>
+                    <dd>{selected.cause.operator || t("slocx.cause.unknownOperator")}</dd>
+                  </div>
+                  <div>
+                    <dt>{t("common.product")}</dt>
+                    <dd title={selected.cause.product_name}>
+                      {selected.cause.product_name || "—"}
+                      {selected.cause.sku_number && <span className="num"> · {selected.cause.sku_number}</span>}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t("mv.col.invoice")}</dt>
+                    <dd className="num">{selected.cause.invoice_number || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>{t("slocx.cause.from")}</dt>
+                    <dd className="num">{selected.cause.from_sloc ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>{t("mv.detail.rawAction")}</dt>
+                    <dd title={selected.cause.action_raw}>{selected.cause.action_raw || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt title={t("slocx.cause.windowHint")}>{t("slocx.cause.totalIn")}</dt>
+                    <dd className="num">
+                      +{f.num(selected.cause.qty_in)} · {selected.cause.events}×
+                    </dd>
+                  </div>
+                </dl>
+                <p className="slocx-cause-note">{t("slocx.cause.hint")}</p>
+              </div>
+            ) : (
+              <p className="slocx-cause-none mb-3">{t("slocx.cause.none")}</p>
+            )}
+
             <div className="eyebrow mb-1.5">{t("heat.skuAtLocation")} · {selected.sku_count} SKU</div>
             {stockLoading ? (
               <p className="text-xs" style={{ color: "var(--text-muted)" }}>{t("common.loading")}</p>
@@ -749,6 +857,7 @@ export default function SlocExplorer({
               movements={moves}
               slocCode={selected.sloc_code}
               loading={stockLoading}
+              highlightUid={selected.cause?.movement_uid ?? null}
             />
           </aside>
         </div>

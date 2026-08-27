@@ -73,7 +73,18 @@ export default function WarehouseOverviewTable({
             <td className="num text-right">{f.pct(w.pct_bin)}</td><td className="num text-right">{f.num(w.sloc_empty)}</td>
             <td className="num text-right">{f.hours(w.hours_to_95)}</td>
           </tr>;
-        })}</tbody>
+        })}
+        {/* Instalasi yang belum pernah menyinkronkan tidak punya satu pun
+            gudang. Tanpa baris ini yang tampil hanyalah deretan judul kolom
+            yang menggantung — terbaca seperti tabel rusak, bukan seperti data
+            yang memang belum ada. */}
+        {sorted.length === 0 && (
+          <tr>
+            <td colSpan={7} className="py-8 text-center text-xs" style={{ color: "var(--text-muted)" }}>
+              {t("common.none")}
+            </td>
+          </tr>
+        )}</tbody>
       </table>
     </div>
   );

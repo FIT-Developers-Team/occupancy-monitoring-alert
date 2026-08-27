@@ -14,7 +14,23 @@ export default function RunTickButton({ enabled = true }: { enabled?: boolean })
   async function run() {
     setBusy(true);
     setFailed(false);
-    const response = await fetch("/api/cron/tick", { method: "POST" });
+    // `fetch` yang menolak — jaringan putus, proxy memutus koneksi, tab
+    // kehilangan sambungan — melempar sebelum baris `setBusy(false)` tercapai.
+    // Tanpa penjagaan ini tombolnya tinggal selamanya pada "Mengevaluasi…"
+    // dalam keadaan nonaktif, dan satu-satunya jalan keluarnya memuat ulang
+    // halaman. Kegagalan jaringan justru saat yang paling butuh tombol ini
+    // dapat ditekan lagi.
+    let response: Response;
+    try {
+      response = await fetch("/api/cron/tick", { method: "POST" });
+    } catch (error) {
+      setBusy(false);
+      setFailed(true);
+      setLast(lang === "en"
+        ? `Evaluation could not be sent — ${(error as Error).message}`
+        : `Evaluasi tidak terkirim — ${(error as Error).message}`);
+      return;
+    }
     const body = await response.json().catch(() => null);
     setBusy(false);
     if (response.ok && body) {

@@ -1840,7 +1840,7 @@ async function movementQuery<T>(sql: string, params: unknown[] = []): Promise<T[
     return await queryHistory<T>(sql, params);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/movement_events|vw_movement/i.test(message)) return [];
+    if (/movement_events|vw_movement|vw_sloc_gain|_sloc_gain_current/i.test(message)) return [];
     throw error;
   }
 }
@@ -2430,6 +2430,51 @@ export interface SlocExplorerRow {
   view_pct: number | null;
   status: string;
   sku_count: number;
+  /**
+   * Pergerakan terakhir yang MENAMBAH isi lokasi ini — jawaban "apa yang
+   * berubah, dan siapa yang melakukannya". `null` bila tidak ada satu pun
+   * penambahan tercatat pada rentang data pergerakan yang tersimpan.
+   */
+  cause: SlocMovementCause | null;
+}
+
+/**
+ * Penyebab sebuah lokasi menjadi sepenuh sekarang.
+ *
+ * BATASNYA DITULIS DI SINI, BUKAN DISERAHKAN KE PEMBACA
+ * ----------------------------------------------------
+ * Yang dapat dihitung dari data yang ada adalah PENAMBAHAN TERAKHIR, bukan
+ * "pergerakan yang tepat membuat lokasi ini melewati kapasitas". Menentukan
+ * yang kedua menuntut deret waktu okupansi per lokasi, sedangkan `stock_history`
+ * hanya menyimpan snapshot — jadi jawabannya akan menebak, dan tebakan pada
+ * kolom bernama "penyebab" jauh lebih berbahaya daripada fakta yang lebih
+ * sempit tetapi benar.
+ *
+ * Untuk lokasi yang kini Breach, penambahan terakhir itulah pemicu yang dicari
+ * operasional: rak sudah penuh, dan inilah kegiatan terakhir yang menambahinya.
+ * `qty_in`/`events` melengkapinya dengan seluruh penambahan pada rentang data
+ * yang sama, sehingga satu baris kecil tidak disalahartikan sebagai satu-satunya
+ * penyumbang.
+ */
+export interface SlocMovementCause {
+  movement_uid: string;
+  /** Waktu kejadian (ISO ber-offset, sudah dikoreksi jam sumber). */
+  at: string;
+  qty: number;
+  /** SIAPA — pelaksana pada WMS. */
+  operator: string;
+  /** Aksi asli WMS, apa adanya. */
+  action_raw: string;
+  movement_type: MovementType;
+  product_name: string;
+  sku_number: string;
+  invoice_number: string;
+  /** Lokasi asal, hanya bila penambahan itu berupa pemindahan antar-rak. */
+  from_sloc: string | null;
+  /** Seluruh unit yang masuk ke lokasi ini pada rentang data yang tersimpan. */
+  qty_in: number;
+  /** Berapa kali barang masuk pada rentang yang sama. */
+  events: number;
 }
 
 export interface SlocExplorerSummary {
@@ -2633,6 +2678,8 @@ function toExplorerRow(row: SlocRawRow): SlocExplorerRow {
     view_pct: row.view_pct === null ? null : r1(row.view_pct),
     status: row.status,
     sku_count: row.sku_count,
+    // Diisi oleh attachSlocCauses(); tabel dan ekspor memakai jalur yang sama.
+    cause: null,
   };
 }
 
@@ -2643,6 +2690,106 @@ const EMPTY_SLOC_SUMMARY: SlocExplorerSummary = {
 
 function warehouseKnown(code: string): boolean {
   return !code || getWarehouses().warehouses.some((warehouse) => warehouse.code === code);
+}
+
+/**
+ * Batas jumlah kode SLOC yang masih layak dikirim sebagai daftar IN.
+ *
+ * Satu halaman tabel paling banyak 500 baris, jadi daftarnya selalu muat dan
+ * DuckDB hanya mengembalikan lokasi yang benar-benar tampil. Ekspor membawa
+ * ratusan ribu kode; di sana daftarnya ditinggalkan dan seluruh relasi dibaca
+ * sekaligus — ia hanya berisi satu baris per lokasi, bukan satu per pergerakan.
+ */
+const CAUSE_PUSHDOWN_MAX = 600;
+
+interface CauseRawRow {
+  wh: string;
+  sloc_code: string;
+  movement_uid: string;
+  at: string;
+  qty: number;
+  operator: string;
+  action_raw: string;
+  movement_type: MovementType;
+  product_name: string;
+  sku_number: string;
+  invoice_number: string;
+  from_sloc: string | null;
+  qty_in: number;
+  events: number;
+}
+
+/**
+ * Melengkapi baris penjelajah dengan penambahan terakhir pada tiap lokasi.
+ *
+ * SATU FUNGSI UNTUK TABEL DAN UNTUK EKSPOR. Halaman dan berkas Excel memakai
+ * jalur yang sama persis, sehingga kolom "penyebab" pada keduanya tidak mungkin
+ * menjawab dari definisi yang berbeda — kesalahan yang paling mahal pada
+ * laporan okupansi justru berkas yang tidak sama dengan layarnya.
+ *
+ * Sumbernya `vw_sloc_gain`: satu baris per lokasi, dimaterialisasi sekali per
+ * snapshot oleh lib/db.ts. Lokasi yang dicocokkannya adalah lokasi yang BERUBAH
+ * ISINYA (lihat movementImpactSlocSQL), bukan `destination_sloc` — kolom tujuan
+ * hanya terisi pada pemindahan antar-rak, sementara putaway dan penerimaan PO
+ * (dua kegiatan yang paling sering membuat rak penuh) menuliskan raknya pada
+ * `source_sloc`.
+ *
+ * Instalasi yang belum pernah menyinkronkan pergerakan tidak punya relasi itu.
+ * Itu keadaan normal, bukan kegagalan: `movementQuery` menelannya dan setiap
+ * baris tetap `cause: null`, yang tampil sebagai "—" dan bukan sebagai halaman
+ * error.
+ */
+async function attachSlocCauses<T extends {
+  wh: string; sloc_code: string; cause: SlocMovementCause | null;
+}>(rows: T[]): Promise<T[]> {
+  if (!rows.length) return rows;
+
+  const codes = [...new Set(rows.map((row) => row.sloc_code))];
+  const warehouses = [...new Set(rows.map((row) => row.wh))];
+  const params: unknown[] = [];
+  const scope: string[] = [];
+  if (codes.length <= CAUSE_PUSHDOWN_MAX) {
+    scope.push(`g.sloc_code IN (${codes.map(() => "CAST(? AS VARCHAR)").join(", ")})`);
+    params.push(...codes);
+  }
+  scope.push(`m.wh IN (${warehouses.map(() => "CAST(? AS VARCHAR)").join(", ")})`);
+  params.push(...warehouses);
+
+  const causes = await movementQuery<CauseRawRow>(
+    `${WH_MAP()}
+     SELECT m.wh, g.sloc_code, g.movement_uid, ${sourceIso("g.created_at")} AS at,
+            g.qty, g.operator, g.action_raw,
+            ${movementTypeSQL("g.action_raw")} AS movement_type,
+            g.product_name, g.sku_number, g.invoice_number, g.from_sloc,
+            g.qty_in, g.events
+     FROM vw_sloc_gain g
+     JOIN wh_map m ON m.location_id = g.location_id
+     WHERE ${scope.join(" AND ")}`,
+    params,
+  );
+
+  if (!causes.length) return rows;
+  const byLocation = new Map<string, SlocMovementCause>();
+  for (const cause of causes) {
+    byLocation.set(`${cause.wh}|${cause.sloc_code}`, {
+      movement_uid: cause.movement_uid,
+      at: cause.at,
+      qty: r1(cause.qty),
+      operator: cause.operator,
+      action_raw: cause.action_raw,
+      movement_type: cause.movement_type,
+      product_name: cause.product_name,
+      sku_number: cause.sku_number,
+      invoice_number: cause.invoice_number,
+      from_sloc: cause.from_sloc,
+      qty_in: r1(cause.qty_in),
+      events: cause.events,
+    });
+  }
+  for (const row of rows) {
+    row.cause = byLocation.get(`${row.wh}|${row.sloc_code}`) ?? null;
+  }
+  return rows;
 }
 
 /** Halaman tabel + ringkasan seluruh hasil filter dalam satu perjalanan kueri. */
@@ -2700,7 +2847,11 @@ export async function getSlocExplorerPage(
   const total = head.total_rows;
   const occupied = head.total_occupied;
   return {
-    rows: rows.map(toExplorerRow),
+    // Penyebab dilekatkan pada baris yang benar-benar ditampilkan saja: satu
+    // halaman berjumlah ratusan, sedangkan tabel pergerakan berisi ratusan ribu
+    // baris — mencocokkan seluruhnya lebih dulu berarti membayar pemindaian
+    // penuh untuk baris yang tidak pernah dilihat siapa pun.
+    rows: await attachSlocCauses(rows.map(toExplorerRow)),
     summary: {
       total,
       occupied,
@@ -2807,7 +2958,9 @@ export async function getSlocExplorerAll(
      LIMIT ? OFFSET ?`,
     [...plan.params, cap, 0],
   );
-  return rows.map(toExplorerRow);
+  // Jalur yang sama dengan tabel: kolom penyebab pada berkas Excel dan pada
+  // layar berasal dari satu fungsi, jadi keduanya tidak dapat menyimpang.
+  return attachSlocCauses(rows.map(toExplorerRow));
 }
 
 export interface SlocFacets {

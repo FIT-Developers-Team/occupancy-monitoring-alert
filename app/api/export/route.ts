@@ -109,10 +109,26 @@ function slocColumns(t: TFn): XlsxColumn[] {
     { key: "utilization_pct", header: t("export.utilizationPct"), type: "number", width: 14 },
     { key: "sku_count", header: t("dens.skuCount"), type: "integer", width: 12 },
     { key: "basis", header: t("export.policyBasis"), width: 12 },
+    // "Movement mana dan siapa" — kolomnya dipecah, bukan digabung menjadi satu
+    // kalimat, supaya berkas ini dapat langsung disaring dan di-pivot: berapa
+    // breach per pelaksana, per tipe pergerakan, per jam. Satu sel berisi
+    // kalimat siap baca justru membuat pekerjaan itu mustahil.
+    { key: "cause_at", header: t("export.cause.at"), width: 20 },
+    { key: "cause_operator", header: t("export.cause.operator"), width: 24 },
+    { key: "cause_type", header: t("export.cause.type"), width: 18 },
+    { key: "cause_qty", header: t("export.cause.qty"), type: "number", width: 13 },
+    { key: "cause_product", header: t("export.cause.product"), width: 30 },
+    { key: "cause_sku", header: t("export.cause.sku"), width: 16 },
+    { key: "cause_invoice", header: t("export.cause.invoice"), width: 20 },
+    { key: "cause_from", header: t("export.cause.from"), width: 24 },
+    { key: "cause_action", header: t("export.cause.action"), width: 34 },
+    { key: "cause_qty_in", header: t("export.cause.qtyIn"), type: "number", width: 15 },
+    { key: "cause_events", header: t("export.cause.events"), type: "integer", width: 15 },
   ];
 }
 
 function slocSheetRow(row: SlocExplorerRow, t: TFn) {
+  const cause = row.cause;
   return {
     ...row,
     fill: row.occupied ? t("common.filled") : t("common.empty"),
@@ -122,6 +138,23 @@ function slocSheetRow(row: SlocExplorerRow, t: TFn) {
     cap_cbm: row.cbm_valid ? row.cap_cbm : null,
     cap_cbm_nominal: row.cbm_valid ? row.cap_cbm_nominal : null,
     basis: row.basis.toUpperCase(),
+    // Sel dibiarkan KOSONG bila tidak ada penambahan tercatat. Menuliskan "—"
+    // akan mengubah kolom angka menjadi kolom teks di Excel, dan itu mematikan
+    // penjumlahan pada kolom qty di sebelahnya.
+    // ISO ber-offset, sama persis dengan kolom waktu pada lembar Pergerakan —
+    // satu-satunya bentuk yang tetap dapat diurutkan dan tidak berubah arti
+    // ketika berkasnya dibuka pada Excel berlokal lain.
+    cause_at: cause ? cause.at : null,
+    cause_operator: cause ? cause.operator || null : null,
+    cause_type: cause ? t(`mv.type.${cause.movement_type}`) : null,
+    cause_qty: cause ? cause.qty : null,
+    cause_product: cause ? cause.product_name || null : null,
+    cause_sku: cause ? cause.sku_number || null : null,
+    cause_invoice: cause ? cause.invoice_number || null : null,
+    cause_from: cause?.from_sloc ?? null,
+    cause_action: cause ? cause.action_raw || null : null,
+    cause_qty_in: cause ? cause.qty_in : null,
+    cause_events: cause ? cause.events : null,
   };
 }
 

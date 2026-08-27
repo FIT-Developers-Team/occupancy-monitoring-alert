@@ -38,11 +38,11 @@ export default async function AuditPage() {
           <table className="tbl">
             <thead>
               <tr>
-                <th>{t("common.time")}</th>
-                <th>{t("audit.column.actor")}</th>
-                <th>{t("audit.column.action")}</th>
-                <th>{t("audit.column.entity")}</th>
-                <th>{t("audit.column.detail")}</th>
+                <th scope="col">{t("common.time")}</th>
+                <th scope="col">{t("audit.column.actor")}</th>
+                <th scope="col">{t("audit.column.action")}</th>
+                <th scope="col">{t("audit.column.entity")}</th>
+                <th scope="col">{t("audit.column.detail")}</th>
               </tr>
             </thead>
             <tbody>
@@ -78,12 +78,12 @@ export default async function AuditPage() {
           <table className="tbl">
             <thead>
               <tr>
-                <th>{t("common.time")}</th>
-                <th>{t("audit.column.channel")}</th>
-                <th>{t("audit.column.recipient")}</th>
-                <th>{t("common.status")}</th>
-                <th>{t("audit.column.alert")}</th>
-                <th>{t("audit.column.message")}</th>
+                <th scope="col">{t("common.time")}</th>
+                <th scope="col">{t("audit.column.channel")}</th>
+                <th scope="col">{t("audit.column.recipient")}</th>
+                <th scope="col">{t("common.status")}</th>
+                <th scope="col">{t("audit.column.alert")}</th>
+                <th scope="col">{t("audit.column.message")}</th>
               </tr>
             </thead>
             <tbody>

@@ -467,7 +467,54 @@ Batas pengaman: 400.000 baris SLOC, 200.000 baris isi zona, 50.000 alert,
 100.000 baris pergerakan — semuanya jauh di atas volume nyata (±144k SLOC aktif)
 sehingga tidak pernah memaksa unduhan bertahap.
 
-### 5.2 Pergerakan stok — standardisasi tipe aksi
+### 5.2 Penyebab Breach — movement mana, dan siapa
+
+Tabel **Penjelajah SLOC** (Okupansi, Lokasi Prioritas, detail gudang, detail
+zona) punya kolom **Penyebab**: pergerakan terakhir yang MENAMBAH isi lokasi
+itu, lengkap dengan pelaksananya. Untuk lokasi Kritis & Breach, baris itulah
+pemicu yang dicari operasional — rak sudah penuh, dan inilah kegiatan terakhir
+yang menambahinya. Kolomnya ikut ke berkas Excel sebagai sebelas kolom
+terpisah (`Penyebab · waktu`, `· pelaksana`, `· tipe pergerakan`, `· qty masuk`,
+`· produk`, `· SKU`, `· transaksi`, `· dari lokasi`, `· aksi asli (WMS)`, serta
+`Total qty masuk` dan `Kejadian masuk`) — dipecah, bukan digabung jadi satu
+kalimat, supaya berkasnya dapat langsung disaring dan di-pivot: berapa breach
+per pelaksana, per tipe pergerakan, per jam.
+
+**Lokasi yang bertambah TIDAK dapat dibaca dari `destination_sloc`.** Dataset
+705 hanya mengisi kolom tujuan pada perpindahan antar-rak. Untuk semua kegiatan
+lain WMS menuliskan raknya pada `source_sloc` dan membedakan menambah dari
+mengurangi lewat `inventory_operator` (`+`/`−`). Diperiksa langsung pada dataset
+(2026-08-22, 356.526 baris dalam 24 jam): dari 103.630 baris bertanda `+`, hanya
+**9.453 (9%)** yang punya `destination_sloc`. Sisanya — termasuk 368 ribu unit
+`Adjust in stock for putaway task` dan 264 ribu unit `Submit purchase order
+inbound` — tercatat di `source_sloc`. Membaca kolom tujuan saja berarti
+melewatkan justru kegiatan yang paling sering membuat rak penuh.
+
+Karena itu `movementImpactSlocSQL()` di `lib/movements.ts` membaca KEDUA kolom
+plus tandanya: pada perpindahan antar-rak — yang ditulis sebagai dua baris
+kembar bertanda berlawanan — baris `+` menambah rak TUJUAN dan baris `−`
+mengurangi rak ASAL; pada baris lain, rak yang bersangkutan adalah kolom yang
+terisi. Hasilnya cakupan naik dari 7.452 menjadi 18.980 lokasi aktif.
+
+**Yang dijanjikan kolom ini persis sebatas yang dapat dihitung.** Menentukan
+pergerakan mana yang *tepat* melewatkan sebuah lokasi dari kapasitasnya menuntut
+deret waktu okupansi per lokasi, sedangkan `stock_history` hanya menyimpan
+snapshot — jadi jawabannya akan menebak, dan tebakan pada kolom bernama
+"penyebab" lebih berbahaya daripada fakta yang lebih sempit tetapi benar.
+`Total qty masuk` / `Kejadian masuk` melengkapinya dengan seluruh penambahan
+pada rentang data yang sama, sehingga satu baris kecil tidak disalahartikan
+sebagai satu-satunya penyumbang.
+
+**Biayanya dibayar sekali per snapshot, bukan per ketikan.** Relasi
+`vw_sloc_gain` (satu baris per lokasi) dimaterialisasi oleh `lib/db.ts`
+berbarengan dengan `vw_movement` dan `vw_sloc`. Terukur pada basis data ini,
+pada volume retensi 14 hari (5 juta baris): menghitungnya per permintaan memakan
+8,3 detik dan menyaringnya lebih dulu ke lokasi yang tampil tidak menolong
+(2,6–4,4 detik) karena biayanya ada pada pemindaiannya. Setelah dimaterialisasi
+— 9 detik sekali per snapshot, memakai satu `arg_max` agregat alih-alih window
+function — kueri tabel turun ke ~50 ms dan tidak lagi tumbuh bersama retensi.
+
+### 5.3 Pergerakan stok — standardisasi tipe aksi
 
 `inventory_action` ditulis bebas oleh WMS: satu kegiatan yang sama muncul
 sebagai `Putaway`, `PUT_AWAY`, dan `Penempatan`. Menampilkannya apa adanya
@@ -591,6 +638,32 @@ daftar alert sama sekali bila basis kebijakannya Qty dan Qty-nya masih longgar.
   - **Backup**: backup seluruh volume `/app/db`, bukan hanya berkas `.duckdb`;
     persistent storage melindungi dari pergantian container, tetapi bukan dari
     penghapusan volume, disk rusak, atau kesalahan operator.
+- **Sinkronisasi manual (“Sync sekarang”)**: tombolnya menulis
+  `db/.superset-sync-request.json`; daemon memeriksa berkas itu tiap dua detik,
+  menjalankannya di luar jadwal, lalu menghapusnya. Dua hal yang perlu diketahui
+  saat menelusuri "sync tidak jalan":
+  - **Permintaan yang tertinggal kini dibersihkan sendiri.** Penghapusan berkas
+    di sisi daemon dibungkus `except OSError: pass` — pada Windows berkas yang
+    sedang dibaca dapat menolak dihapus — dan daemon tidak akan pernah
+    mengerjakan berkas yang id-nya sudah tercatat. Dulu keadaan itu membuat
+    setiap klik berikutnya membalas 202 Accepted dengan “permintaan yang sudah
+    ada sedang diproses”, tanpa satu pun sinkronisasi berjalan dan tanpa satu
+    pun pesan kesalahan. Sekarang permintaan dianggap mandek begitu status
+    worker menutupnya, atau setelah dua menit tanpa tersentuh sama sekali, lalu
+    diganti dengan permintaan baru. Yang membedakan “masih menunggu” dari
+    “yatim” adalah status worker, bukan umur berkasnya: satu pass manual yang
+    sah dapat berjalan bermenit-menit.
+  - **Jadwal yang dijeda ikut mematikan sinkronisasi manual.** Daemon tidak
+    membaca berkas permintaan selama `schedule.enabled` bernilai `false`.
+    Halaman Pengaturan menyebutkan hal ini di bawah tombolnya alih-alih hanya
+    menonaktifkannya.
+- **“Abaikan cache Superset”** (Pengaturan → Jadwal & performa): menyalakan
+  `superset.force_refresh`, yang memaksa Superset menghitung ulang alih-alih
+  menyajikan hasil chart dari cache-nya. Sakelar ini sudah lama ada di
+  konfigurasi dan dipakai worker, tetapi sebelumnya hanya dapat diubah dengan
+  menyunting JSON di server. Nyalakan ketika sebuah pass melaporkan ribuan baris
+  ditulis tetapi angka di dasbor tidak bergerak — gejala khas cache Superset;
+  matikan lagi bila Superset menjadi lambat.
 - **Penerima lain**: kolom *Webhook Lain* per level menerima URL apa pun yang mau di-POST JSON alert (n8n, Apps Script, sistem tiket).
 - **Email**: `SMTP_*` di `.env` (kosong = dilewati).
 - **Docker**: `docker compose up -d --build` = dua service: web Node-only + managed sync. Scheduler tick/summary sudah menyatu di supervisor web, jadi tidak memerlukan container ketiga.

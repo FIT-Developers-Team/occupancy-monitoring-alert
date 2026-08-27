@@ -25,11 +25,22 @@ export default function SlocMovementList({
   movements,
   slocCode,
   loading = false,
+  highlightUid = null,
 }: {
   movements: MovementRow[];
   /** Dipakai untuk tautan "lihat semua" ke halaman Pergerakan. */
   slocCode: string;
   loading?: boolean;
+  /**
+   * Pergerakan yang ditandai sebagai penambahan terakhir pada lokasi ini.
+   *
+   * Daftar ini memuat kejadian masuk DAN keluar, berurutan waktu. Tanpa
+   * penanda, pembaca harus menebak sendiri baris mana yang membuat rak menjadi
+   * sepenuh sekarang — dan tebakan yang paling wajar, yaitu baris teratas,
+   * justru sering salah karena kejadian terakhir di sebuah rak penuh biasanya
+   * pengambilan barang.
+   */
+  highlightUid?: string | null;
 }) {
   const { t, lang } = useT();
   const f = formatters(lang);
@@ -46,14 +57,16 @@ export default function SlocMovementList({
       <ul className="mvlist">
         {movements.map((movement) => {
           const sign = movement.direction === "OUT" ? "−" : movement.direction === "IN" ? "+" : "";
+          const isCause = highlightUid !== null && movement.movement_uid === highlightUid;
           return (
-            <li key={movement.movement_uid}>
+            <li key={movement.movement_uid} className={isCause ? "is-cause" : undefined}>
               <div className="mvlist-main">
                 {/* Tipe kanonik, bukan teks aksi mentah: satu kegiatan yang sama
                     tidak boleh tampil dengan tiga ejaan berbeda pada panel
                     sesempit ini. Ejaan aslinya tetap tersedia sebagai tooltip. */}
                 <strong title={movement.action_raw}>
                   {t(`mv.type.${movement.movement_type}`)}
+                  {isCause && <em className="mvlist-cause-tag">{t("slocx.cause")}</em>}
                 </strong>
                 {/* Pemformat bersama, sama dengan tabel Pergerakan dan teks
                     alert — termasuk koreksi jam sumber dan penanda WIB. */}

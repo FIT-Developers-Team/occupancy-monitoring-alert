@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n-client";
+import NumberField from "@/components/ui/number-field";
 import { formatters } from "@/lib/utils";
 
 function SettingsPanelLoading() {
@@ -495,23 +496,31 @@ export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
             <table className="tbl">
               <thead>
                 <tr>
-                  <th>{t("set.ui.threshold.scope")}</th>
-                  <th>{t("set.ui.threshold.monitor")}</th>
-                  <th>{t("set.ui.threshold.warning")}</th>
-                  <th>{t("set.ui.threshold.critical")}</th>
-                  <th>{t("set.ui.threshold.breach")}</th>
-                  <th>{t("set.ui.threshold.hysteresis")}</th>
+                  <th scope="col">{t("set.ui.threshold.scope")}</th>
+                  <th scope="col">{t("set.ui.threshold.monitor")}</th>
+                  <th scope="col">{t("set.ui.threshold.warning")}</th>
+                  <th scope="col">{t("set.ui.threshold.critical")}</th>
+                  <th scope="col">{t("set.ui.threshold.breach")}</th>
+                  <th scope="col">{t("set.ui.threshold.hysteresis")}</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td className="font-semibold">{t("set.ui.threshold.default")}</td>
+                  {/* Judul baris, bukan sel biasa: tanpa ini pembaca layar
+                      menyebut sepuluh kotak angka tanpa pernah menyebut gudang
+                      mana yang sedang diatur. */}
+                  <th scope="row" className="font-semibold">{t("set.ui.threshold.default")}</th>
                   {TKEYS.map((k) => (
                     <td key={k}>
-                      <input type="number" className="input num w-20" value={thresholds.default[k]}
-                        onChange={(e) => setThresholds({
+                      <NumberField
+                        className="input num w-20"
+                        min={0}
+                        max={1000}
+                        aria-label={`${t("set.ui.threshold.default")} · ${t(`set.ui.threshold.${k === "hysteresis_buffer" ? "hysteresis" : k}`)}`}
+                        value={thresholds.default[k]}
+                        onChange={(value) => setThresholds({
                           ...thresholds,
-                          default: { ...thresholds.default, [k]: Number(e.target.value) },
+                          default: { ...thresholds.default, [k]: value },
                         })} />
                     </td>
                   ))}
@@ -520,10 +529,14 @@ export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
                   const o = thresholds.overrides[w] ?? {};
                   return (
                     <tr key={w}>
-                      <td className="num font-semibold">{w}</td>
+                      <th scope="row" className="num font-semibold">{w}</th>
                       {TKEYS.map((k) => (
                         <td key={k}>
+                          {/* Kolom override sengaja TIDAK memakai NumberField:
+                              di sini kosong punya arti sendiri — "ikuti nilai
+                              bawaan" — dan itu justru yang harus dipertahankan. */}
                           <input type="number" className="input num w-20"
+                            aria-label={`${w} · ${t(`set.ui.threshold.${k === "hysteresis_buffer" ? "hysteresis" : k}`)}`}
                             placeholder={String(thresholds.default[k])}
                             value={o[k] ?? ""}
                             onChange={(e) => {
@@ -576,7 +589,11 @@ export default function SettingsTabs({ storage }: { storage: ConfigStorage }) {
                       <span className={`badge badge-${SEVERITY_TONE_CLASS[overflow[row.key]].replace("severity-", "")}`}>
                         {t(`severity.${overflow[row.key]}`)}
                       </span>
+                      {/* Judul barisnya hanya berdekatan secara visual, tidak
+                          terhubung ke kontrolnya — pembaca layar mendengar
+                          "combo box" tanpa tahu tingkat mana yang sedang diatur. */}
                       <select className="input w-36" value={overflow[row.key]} disabled={row.locked}
+                        aria-label={t(row.labelKey)}
                         onChange={(e) => setOverflow({ [row.key]: e.target.value as Severity })}>
                         {SEVERITIES.map((value) => (
                           <option key={value} value={value}>{t(`severity.${value}`)}</option>

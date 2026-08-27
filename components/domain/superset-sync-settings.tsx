@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useT } from "@/lib/i18n-client";
+import { localeOf } from "@/lib/i18n-dict";
+import NumberField from "@/components/ui/number-field";
 import type {
   SupersetSyncConfig,
   SupersetSyncJob,
@@ -173,15 +175,35 @@ export default function SupersetSyncSettings() {
     return () => { active = false; };
   }, [c]);
 
+  /**
+   * Panel status ikut bergerak sendiri, termasuk saat tidak ada yang diklik.
+   *
+   * Versi sebelumnya berhenti memungut begitu worker siap dan tidak ada pass
+   * berjalan — artinya seluruh pass TERJADWAL tidak pernah terlihat: admin yang
+   * membuka layar ini dan menunggu sepuluh menit tetap membaca "Berhasil" dari
+   * pass sebelumnya, dan satu-satunya cara mengetahui sinkronisasi berjalan
+   * adalah memuat ulang halaman. Sekarang ia tetap memungut selagi diam, hanya
+   * lebih jarang.
+   *
+   * Pemungutan juga berhenti ketika tabnya tersembunyi dan menyusul sekali
+   * begitu tab kembali aktif — sebelumnya sebuah tab latar dengan worker mati
+   * memanggil endpoint ini setiap lima detik sepanjang hari.
+   */
   useEffect(() => {
     const state = status?.status.state;
     const workerReady = status?.status.worker.online && status.status.worker.ready;
-    if (state !== "queued" && state !== "running" && workerReady) return;
-    const timer = window.setInterval(
-      () => { loadStatus().catch(() => undefined); },
-      5_000,
-    );
-    return () => window.clearInterval(timer);
+    const active = state === "queued" || state === "running" || !workerReady;
+    const everyMs = active ? 5_000 : 30_000;
+    const poll = () => {
+      if (document.hidden) return;
+      loadStatus().catch(() => undefined);
+    };
+    const timer = window.setInterval(poll, everyMs);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
   }, [
     loadStatus,
     status?.status.state,
@@ -291,6 +313,7 @@ export default function SupersetSyncSettings() {
       if (!response.ok) {
         throw new Error(errorMessageOf(body, response, c("Sinkronisasi gagal dijalankan.", "Synchronisation could not be started.")));
       }
+      const request = body.request as { reused?: boolean; replaced_stale?: boolean } | undefined;
       setNotice({
         tone: "ok",
         text: body.worker_started
@@ -298,12 +321,17 @@ export default function SupersetSyncSettings() {
             "Worker berhasil dimulai dan sinkronisasi masuk antrean.",
             "The worker started and synchronisation has been queued.",
           )
-          : (body.request as { reused?: boolean } | undefined)?.reused
+          : request?.reused
             ? c(
               "Permintaan yang sudah ada sedang diproses.",
               "The existing request is being processed.",
             )
-            : c("Sinkronisasi masuk antrean.", "Synchronisation has been queued."),
+            : request?.replaced_stale
+              ? c(
+                "Permintaan lama yang tertinggal dibersihkan, dan sinkronisasi baru masuk antrean.",
+                "A leftover request was cleared and a fresh synchronisation has been queued.",
+              )
+              : c("Sinkronisasi masuk antrean.", "Synchronisation has been queued."),
       });
       await loadStatus();
     } catch (error) {
@@ -411,15 +439,24 @@ export default function SupersetSyncSettings() {
           <button className="btn" disabled={busy !== null} onClick={testConnection}>
             {busy === "test" ? c("Menguji…", "Testing…") : c("Uji koneksi", "Test connection")}
           </button>
+          {/* Tombol yang mati tanpa alasan adalah jalan buntu. Ketika jadwalnya
+              dijeda, daemon memang tidak pernah membaca berkas permintaan —
+              jadi yang perlu diketahui admin bukan "tidak bisa", melainkan apa
+              yang harus dinyalakan lebih dulu. */}
           <button
             className="btn"
             disabled={busy !== null || syncActive || !settings.config.schedule.enabled}
-            title={!workerReady
+            title={!settings.config.schedule.enabled
               ? c(
-                "FIT Occupancy Alert and Monitoring akan mencoba memulai worker lalu menjalankan sync.",
-                "FIT Occupancy Alert and Monitoring will try to start the worker before synchronising.",
+                "Jadwal sedang dijeda, dan worker tidak membaca permintaan manual selagi dijeda. Aktifkan “Jadwal & performa” lalu simpan.",
+                "The schedule is paused, and the worker ignores manual requests while it is. Enable it under “Schedule & performance”, then save.",
               )
-              : undefined}
+              : !workerReady
+                ? c(
+                  "FIT Occupancy Alert and Monitoring akan mencoba memulai worker lalu menjalankan sync.",
+                  "FIT Occupancy Alert and Monitoring will try to start the worker before synchronising.",
+                )
+                : undefined}
             onClick={runNow}
           >
             {syncActive
@@ -436,6 +473,14 @@ export default function SupersetSyncSettings() {
             {busy === "save" ? c("Menyimpan…", "Saving…") : c("Simpan", "Save")}
           </button>
         </div>
+        {!settings.config.schedule.enabled && (
+          <p className="sync-paused-note">
+            {c(
+              "Jadwal dijeda — sinkronisasi otomatis maupun manual tidak akan berjalan. Aktifkan pada kartu “Jadwal & performa” lalu simpan.",
+              "The schedule is paused — neither automatic nor manual synchronisation will run. Enable it on the “Schedule & performance” card, then save.",
+            )}
+          </p>
+        )}
       </section>
 
       {runtime && !workerReady && (
@@ -660,28 +705,24 @@ export default function SupersetSyncSettings() {
             </label>
             <label className="sync-field">
               <span>{c("Percobaan ulang", "Retries")}</span>
-              <input
-                className="input num"
-                type="number"
+              <NumberField
                 min={1}
                 max={8}
                 value={settings.config.schedule.retry_count}
-                onChange={(event) => updateConfig({
-                  schedule: { ...settings.config.schedule, retry_count: Number(event.target.value) },
+                onChange={(retry_count) => updateConfig({
+                  schedule: { ...settings.config.schedule, retry_count },
                 })}
               />
             </label>
             <label className="sync-field">
               <span>{c("Batas waktu request", "Request timeout")}</span>
               <div className="sync-input-unit">
-                <input
-                  className="input num"
-                  type="number"
+                <NumberField
                   min={5}
-                  max={600}
+                  max={1_200}
                   value={settings.config.superset.timeout_sec}
-                  onChange={(event) => updateConfig({
-                    superset: { ...settings.config.superset, timeout_sec: Number(event.target.value) },
+                  onChange={(timeout_sec) => updateConfig({
+                    superset: { ...settings.config.superset, timeout_sec },
                   })}
                 />
                 <span>{c("detik", "sec")}</span>
@@ -689,33 +730,52 @@ export default function SupersetSyncSettings() {
             </label>
             <label className="sync-field">
               <span>{c("Batas baris/request", "Rows per request")}</span>
-              <input
-                className="input num"
-                type="number"
+              <NumberField
                 min={1_000}
                 max={10_000_000}
                 step={1_000}
                 value={settings.config.superset.server_row_cap}
-                onChange={(event) => updateConfig({
-                  superset: { ...settings.config.superset, server_row_cap: Number(event.target.value) },
+                onChange={(server_row_cap) => updateConfig({
+                  superset: { ...settings.config.superset, server_row_cap },
                 })}
               />
               <small>{c("Maks 10.000.000", "Max 10,000,000")}</small>
             </label>
             <label className="sync-field">
               <span>{c("Lookback (menit)", "Lookback (minutes)")}</span>
-              <input
-                className="input num"
-                type="number"
+              <NumberField
                 min={0}
-                max={1440}
+                max={1_440}
                 value={settings.config.performance?.lookback_minutes ?? 10}
-                onChange={(event) => updateConfig({
-                  performance: { ...settings.config.performance, lookback_minutes: Number(event.target.value) },
+                onChange={(lookback_minutes) => updateConfig({
+                  performance: { ...settings.config.performance, lookback_minutes },
                 })}
               />
             </label>
           </div>
+          {/* Superset menyajikan hasil chart dari cache-nya sendiri. Selama itu
+              aktif, sebuah pass dapat "berhasil" menarik ribuan baris yang
+              seluruhnya adalah salinan lama — sinkronisasi terlihat sehat
+              sementara dasbor tidak bergerak. Sakelarnya sudah lama ada di
+              konfigurasi dan dipakai worker, tetapi tidak pernah dapat dicapai
+              dari layar; satu-satunya cara menyalakannya adalah menyunting
+              berkas JSON di server. */}
+          <label className="sync-check sync-check-wide">
+            <input
+              type="checkbox"
+              checked={settings.config.superset.force_refresh}
+              onChange={(event) => updateConfig({
+                superset: { ...settings.config.superset, force_refresh: event.target.checked },
+              })}
+            />
+            <span>
+              {c("Abaikan cache Superset", "Bypass the Superset cache")}
+              <small>{c(
+                "Setiap permintaan memaksa Superset menghitung ulang. Nyalakan bila sinkronisasi berhasil tetapi angkanya tidak berubah; matikan bila Superset menjadi lambat.",
+                "Every request forces Superset to recompute. Enable this when a sync succeeds but the numbers never move; disable it if Superset becomes slow.",
+              )}</small>
+            </span>
+          </label>
           <div className="sync-scope">
             <span>{c("Gudang yang disinkronkan", "Synchronised warehouses")}</span>
             <div>
@@ -770,7 +830,7 @@ export default function SupersetSyncSettings() {
                         : latest?.status === "UP_TO_DATE" && latest.message
                           ? latest.message
                         : latest
-                          ? `${latest.rows_written.toLocaleString()} ${c("baris", "rows")}`
+                          ? `${latest.rows_written.toLocaleString(localeOf(lang))} ${c("baris", "rows")}`
                           : c("Belum ada hasil", "No result yet")}
                     </span>
                   </div>

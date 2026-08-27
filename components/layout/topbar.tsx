@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import ThemeToggle from "@/components/ui/theme-toggle";
 import CommandPalette from "@/components/ui/command-palette";
@@ -52,8 +52,20 @@ export default function Topbar({
   const pausedRef = useRef(paused);
   const refreshRef = useRef<() => void>(() => {});
 
+  // `router.refresh()` mengembalikan void dan menyelesaikan pekerjaannya diam-
+  // diam, jadi tombol "Muat ulang" tidak punya apa pun untuk ditampilkan:
+  // pengguna menekannya, tidak terjadi apa-apa yang terlihat, lalu beberapa
+  // detik kemudian angkanya berganti sendiri — atau tidak, kalau datanya memang
+  // belum berubah. Yang terbaca dari kursi pengguna adalah tombol rusak, dan
+  // reaksinya menekan berulang kali. `useTransition` memberi keadaan tertunda
+  // yang sebenarnya untuk refresh itu, sehingga tombolnya dapat menyebut apa
+  // yang sedang dikerjakannya.
+  const [refreshing, startRefresh] = useTransition();
+
   const refresh = useCallback(() => {
-    router.refresh();
+    startRefresh(() => {
+      router.refresh();
+    });
     nextRefresh.current = Date.now() + FALLBACK_REFRESH_MS;
   }, [router]);
 
@@ -219,7 +231,14 @@ export default function Topbar({
             {syncLabel}
           </span>
         </button>
-        <button className="btn btn-sm topbar-refresh" onClick={refresh}>{t("action.refresh")}</button>
+        <button
+          className="btn btn-sm topbar-refresh"
+          onClick={refresh}
+          disabled={refreshing}
+          aria-busy={refreshing}
+        >
+          {refreshing ? t("action.refreshing") : t("action.refresh")}
+        </button>
 
         <details
           className="account-menu"

@@ -175,7 +175,7 @@ export default function OccupancyZoneBrowser({
           <thead><tr>
             {!fixedWarehouse && head(t("common.warehouse"), "wh")}
             {head(t("common.zone"), "zone")}
-            <th>{t("common.storage")}</th>
+            <th scope="col">{t("common.storage")}</th>
             {head(t("common.occupancy"), "pct", "", -1)}
             {head("Qty", "pct_qty", "text-right", -1)}
             {head("CBM", "pct_cbm", "text-right", -1)}

@@ -446,6 +446,59 @@ export function getSupersetSyncStatus(): SupersetSyncStatus {
     : { state: "not_started", next_run_at: null, updated_at: null, worker };
 }
 
+/**
+ * Selang aman sebelum sebuah permintaan yang belum tersentuh dianggap mandek.
+ *
+ * Daemon memeriksa berkas permintaan setiap dua detik dan mengabaikan jadwal
+ * berikutnya begitu menemukannya, jadi jendela "ditulis tetapi belum terlihat"
+ * hitungannya detik. Dua menit memberi ruang lebih dari cukup untuk worker yang
+ * sedang sibuk menutup pass sebelumnya, tanpa membuat tombol Sync mati sepanjang
+ * sore ketika ada satu berkas yatim.
+ */
+const SYNC_REQUEST_STALE_MS = 120_000;
+
+/**
+ * Apakah berkas permintaan ini masih benar-benar menunggu dikerjakan?
+ *
+ * KENAPA PEMERIKSAAN INI ADA
+ * --------------------------
+ * Daemon menghapus berkas permintaan setelah pass-nya selesai — tetapi
+ * penghapusan itu dibungkus `except OSError: pass`, dan pada Windows berkas yang
+ * sedang dibaca memang bisa menolak dihapus. Ketika itu terjadi, daemon sudah
+ * mencatat id-nya pada `last_request_id`, sehingga berkas yang tertinggal tidak
+ * akan pernah dikerjakannya lagi. Versi sebelumnya di sini hanya memeriksa
+ * "apakah ada berkas permintaan", lalu menjawab `reused: true` — dan sejak itu
+ * SETIAP klik "Sync sekarang" mengembalikan 202 Accepted tanpa satu pun
+ * sinkronisasi pernah berjalan. Antarmuka melaporkan sukses, dasbor diam-diam
+ * membeku pada snapshot lama, dan tidak ada satu pun pesan kesalahan.
+ *
+ * Dua keadaan yang dibedakan di bawah tidak dapat disimpulkan dari umur berkas
+ * saja: sebuah pass manual yang sah dapat berjalan bermenit-menit dengan berkas
+ * permintaannya tetap ada. Yang menentukan justru status worker.
+ *
+ * Diekspor semata-mata agar aturannya dapat diuji tanpa menyiapkan berkas
+ * konfigurasi, worker, dan basis data — lihat tests/sync-request.test.mjs.
+ */
+export function pendingRequestState(
+  existing: { request_id?: string; requested_at?: string },
+  status: SupersetSyncStatus,
+): "active" | "stale" {
+  // Worker sedang mengerjakan permintaan INI. Berapa pun lamanya, ia hidup.
+  if (
+    (status.state === "running" || status.state === "queued")
+    && status.request_id === existing.request_id
+  ) return "active";
+  // Pass untuk permintaan ini SUDAH selesai, tetapi berkasnya masih ada —
+  // artinya penghapusannya gagal. Tidak perlu menunggu: daemon tidak akan
+  // menyentuhnya lagi.
+  if (status.request_id === existing.request_id) return "stale";
+  // Belum terlihat worker sama sekali. Beri jeda singkat sebelum menyimpulkan
+  // berkasnya yatim, supaya dua klik beruntun tidak menjadi dua pass.
+  const requestedAt = existing.requested_at ? Date.parse(existing.requested_at) : Number.NaN;
+  if (!Number.isFinite(requestedAt)) return "stale";
+  return Date.now() - requestedAt < SYNC_REQUEST_STALE_MS ? "active" : "stale";
+}
+
 export function requestSupersetSync(actor: string) {
   const config = getSupersetSyncConfig();
   if (!config.schedule.enabled) throw new Error("Jadwal sinkronisasi sedang dijeda.");
@@ -464,12 +517,13 @@ export function requestSupersetSync(actor: string) {
     requested_at?: string;
     requested_by?: string;
   }>(requestFile);
-  if (existing?.request_id) {
+  if (existing?.request_id && pendingRequestState(existing, status) === "active") {
     return {
       request_id: existing.request_id,
       requested_at: existing.requested_at ?? null,
       requested_by: existing.requested_by ?? null,
       reused: true,
+      replaced_stale: false,
     };
   }
   const request = {
@@ -477,6 +531,9 @@ export function requestSupersetSync(actor: string) {
     requested_at: new Date().toISOString(),
     requested_by: actor,
     reused: false,
+    // Dicatat ke jejak audit: berkas permintaan yang mandek adalah gejala
+    // penghapusan yang gagal di sisi worker, dan itu layak terlihat.
+    replaced_stale: Boolean(existing?.request_id),
   };
   writeConfigJsonAtomic(requestFile, request, 0o600);
   return request;

@@ -229,6 +229,154 @@ export function movementFlowSQL(from: string, to: string): string {
     ELSE 'IN_PLACE' END`;
 }
 
+// ---- lokasi yang benar-benar berubah isinya --------------------------------
+
+/**
+ * SLOC yang ISINYA BERUBAH oleh satu baris pergerakan.
+ *
+ * KENAPA BUKAN SEKADAR `destination_sloc`
+ * ---------------------------------------
+ * Dataset 705 TIDAK memakai `destination_sloc` sebagai "lokasi tujuan barang".
+ * Kolom itu hanya terisi pada PERPINDAHAN antar-rak. Untuk semua kegiatan lain
+ * — putaway, penerimaan PO, replenishment, penyesuaian — WMS menuliskan rak
+ * yang bersangkutan pada `source_sloc` dan meninggalkan `destination_sloc`
+ * kosong; yang membedakan menambah dari mengurangi hanyalah `inventory_operator`
+ * (`+` / `−`).
+ *
+ * Diperiksa langsung pada dataset (2026-08-22, 356.526 baris dalam 24 jam):
+ * dari 103.630 baris bertanda `+`, hanya 9.453 yang punya `destination_sloc` —
+ * 9%. Sisanya, termasuk 368 ribu unit "Adjust in stock for putaway task" dan
+ * 264 ribu unit "Submit purchase order inbound", tercatat di `source_sloc`.
+ * Membaca kolom tujuan saja berarti melewatkan justru kegiatan yang paling
+ * sering membuat sebuah rak penuh.
+ *
+ * Perpindahan antar-rak ditulis sebagai DUA baris kembar dengan pasangan
+ * asal→tujuan yang sama dan tanda berlawanan. Karena itu tandanya ikut
+ * menentukan sisi mana yang berubah: baris `+` mengubah rak TUJUAN, baris `−`
+ * mengubah rak ASAL. Tanpa aturan itu, satu pemindahan akan terhitung masuk
+ * pada kedua rak sekaligus.
+ */
+export function movementImpactSlocSQL(from: string, to: string, sign: string): string {
+  const f = `nullif(trim(coalesce(${from}, '')), '')`;
+  const t = `nullif(trim(coalesce(${to}, '')), '')`;
+  return `CASE
+    WHEN ${f} IS NOT NULL AND ${t} IS NOT NULL AND ${f} <> ${t}
+      THEN CASE WHEN (${movementDirectionSQL(sign)}) = 'OUT' THEN ${f} ELSE ${t} END
+    ELSE coalesce(${t}, ${f}) END`;
+}
+
+/** Padanan TypeScript dari movementImpactSlocSQL — dipakai antarmuka. */
+export function movementImpactSloc(
+  from: string | null | undefined,
+  to: string | null | undefined,
+  direction: MovementDirection,
+): string | null {
+  const f = String(from ?? "").trim() || null;
+  const t = String(to ?? "").trim() || null;
+  if (f && t && f !== t) return direction === "OUT" ? f : t;
+  return t ?? f;
+}
+
+/**
+ * Apakah baris ini MENAMBAH isi `slocCode`?
+ *
+ * Dipakai panel detail untuk menandai satu kejadian di antara riwayat lokasi:
+ * pertanyaan operasional "siapa yang menaruh barang di sini" hanya terjawab
+ * oleh baris yang menambah, bukan oleh pergerakan terakhir apa pun.
+ */
+export function movementAddsTo(
+  movement: Pick<MovementRow, "source_sloc" | "destination_sloc" | "direction">,
+  slocCode: string,
+): boolean {
+  if (movement.direction !== "IN") return false;
+  const impact = movementImpactSloc(movement.source_sloc, movement.destination_sloc, movement.direction);
+  return impact !== null && impact === slocCode.trim();
+}
+
+/**
+ * Penambahan TERAKHIR pada setiap lokasi, beserta seluruh totalnya.
+ *
+ * KENAPA SATU RELASI TERSENDIRI, BUKAN SUB-KUERI DI TEMPAT PEMAKAIAN
+ * ------------------------------------------------------------------
+ * Ekspresi di atas menyentuh empat kolom teks pada SETIAP baris pergerakan.
+ * Tabelnya menyimpan 14 hari (lihat config/superset-sync.json) — sekitar lima
+ * juta baris pada volume sekarang, 356 ribu baris per hari. Terukur pada basis
+ * data ini: menghitungnya per permintaan memakan 8,3 detik, dan menyaringnya
+ * lebih dulu ke lokasi yang sedang tampil TIDAK menolong (2,6–4,4 detik untuk
+ * 8 sampai 1.300 kode) karena biayanya ada pada pemindaiannya, bukan pada
+ * jumlah hasilnya. Penjelajah SLOC menembakkan kueri pada setiap ketikan, jadi
+ * angka seperti itu berarti kolom penyebab tidak dapat ada sama sekali.
+ *
+ * Dijadikan relasi tersendiri, hasilnya menyusut ke satu baris per lokasi —
+ * 22 ribu baris pada data sehari — dan dimaterialisasi sekali per snapshot oleh
+ * lib/db.ts, persis seperti `vw_movement` dan `vw_sloc`. Setelah itu pencarian
+ * penyebab hanyalah join kecil.
+ *
+ * `movement_type` sengaja TIDAK ikut disimpan: taksonomi aksi hidup di berkas
+ * ini dan berubah bersama kode, sedangkan replika hanya dibangun ulang ketika
+ * ada snapshot baru. Menyimpannya berarti label pada layar dapat tertinggal
+ * satu snapshot di belakang aturannya. Aksi mentahnya tersimpan, dan tipenya
+ * dihitung saat dibaca.
+ */
+export function slocGainSQL(relation = "vw_movement"): string {
+  const from = `nullif(trim(coalesce(v.source_sloc, '')), '')`;
+  const to = `nullif(trim(coalesce(v.destination_sloc, '')), '')`;
+  // Urutan yang menentukan "terakhir". Waktu saja tidak cukup: dua baris dapat
+  // berbagi detik yang sama, dan tanpa pemecah seri hasilnya berubah-ubah
+  // antar-jalankan pada lokasi yang justru paling sibuk.
+  const newest = "(created_at, movement_uid)";
+  return `WITH gain AS (
+    SELECT v.location_id,
+           ${movementImpactSlocSQL("v.source_sloc", "v.destination_sloc", "v.operator_sign")} AS sloc_code,
+           v.created_at, v.movement_uid,
+           abs(coalesce(v.qty, 0))::DOUBLE AS qty,
+           coalesce(v.operator, '') AS operator,
+           coalesce(v.action_raw, '') AS action_raw,
+           coalesce(v.product_name, '') AS product_name,
+           coalesce(v.sku_number, '') AS sku_number,
+           coalesce(v.invoice_number, '') AS invoice_number,
+           -- Hanya bermakna pada pemindahan antar-rak. Pada putaway dan
+           -- penerimaan, kolom asal ADALAH rak yang bertambah, jadi
+           -- menampilkannya sebagai "dari" akan membaca seperti barang datang
+           -- dari dirinya sendiri.
+           CASE WHEN ${from} IS NOT NULL AND ${to} IS NOT NULL AND ${from} <> ${to}
+                THEN ${from} END AS from_sloc
+    FROM ${relation} v
+    WHERE (${movementDirectionSQL("v.operator_sign")}) = 'IN'
+  ), scoped AS (
+    SELECT * FROM gain WHERE sloc_code IS NOT NULL
+  ), picked AS (
+    -- SATU agregat, bukan window function: baris terakhir dan totalnya lahir
+    -- dari pemindaian yang sama. Terukur pada basis data ini, pada volume
+    -- retensi 14 hari (5 juta baris): 14,2 detik dengan
+    -- \`QUALIFY row_number()\`, 3,5 detik dengan bentuk ini — hasilnya identik
+    -- baris per baris.
+    --
+    -- SELURUH kolom dibungkus menjadi SATU struct, dan itu bukan gaya
+    -- penulisan. \`arg_max\` MELEWATI baris yang argumennya NULL, jadi satu
+    -- \`arg_max\` per kolom akan mengambil \`from_sloc\` milik pergerakan lain
+    -- yang lebih tua setiap kali pergerakan terakhir bukan pemindahan —
+    -- terukur 863 lokasi salah pada data sehari, dan salahnya tidak kelihatan
+    -- karena nilainya tetap berupa kode rak yang tampak masuk akal. Struct
+    -- yang berisi NULL bukan NULL, sehingga barisnya tidak pernah dilewati.
+    SELECT location_id, sloc_code,
+           arg_max({
+             created_at: created_at, movement_uid: movement_uid, qty: qty,
+             operator: operator, action_raw: action_raw, product_name: product_name,
+             sku_number: sku_number, invoice_number: invoice_number, from_sloc: from_sloc
+           }, ${newest}) AS last,
+           sum(qty)::DOUBLE AS qty_in, count(*)::INT AS events
+    FROM scoped GROUP BY 1, 2
+  )
+  SELECT location_id, sloc_code,
+         last.created_at AS created_at, last.movement_uid AS movement_uid,
+         last.qty AS qty, last.operator AS operator, last.action_raw AS action_raw,
+         last.product_name AS product_name, last.sku_number AS sku_number,
+         last.invoice_number AS invoice_number, last.from_sloc AS from_sloc,
+         qty_in, events
+  FROM picked`;
+}
+
 // ---- kontrak filter --------------------------------------------------------
 
 /**
