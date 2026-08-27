@@ -1,13 +1,40 @@
-// Config-driven policy layer: thresholds, rules, recipients, warehouses, capacity.
+// Config-driven policy layer: thresholds, rules, recipients, warehouses,
+// capacity, and the per-SKU CBM standards that override the source data.
+//
+// Bentuk setiap seksi hidup di lib/config-schema.ts. Modul ini hanya menjawab
+// "di mana berkasnya", "kapan cache-nya batal", dan "apa yang perlu diperiksa
+// lintas berkas sebelum menyimpan".
 import fs from "fs";
-import { z } from "zod";
 import {
-  googleChatSpaceOf,
-  isGoogleChatWebhookUrl,
-  normalizeGoogleChatMentionId,
-  normalizeGoogleChatThreadName,
-} from "@/lib/notify/gchat-url";
+  CONFIG_SCHEMAS,
+  checkConfigCoherence,
+  type CapacityConfig,
+  type ConfigSection,
+  type RecipientsConfig,
+  type RulesConfig,
+  type SkuStandard,
+  type SkuStandardsConfig,
+  type ThresholdConfig,
+  type WarehousesConfig,
+} from "@/lib/config-schema";
 import { ensureRuntimeConfigSeeded, resolveConfigFile, writeConfigJsonAtomic } from "@/lib/runtime-config";
+
+export {
+  SEVERITY_LEVELS,
+  type CapacityConfig,
+  type CapacityRuleT,
+  type ConfigSection,
+  type GoogleChatRouteConfig,
+  type OverflowSeverityConfig,
+  type RecipientsConfig,
+  type RulesConfig,
+  type SkuStandard,
+  type SkuStandardsConfig,
+  type ThresholdConfig,
+  type WarehousesConfig,
+} from "@/lib/config-schema";
+
+const schemas = CONFIG_SCHEMAS;
 
 // Dijalankan sekali per proses, saat modul kebijakan pertama kali dimuat —
 // yaitu sebelum permintaan apa pun sempat membaca konfigurasi.
@@ -25,391 +52,33 @@ function sectionFile(section: ConfigSection, forWrite = false): string {
   return resolveConfigFile(`${section}.json`, forWrite);
 }
 
-export const SEVERITY_LEVELS = ["INFO", "WARNING", "HIGH", "CRITICAL", "EMERGENCY"] as const;
-const SeverityEnum = z.enum(SEVERITY_LEVELS);
-
-const ThresholdSchema = z.object({
-  default: z.object({
-    monitor: z.number(), warning: z.number(), critical: z.number(), breach: z.number(),
-    hysteresis_buffer: z.number().default(3),
-  }),
-  overrides: z.record(z.string(), z.object({
-    monitor: z.number().optional(), warning: z.number().optional(),
-    critical: z.number().optional(), breach: z.number().optional(),
-    hysteresis_buffer: z.number().optional(),
-  })).default({}),
-  /**
-   * Per-location alerts. A warehouse has ~144k active SLOCs and roughly 700 sit
-   * over their qty capacity at any moment, so this is deliberately capped: only
-   * the worst `max_alerts` locations above `min_pct` raise an alert per pass.
-   * Without the cap one tick would post hundreds of cards into the Space.
-   */
-  sloc_alerts: z.object({
-    enabled: z.boolean().default(true),
-    /**
-     * Seberapa jauh ke belakang pergerakan diperiksa bila jam evaluasi terakhir
-     * tidak diketahui — misalnya pada tick pertama sesudah deploy. Pada operasi
-     * normal jendelanya mengikuti jarak ke evaluasi sebelumnya, bukan angka ini.
-     */
-    window_hours: z.number().min(0.25).max(24).default(1),
-    max_alerts: z.number().int().min(1).max(200).default(20),
-    /**
-     * Tidak lagi dipakai. Dipertahankan supaya konfigurasi lama tetap terbaca
-     * tanpa membuat aplikasi gagal start: pemicunya kini adalah pergerakan yang
-     * membuat sebuah lokasi melewati kapasitas, bukan ambang volume notifikasi.
-     */
-    min_pct: z.number().min(100).max(1000).default(110),
-  }).default({}),
-  /**
-   * Bagaimana kelebihan kapasitas diterjemahkan menjadi tingkat keparahan.
-   *
-   * Ambang di atas menjawab "kapan sebuah lokasi/zona layak diberi alert".
-   * Blok ini menjawab pertanyaan yang berbeda dan lebih tajam: SEBERAPA buruk
-   * kondisinya. Satu basis melebihi kapasitas masih bisa berarti data master
-   * yang salah pada basis itu; Qty DAN CBM sama-sama melebihi kapasitas berarti
-   * lokasinya memang benar-benar penuh, dan itu tidak boleh berbagi tingkat
-   * keparahan dengan kasus pertama.
-   *
-   * Dua sumbu dinilai bersama, sehingga tingkatannya membentuk tangga:
-   *
-   *   |            | tepat di kapasitas | melebihi kapasitas |
-   *   | satu basis | HIGH               | CRITICAL           |
-   *   | dua basis  | CRITICAL           | EMERGENCY          |
-   *
-   * Severity kondisi lain dapat diatur karena batas antara "perlu dirapikan"
-   * dan "hentikan inbound" adalah keputusan operasional yang berbeda di setiap
-   * gudang. Hanya kontrak dua basis tepat di max = Critical yang dikunci.
-   */
-  overflow_severity: z.object({
-    /**
-     * Batas fisik kapasitas selalu 100% dari max_qty/max_cbm efektif.
-     *
-     * Versi lama membolehkan admin menggeser angka ini sampai 1.000%. Itu
-     * membuat lokasi yang Qty dan CBM-nya sudah persis sama dengan nilai max
-     * tidak lagi Critical, sehingga arti "max" berubah menurut konfigurasi
-     * alert. Nilai lama tetap diterima agar deployment tidak gagal start, lalu
-     * dinormalisasi ke 100 pada pembacaan/penyimpanan berikutnya.
-     */
-    over_pct: z.number().min(100).max(1000).default(100).transform(() => 100 as const),
-    /** Qty ATAU CBM melebihi kapasitas, sementara keduanya terukur. */
-    single_basis: SeverityEnum.default("CRITICAL"),
-    /** Qty DAN CBM sama-sama melebihi kapasitas. */
-    dual_basis: SeverityEnum.default("EMERGENCY"),
-    /**
-     * Qty DAN CBM sama-sama TEPAT di kapasitas maksimum, tidak melebihinya.
-     *
-     * Kondisi ini terpisah dari "sama-sama melebihi" karena tindakannya
-     * berbeda: isinya persis sama dengan angka maksimum yang disetel, jadi
-     * lokasinya memang penuh dan harus berhenti menerima inbound, tetapi belum
-     * ada satu unit pun yang tidak punya tempat dan angka masternya masih
-     * konsisten dengan kenyataan. Bawaan Critical — satu tingkat di bawah
-     * Breach yang dipakai saat kapasitas benar-benar terlampaui.
-     */
-    // Invariant bisnis: dua basis tepat di max selalu Critical. Nilai lama
-    // tetap diterima untuk migrasi, tetapi tidak boleh mengubah kategorinya.
-    dual_at_capacity: SeverityEnum.default("CRITICAL").transform(() => "CRITICAL" as const),
-    /**
-     * Satu basis tepat di kapasitas maksimum sementara basis lainnya masih
-     * longgar. Bawaannya sengaja di bawah "tepat di kapasitas pada keduanya":
-     * satu pengukuran yang pas di angka maksimum belum membuktikan lokasinya
-     * penuh.
-     */
-    single_at_capacity: SeverityEnum.default("HIGH"),
-    /**
-     * Hanya satu dari dua basis yang punya kapasitas sahih.
-     *
-     * Di sini "Qty dan CBM sama-sama lewat" tidak akan pernah dapat dibuktikan,
-     * jadi menaikkannya ke tingkat tertinggi berarti menghukum lubang di data
-     * master, bukan kondisi gudang. Bawaannya sengaja sama dengan satu basis.
-     */
-    single_measurable: SeverityEnum.default("CRITICAL"),
-    /** Ambang breach terlampaui tetapi belum ada basis yang melebihi kapasitas. */
-    threshold_only: SeverityEnum.default("HIGH"),
-  }).default({}),
-}).superRefine((value, ctx) => {
-  const check = (v: { monitor?: number; warning?: number; critical?: number; breach?: number }, path: (string | number)[]) => {
-    const values = [v.monitor, v.warning, v.critical, v.breach];
-    if (values.every((n) => n !== undefined) && !(values[0]! <= values[1]! && values[1]! <= values[2]! && values[2]! <= values[3]!)) {
-      ctx.addIssue({ code: "custom", path, message: "Ambang harus berurutan: monitor ≤ warning ≤ critical ≤ breach." });
-    }
-  };
-  check(value.default, ["default"]);
-  for (const [wh, override] of Object.entries(value.overrides)) {
-    check({ ...value.default, ...override }, ["overrides", wh]);
-  }
-});
-
-const RulesSchema = z.object({
-  rules: z.array(z.object({
-    id: z.string(), name: z.string(), category: z.string(),
-    severity: SeverityEnum,
-    enabled: z.boolean(), params: z.record(z.string(), z.any()).default({}),
-    description: z.string().default(""),
-  })),
-});
-
-const GoogleChatRouteSchema = z.object({
-  id: z.string().trim().min(1).max(80),
-  label: z.string().trim().min(1).max(80),
-  enabled: z.boolean().default(true),
-  warehouse_codes: z.array(z.string().trim().min(1).max(20)).min(1).default(["*"]),
-  webhook_url: z.string().url().refine(isGoogleChatWebhookUrl, {
-    message: "Webhook Google Chat harus memakai URL incoming webhook chat.googleapis.com yang lengkap.",
-  }),
-  // Who to tag for these warehouses. Work email is the expected form; numeric
-  // Chat user IDs and `all` still parse so older routes keep working.
-  mention_targets: z.array(z.string()).default([]).transform((values, ctx) => {
-    const normalized: string[] = [];
-    for (const [index, value] of values.entries()) {
-      const mention = normalizeGoogleChatMentionId(value);
-      if (!mention) {
-        ctx.addIssue({
-          code: "custom", path: [index],
-          message: "Tag harus berupa email kerja, user ID Google Chat, atau 'all'.",
-        });
-      } else if (!normalized.includes(mention)) {
-        normalized.push(mention);
-      }
-    }
-    return normalized;
-  }),
-  // Where inside the Space this route posts. Defaults to the previous
-  // behaviour: one thread per alert, keyed by dedup_key.
-  thread_mode: z.enum(["per_alert", "single", "existing"]).default("per_alert"),
-  /** Fixed thread key for thread_mode = "single". */
-  thread_key: z.string().trim().max(512).default(""),
-  /**
-   * `spaces/<space>/threads/<thread>` for thread_mode = "existing".
-   *
-   * Stored canonical. Admins paste the room link, and Google rejects a message
-   * whose thread.name is a URL — which is why alerts failed to reach the thread
-   * while Test send (which normalised separately) worked.
-   */
-  thread_name: z.string().trim().max(200).default("")
-    .transform((value) => normalizeGoogleChatThreadName(value) ?? value),
-  /**
-   * Per-warehouse thread override, e.g. `{ "CBT": "spaces/…/threads/…" }`.
-   * Lets one route fan a Space out into a thread per warehouse instead of
-   * forcing the admin to repeat the same webhook URL once per site.
-   */
-  thread_names: z.record(
-    z.string().trim().min(1).max(20),
-    z.string().trim().max(200).transform((value) => normalizeGoogleChatThreadName(value) ?? value),
-  ).default({}),
-}).superRefine((route, ctx) => {
-  if (route.thread_mode === "single" && !route.thread_key) {
-    ctx.addIssue({
-      code: "custom", path: ["thread_key"],
-      message: "Mode satu thread membutuhkan kunci thread.",
-    });
-  }
-  if (route.thread_mode !== "existing") return;
-  const space = googleChatSpaceOf(route.webhook_url);
-
-  // Posting into a thread of another Space fails silently at Google's end, so
-  // catch the mismatch while the admin is still looking at the form.
-  const checkThread = (raw: string, path: (string | number)[]) => {
-    const name = normalizeGoogleChatThreadName(raw);
-    if (!name) {
-      ctx.addIssue({
-        code: "custom", path,
-        message: "Nama thread harus berformat spaces/<space>/threads/<thread>.",
-      });
-      return;
-    }
-    if (space && !name.startsWith(`spaces/${space}/`)) {
-      ctx.addIssue({
-        code: "custom", path,
-        message: `Thread ini bukan milik Space webhook (spaces/${space}).`,
-      });
-    }
-  };
-
-  const perWarehouse = Object.entries(route.thread_names).filter(([, value]) => value.trim());
-  for (const [warehouse, value] of perWarehouse) checkThread(value, ["thread_names", warehouse]);
-
-  // A blanket thread is only required when some scoped warehouse lacks its own.
-  const scoped = route.warehouse_codes.filter((code) => code !== "*");
-  const covered = new Set(perWarehouse.map(([warehouse]) => warehouse));
-  const everyScopedHasThread = scoped.length > 0 && scoped.every((code) => covered.has(code));
-  if (!everyScopedHasThread) checkThread(route.thread_name, ["thread_name"]);
-});
-
-/** Routes saved before tagging moved to email still carry `mention_user_ids`. */
-const GoogleChatRoute = z.preprocess((value) => {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    const route = value as Record<string, unknown>;
-    if (route.mention_targets === undefined && route.mention_user_ids !== undefined) {
-      return { ...route, mention_targets: route.mention_user_ids };
-    }
-  }
-  return value;
-}, GoogleChatRouteSchema);
-
-const RecipientsSchema = z.object({
-  levels: z.array(z.object({
-    level: z.number().int().positive(), name: z.string().trim().min(1), delay_minutes: z.number().min(0),
-    gchat_routes: z.array(GoogleChatRoute).default([]),
-    // Kept only so existing installations can load and migrate their previous
-    // global webhook list through the new settings UI without losing data.
-    gchat_webhooks: z.array(z.string().url()).default([]),
-    webhooks: z.array(z.string().url()).default([]),
-    emails: z.array(z.string().email()).default([]),
-  })).min(1),
-  severity_start_level: z.record(z.string(), z.number().int().positive()),
-}).superRefine((value, ctx) => {
-  const levels = new Set<number>();
-  for (const [i, level] of value.levels.entries()) {
-    if (levels.has(level.level)) ctx.addIssue({ code: "custom", path: ["levels", i, "level"], message: "Nomor level harus unik." });
-    levels.add(level.level);
-    if (level.level === 1 && level.delay_minutes !== 0) {
-      ctx.addIssue({ code: "custom", path: ["levels", i, "delay_minutes"], message: "Level 1 harus dimulai tanpa jeda." });
-    }
-    const routeIds = new Set<string>();
-    for (const [routeIndex, route] of level.gchat_routes.entries()) {
-      if (routeIds.has(route.id)) {
-        ctx.addIssue({ code: "custom", path: ["levels", i, "gchat_routes", routeIndex, "id"], message: "ID rute Google Chat harus unik dalam satu level." });
-      }
-      routeIds.add(route.id);
-    }
-  }
-  const ordered = [...levels].sort((a, b) => a - b);
-  if (ordered.some((level, index) => level !== index + 1)) {
-    ctx.addIssue({ code: "custom", path: ["levels"], message: "Level eskalasi harus berurutan mulai dari 1." });
-  }
-  for (const [severity, level] of Object.entries(value.severity_start_level)) {
-    if (!levels.has(level)) ctx.addIssue({ code: "custom", path: ["severity_start_level", severity], message: "Level awal harus ada pada daftar eskalasi." });
-  }
-});
-
-const WarehousesSchema = z.object({
-  warehouses: z.array(z.object({
-    code: z.string(), location_id: z.number(), name: z.string(),
-    latitude: z.number().optional(), longitude: z.number().optional(),
-  })).min(1),
-}).superRefine((value, ctx) => {
-  const codes = new Set<string>(); const ids = new Set<number>();
-  value.warehouses.forEach((w, i) => {
-    if (codes.has(w.code)) ctx.addIssue({ code: "custom", path: ["warehouses", i, "code"], message: "Kode warehouse harus unik." });
-    if (ids.has(w.location_id)) ctx.addIssue({ code: "custom", path: ["warehouses", i, "location_id"], message: "location_id harus unik." });
-    codes.add(w.code); ids.add(w.location_id);
-  });
-});
-
-// ---- Kapasitas & basis okupansi (Qty/CBM) ----------------------------------
-// Resolver precedence: defaults -> rules berurutan (aturan di bawah menimpa).
-// Scope ber-kategori hanya boleh mengatur `count` (dihitung/tidak).
-const CapacityRule = z.object({
-  scope: z.object({
-    wh: z.string().optional(),
-    zone: z.string().optional(),        // cocok dgn zone (SRA) ATAU rack_zone (SRA1)
-    rack_zone: z.string().optional(),   // blok/rack spesifik, mis. MZA1
-    aisle: z.string().optional(),
-    bay: z.string().optional(),
-    level: z.string().optional(),
-    bin: z.string().optional(),
-    storage: z.string().optional(),
-    l1_category: z.string().optional(),
-  }).catchall(z.string()),
-  set: z.object({
-    basis: z.enum(["qty", "cbm"]).optional(),
-    max_qty: z.number().positive().optional(),
-    max_cbm: z.number().positive().optional(),
-    utilization_pct: z.number().min(10).max(100).optional(),
-    count: z.boolean().optional(),
-  }),
-  note: z.string().default(""),
-});
-
-const CapacitySchema = z.object({
-  basis_default: z.enum(["qty", "cbm"]).default("qty"),
-  utilization_pct: z.number().min(10).max(100).default(85),
-  count_statuses: z.array(z.string()).min(1).default(["Available"]),
-  exclude_categories: z.array(z.string()).default([]),
-  /**
-   * Zones that must not take part in any occupancy figure.
-   *
-   * A warehouse carries zones that exist in the master data but hold no real
-   * storage — staging, virtual, or transit areas with no capacity. Counting
-   * them adds locations to the denominator that can never be filled, which
-   * quietly drags the warehouse percentage down and makes a full site look
-   * comfortable. Listing a zone here removes it from both the numerator and the
-   * denominator everywhere occupancy is computed, so the remaining percentage
-   * describes only space that can actually be used.
-   *
-   * Only the `zone` column is matched, never `rack_zone`: this is a decision
-   * about an area of the warehouse, and matching both would silently disable
-   * rack blocks that happen to share a name.
-   */
-  disabled_zones: z.array(z.object({
-    wh: z.string().trim().min(1).max(20),
-    zone: z.string().trim().min(1).max(40),
-    note: z.string().trim().max(200).default(""),
-  })).default([]),
-  /**
-   * Baris kosong hasil "Tambah aturan" yang tidak jadi diisi dibuang di sini.
-   *
-   * Aturan tanpa scope DAN tanpa nilai tidak mengubah apa pun, tetapi ia ikut
-   * terhitung pada penghitung aturan, memperpanjang tabel editor, dan membuat
-   * pencarian "override global" (aturan pertama tanpa scope) mendarat di baris
-   * kosong alih-alih di kebijakan yang sebenarnya. Membersihkannya saat parse
-   * berarti konfigurasi lama ikut rapi tanpa migrasi terpisah.
-   */
-  rules: z.array(CapacityRule).default([]).transform((rules) =>
-    rules.filter((rule) =>
-      Object.keys(rule.scope).length > 0
-      || Object.values(rule.set).some((value) => value !== undefined)
-      || rule.note.trim().length > 0)),
-}).superRefine((v, ctx) => {
-  const seen = new Set<string>();
-  v.disabled_zones.forEach((entry, i) => {
-    const key = `${entry.wh}|${entry.zone}`;
-    if (seen.has(key)) {
-      ctx.addIssue({
-        code: "custom", path: ["disabled_zones", i],
-        message: `Zona ${entry.zone} pada ${entry.wh} tercatat lebih dari sekali.`,
-      });
-    }
-    seen.add(key);
-  });
-  v.rules.forEach((r, i) => {
-    const hasCat = !!r.scope.l1_category;
-    const capKeys = [r.set.basis, r.set.max_qty, r.set.max_cbm, r.set.utilization_pct]
-      .some((x) => x !== undefined);
-    if (hasCat && capKeys) {
-      ctx.addIssue({ code: "custom", path: ["rules", i],
-        message: "Scope ber-kategori hanya boleh mengatur 'count' (bukan basis/max/utilisasi)." });
-    }
-    if (r.set.count !== undefined && !hasCat) {
-      ctx.addIssue({ code: "custom", path: ["rules", i],
-        message: "'count' hanya berlaku untuk scope ber-kategori." });
-    }
-  });
-});
-
-export type ThresholdConfig = z.infer<typeof ThresholdSchema>;
-/** Kebijakan penerjemah kondisi kapasitas → severity (lib/alerts/severity.ts). */
-export type OverflowSeverityConfig = ThresholdConfig["overflow_severity"];
-export type RulesConfig = z.infer<typeof RulesSchema>;
-export type RecipientsConfig = z.infer<typeof RecipientsSchema>;
-export type GoogleChatRouteConfig = z.infer<typeof GoogleChatRouteSchema>;
-export type WarehousesConfig = z.infer<typeof WarehousesSchema>;
-export type CapacityConfig = z.infer<typeof CapacitySchema>;
-export type CapacityRuleT = z.infer<typeof CapacityRule>;
-
-const schemas = {
-  thresholds: ThresholdSchema,
-  rules: RulesSchema,
-  recipients: RecipientsSchema,
-  warehouses: WarehousesSchema,
-  capacity: CapacitySchema,
-} as const;
-export type ConfigSection = keyof typeof schemas;
-
 const cache = new Map<string, { file: string; mtime: number; data: unknown }>();
+
+/**
+ * Seksi yang belum punya berkas sama sekali dibaca sebagai objek kosong.
+ *
+ * Sebuah rilis yang menambahkan seksi baru mendarat di volume yang hanya berisi
+ * seksi-seksi lama. Tanpa jalur ini, `statSync` melempar ENOENT pada pembacaan
+ * pertama — dan karena kebijakan dibaca sebelum halaman mana pun dirender, itu
+ * berarti upgrade mematikan seluruh aplikasi sampai seseorang menaruh berkas
+ * kosong di server secara manual. Skema mengisi bawaannya, dan penyimpanan
+ * pertama dari halaman Pengaturan membuat berkasnya ada.
+ */
+function readSectionFallback<T>(section: ConfigSection): T {
+  const empty = schemas[section].safeParse({});
+  if (!empty.success) {
+    // Seksi yang tidak punya bentuk bawaan yang sah — ambang, gudang — memang
+    // wajib ada. Sebut berkasnya, karena "default: Required" tidak memberi tahu
+    // siapa pun berkas mana yang hilang.
+    throw new Error(`Konfigurasi ${section}.json tidak ditemukan dan tidak punya nilai bawaan.`);
+  }
+  cache.set(section, { file: "", mtime: 0, data: empty.data });
+  return empty.data as T;
+}
 
 function readSection<T>(section: ConfigSection): T {
   const file = sectionFile(section);
+  if (!fs.existsSync(file)) return readSectionFallback<T>(section);
   const stat = fs.statSync(file);
   const hit = cache.get(section);
   // Berkas ikut dibandingkan: begitu penyimpanan pertama memindahkan seksi ini
@@ -443,27 +112,33 @@ export const getRecipients = () => readSection<RecipientsConfig>("recipients");
 export const getWarehouses = () => readSection<WarehousesConfig>("warehouses");
 export const getCapacity = () => readSection<CapacityConfig>("capacity");
 
+/**
+ * Standar CBM per SKU yang ditetapkan admin — menimpa `sku_cbm` sumber data.
+ *
+ * Di jalur data ini dibaca dari SATU tempat saja: `stockLatestSQL()` di
+ * lib/queries.ts, yang membungkus setiap pembacaan stok. Itu disengaja — sebuah
+ * override yang hanya berlaku di sebagian layar lebih membingungkan daripada
+ * tidak ada override sama sekali.
+ */
+export const getSkuStandards = () => readSection<SkuStandardsConfig>("sku-standards");
+
+/** Peta SKU (huruf besar) → standar penggantinya. */
+export function skuStandardMap(): Map<string, SkuStandard> {
+  return new Map(getSkuStandards().standards.map((entry) => [entry.sku, entry]));
+}
+
 export function writeSection(section: ConfigSection, data: unknown): unknown {
   const parsed = schemas[section].parse(data);
-  if (section === "recipients") {
-    const knownWarehouses = new Set(getWarehouses().warehouses.map((warehouse) => warehouse.code));
-    const recipients = parsed as RecipientsConfig;
-    for (const level of recipients.levels) {
-      for (const route of level.gchat_routes) {
-        const unknown = route.warehouse_codes.filter((code) => code !== "*" && !knownWarehouses.has(code));
-        if (unknown.length) throw new Error(`Warehouse pada rute Google Chat tidak dikenal: ${unknown.join(", ")}.`);
-      }
-    }
-  }
-  if (section === "capacity") {
-    // A typo in a warehouse code would silently disable nothing, leaving the
-    // admin convinced a zone was excluded while it still counts.
-    const knownWarehouses = new Set(getWarehouses().warehouses.map((warehouse) => warehouse.code));
-    const unknown = (parsed as CapacityConfig).disabled_zones
-      .filter((entry) => !knownWarehouses.has(entry.wh))
-      .map((entry) => `${entry.wh}/${entry.zone}`);
-    if (unknown.length) throw new Error(`Warehouse pada zona nonaktif tidak dikenal: ${unknown.join(", ")}.`);
-  }
+  // Invarian lintas berkas dinilai pada bentuk sesudah penyimpanan: seksi yang
+  // sedang ditulis memakai nilai baru, sisanya nilai yang berlaku sekarang.
+  // Satu tempat saja, dipakai bersama pemulihan cadangan (lib/config-schema.ts)
+  // sehingga tidak mungkin lagi ada jalan tulis yang lolos pemeriksaan.
+  const problems = checkConfigCoherence({
+    "warehouses.json": section === "warehouses" ? parsed : getWarehouses(),
+    "capacity.json": section === "capacity" ? parsed : getCapacity(),
+    "recipients.json": section === "recipients" ? parsed : getRecipients(),
+  });
+  if (problems.length) throw new Error(problems.join(" "));
   // Penulisan atomik: berkas kebijakan yang terpotong karena proses mati di
   // tengah tulis akan membuat aplikasi gagal start pada restart berikutnya.
   // Recipients memuat URL webhook aktif, sehingga hak aksesnya harus sama

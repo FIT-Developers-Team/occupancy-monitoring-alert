@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getCapacity, getThresholds, thresholdsFor } from "@/lib/config";
+import { getCapacity, getSkuStandards, getThresholds, thresholdsFor } from "@/lib/config";
 import { currentUser, isAdmin } from "@/lib/auth";
 import { getLang, getT } from "@/lib/i18n";
 import { formatters } from "@/lib/utils";
@@ -32,6 +32,11 @@ export default async function CapacityStandardNote({
     (rule) => Object.keys(rule.scope).length > 0 || Object.keys(rule.set).length > 0,
   );
   const overrideRules = activeRules.length;
+  // Standar CBM per SKU mengubah PEMBILANG setiap rasio volume di halaman ini,
+  // sementara semua angka lain pada baris ini menjelaskan penyebutnya. Kalau
+  // ada yang ditetapkan, itu harus terbaca di sini juga — kalau tidak, satu
+  // volume yang "tidak sesuai sumber data" tidak punya penjelasan di layar.
+  const skuStandards = getSkuStandards().standards.length;
   // Contoh diambil dari nilai max_cbm yang paling sering dipakai di konfigurasi
   // ini, bukan angka karangan: yang perlu dikenali admin adalah angkanya
   // sendiri, supaya ia langsung melihat berapa nilai itu di layar.
@@ -92,6 +97,11 @@ export default async function CapacityStandardNote({
         <span className="chip">
           {t("set.ui.capacity.overrideRules")}: <b className="num">{overrideRules}</b>
         </span>
+        {skuStandards > 0 && (
+          <span className="chip" title={t("set.ui.sku.noteHint")}>
+            {t("set.ui.sku.chip")}: <b className="num">{skuStandards}</b>
+          </span>
+        )}
         {canEdit && (
           <Link className="chip chip-accent" href="/settings" prefetch={false}>
             {t("std.open")} →

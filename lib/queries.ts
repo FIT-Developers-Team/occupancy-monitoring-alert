@@ -10,7 +10,8 @@ import { hoursToTarget } from "@/lib/forecast";
 import { resolveSloc, categoryCounted, countedStatuses } from "@/lib/capacity";
 import type { SlocScope } from "@/lib/capacity";
 import {
-  getCapacity, getThresholds, getWarehouses, thresholdsFor, whMapSQL, whNameByCode,
+  getCapacity, getSkuStandards, getThresholds, getWarehouses,
+  skuStandardMap, thresholdsFor, whMapSQL, whNameByCode,
 } from "@/lib/config";
 import { clearReadModelMemory, readModelCached } from "@/lib/read-model-cache";
 import { CAPACITY_LIMIT_PCT, CAPACITY_MATCH_TOLERANCE_PCT } from "@/lib/alerts/severity";
@@ -60,6 +61,7 @@ let versionMemo: {
   warehouses: unknown;
   capacity: unknown;
   thresholds: unknown;
+  skuStandards: unknown;
   value: string;
 } | null = null;
 
@@ -74,19 +76,25 @@ let versionMemo: {
  *
  * Naikkan nilai ini setiap kali makna atau bentuk kolom hasil hitungan berubah.
  */
-const READ_MODEL_REVISION = "2026-08-20-capacity-boundary";
+const READ_MODEL_REVISION = "2026-08-27-sku-cbm-standard";
 
 function readModelVersion(): string {
   const db = String(historyDbVersion());
   const warehouses = getWarehouses();
   const capacity = getCapacity();
   const thresholds = getThresholds();
+  // Standar CBM per SKU mengubah PEMBILANG setiap rasio volume. Meninggalkannya
+  // di luar sidik jari berarti angka lama tetap tersaji dari
+  // `db/read-model-cache/` setelah admin menyimpan — yaitu persis kegagalan
+  // yang paling mustahil didiagnosis: setelan tersimpan, layar tidak berubah.
+  const skuStandards = getSkuStandards();
   if (
     versionMemo
     && versionMemo.db === db
     && versionMemo.warehouses === warehouses
     && versionMemo.capacity === capacity
     && versionMemo.thresholds === thresholds
+    && versionMemo.skuStandards === skuStandards
   ) return versionMemo.value;
   const value = createHash("sha1")
     .update(READ_MODEL_REVISION)
@@ -94,8 +102,9 @@ function readModelVersion(): string {
     .update(JSON.stringify(warehouses))
     .update(JSON.stringify(capacity))
     .update(JSON.stringify(thresholds))
+    .update(JSON.stringify(skuStandards))
     .digest("hex");
-  versionMemo = { db, warehouses, capacity, thresholds, value };
+  versionMemo = { db, warehouses, capacity, thresholds, skuStandards, value };
   return value;
 }
 
@@ -116,6 +125,63 @@ function capacityScope(m: CapacityMeta): SlocScope {
     storage: m.storage, max_quantity: m.max_quantity, max_volume: m.max_volume,
   };
 }
+
+// ---- Standar CBM per SKU ----------------------------------------------------
+//
+// SATU PINTU, DAN ITU BUKAN KEBETULAN
+// -----------------------------------
+// Seluruh sisi pembilang okupansi CBM berdiri di atas kolom `occupied_cbm` pada
+// dataset stok, dan kolom itu adalah `stock_qty × sku_cbm` — diverifikasi
+// terhadap basis data ini: 90.573 baris, nol yang menyimpang.
+//
+// Karena itu satu-satunya cara membuat standar CBM yang ditetapkan admin
+// berlaku di SETIAP layar adalah menempatkannya di antara tabel stok dan setiap
+// pembacaannya, bukan menambalnya di masing-masing kueri. `STOCK()` melakukan
+// itu: ia menggantikan `vw_stock_latest` di seluruh berkas ini dan
+// mengembalikan tabel yang `occupied_cbm` dan `sku_cbm`-nya sudah dihitung
+// ulang. Setiap `s.occupied_cbm` di bawah otomatis memakai angka admin —
+// heatmap, okupansi, penjelajah SLOC, alert, ekspor, proyeksi — tanpa satu pun
+// jalur yang perlu diingat untuk ikut diubah.
+//
+// Tanpa satu pun standar tersimpan, `STOCK()` mengembalikan nama view apa
+// adanya, sehingga SQL yang dihasilkan identik dengan sebelum fitur ini ada.
+const stockSqlMemo = { config: null as unknown, value: "vw_stock_latest" };
+
+function stockLatestSQL(): string {
+  const config = getSkuStandards();
+  if (stockSqlMemo.config === config) return stockSqlMemo.value;
+  const value = buildStockLatestSQL(config.standards);
+  stockSqlMemo.config = config;
+  stockSqlMemo.value = value;
+  return value;
+}
+
+function buildStockLatestSQL(standards: ReturnType<typeof getSkuStandards>["standards"]): string {
+  if (!standards.length) return "vw_stock_latest";
+  const key = "upper(trim(coalesce(sku_number, '')))";
+  const unitCases: string[] = [];
+  const volumeCases: string[] = [];
+  for (const entry of standards) {
+    const sku = sqlString(entry.sku);
+    const unit = Number(entry.unit_cbm);
+    unitCases.push(`WHEN ${sku} THEN ${unit}`);
+    // `occupied_cbm` dihitung ULANG dari qty, bukan diskalakan dari nilai
+    // lamanya. Menskalakan menuntut pembagian dengan `sku_cbm` sumber, dan
+    // nilai itu nol pada sebagian SKU — tepatnya SKU yang paling membutuhkan
+    // standar pengganti.
+    volumeCases.push(`WHEN ${sku} THEN coalesce(stock_qty, 0) * ${unit}`);
+  }
+  return `(
+    SELECT * REPLACE (
+      CASE ${key} ${volumeCases.join(" ")} ELSE occupied_cbm END AS occupied_cbm,
+      CASE ${key} ${unitCases.join(" ")} ELSE sku_cbm END AS sku_cbm
+    )
+    FROM vw_stock_latest
+  )`;
+}
+
+/** Tabel stok terkini, dengan standar CBM admin sudah diterapkan. */
+const STOCK = () => stockLatestSQL();
 
 // ---- filter bersama --------------------------------------------------------
 const WH_MAP = () => `WITH ${whMapSQL()}`;
@@ -477,6 +543,8 @@ export function invalidateOccupancyReadCaches(): void {
   // batal dengan sendirinya. Dibersihkan di sini juga supaya satu pemanggilan
   // benar-benar mengembalikan proses ke keadaan tanpa turunan yang tersimpan.
   capacitySqlMemo.clear();
+  stockSqlMemo.config = null;
+  stockSqlMemo.value = "vw_stock_latest";
   movementAggregateCache.clear();
   versionMemo = null;
   cacheHistoryVersion = historyDbVersion();
@@ -516,7 +584,7 @@ export async function getSlocOccupancy(input: OccupancyScope = {}): Promise<Sloc
      SELECT s.location_id, s.sloc_code, coalesce(s.l1_category,'') AS l1,
             sum(s.stock_qty)::DOUBLE AS qty, sum(s.occupied_cbm)::DOUBLE AS cbm,
             count(DISTINCT s.product_id)::INT AS pc
-     FROM vw_stock_latest s
+     FROM ${STOCK()} s
      JOIN vw_sloc v ON v.location_id = s.location_id AND v.sloc_code = s.sloc_code ${JOIN_WH}
      WHERE ${scopeSlocPredicate(scope)} AND ${statusPredicateSQL("s.status")}${scopeWhere(scope, params)}
      GROUP BY 1, 2, 3`,
@@ -535,8 +603,9 @@ export async function getSlocOccupancy(input: OccupancyScope = {}): Promise<Sloc
     byCode.set(key, cur);
   }
   const rows: SlocOccupancy[] = meta.map((m) => {
+    const key = keyFor(m.location_id, m.sloc_code);
     const eff = resolveSloc(capacityScope(m));
-    const o = byCode.get(keyFor(m.location_id, m.sloc_code)) ?? { qty: 0, cbm: 0, pc: 0 };
+    const o = byCode.get(key) ?? { qty: 0, cbm: 0, pc: 0 };
     const pq = eff.qty_valid && eff.cap_qty > 0 ? (o.qty / eff.cap_qty) * 100 : null;
     const pv = eff.cbm_valid && eff.cap_cbm > 0 ? (o.cbm / eff.cap_cbm) * 100 : null;
     const pct = (eff.basis === "qty" ? pq : pv) ?? (eff.basis === "qty" ? pv : pq) ?? 0;
@@ -610,7 +679,7 @@ async function loadWarehouseBase(): Promise<WarehouseBase[]> {
                 coalesce(sum(CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END), 0)::DOUBLE AS qty,
                 coalesce(sum(CASE WHEN e.cbm_valid THEN s.occupied_cbm ELSE 0 END), 0)::DOUBLE AS cbm
          FROM effective e
-         JOIN vw_stock_latest s
+         JOIN ${STOCK()} s
            ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
          WHERE ${statusPredicateSQL("s.status")}
            AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
@@ -621,7 +690,7 @@ async function loadWarehouseBase(): Promise<WarehouseBase[]> {
                   WHEN s.stock_qty > 0 OR s.occupied_cbm > 0 THEN e.sloc_id
                 END)::INT AS filled
          FROM effective e
-         JOIN vw_stock_latest s
+         JOIN ${STOCK()} s
            ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
          WHERE ${statusPredicateSQL("s.status")}
            AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
@@ -852,7 +921,7 @@ async function loadOccupancyScopeQuality(): Promise<OccupancyScopeQuality[]> {
      ), stock_exception AS (
        SELECT m.wh AS warehouse,
               count(*) FILTER (WHERE v.sloc_code IS NULL OR NOT (${OPERATIONAL_SLOC}))::INT AS stock_without_operational_sloc
-       FROM vw_stock_latest s
+       FROM ${STOCK()} s
        JOIN wh_map m ON m.location_id = s.location_id
        LEFT JOIN vw_sloc v ON v.sloc_code = s.sloc_code AND v.location_id = s.location_id
        GROUP BY 1
@@ -929,7 +998,7 @@ async function loadZoneSummary(wh?: string): Promise<ZoneSummary[]> {
               coalesce(sum(CASE WHEN e.qty_valid THEN s.stock_qty ELSE 0 END), 0)::DOUBLE AS qty,
               coalesce(sum(CASE WHEN e.cbm_valid THEN s.occupied_cbm ELSE 0 END), 0)::DOUBLE AS cbm
        FROM effective e
-       JOIN vw_stock_latest s
+       JOIN ${STOCK()} s
          ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
        WHERE ${statusPredicateSQL("s.status")}
          AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
@@ -940,7 +1009,7 @@ async function loadZoneSummary(wh?: string): Promise<ZoneSummary[]> {
                 WHEN s.stock_qty > 0 OR s.occupied_cbm > 0 THEN e.sloc_id
               END)::INT AS filled
        FROM effective e
-       JOIN vw_stock_latest s
+       JOIN ${STOCK()} s
          ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
        WHERE ${statusPredicateSQL("s.status")}
          AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
@@ -1073,7 +1142,7 @@ async function loadHeatmapPreviews(
               coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS cbm,
               count(DISTINCT s.product_id)::INT AS pc
        FROM sampled p
-       LEFT JOIN vw_stock_latest s
+       LEFT JOIN ${STOCK()} s
          ON s.location_id = p.location_id AND s.sloc_code = p.sloc_code
         AND ${statusPredicateSQL("s.status")}
        GROUP BY 1,2,3
@@ -1107,8 +1176,9 @@ async function loadHeatmapPreviews(
 
   const data: Record<string, SlocOccupancy[]> = {};
   for (const m of metaByKey.values()) {
+    const key = rowKey(m.location_id, m.sloc_code);
     const eff = resolveSloc(capacityScope(m));
-    const o = byKey.get(rowKey(m.location_id, m.sloc_code)) ?? { qty: 0, cbm: 0, pc: 0 };
+    const o = byKey.get(key) ?? { qty: 0, cbm: 0, pc: 0 };
     const pq = eff.qty_valid && eff.cap_qty > 0 ? (o.qty / eff.cap_qty) * 100 : null;
     const pv = eff.cbm_valid && eff.cap_cbm > 0 ? (o.cbm / eff.cap_cbm) * 100 : null;
     const pct = (eff.basis === "qty" ? pq : pv) ?? (eff.basis === "qty" ? pv : pq) ?? 0;
@@ -1177,7 +1247,7 @@ export async function getHeatmapPage(
               coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS cbm,
               count(DISTINCT s.product_id)::INT AS pc
        FROM paged p
-       LEFT JOIN vw_stock_latest s
+       LEFT JOIN ${STOCK()} s
          ON s.location_id = p.location_id AND s.sloc_code = p.sloc_code
         AND ${statusPredicateSQL("s.status")}
        GROUP BY 1, 2, 3
@@ -1206,8 +1276,9 @@ export async function getHeatmapPage(
     byCode.set(key, current);
   }
   const cells = [...metaByCode.values()].map((m) => {
+    const key = keyFor(m.location_id, m.sloc_code);
     const eff = resolveSloc(capacityScope(m));
-    const o = byCode.get(keyFor(m.location_id, m.sloc_code)) ?? { qty: 0, cbm: 0, pc: 0 };
+    const o = byCode.get(key) ?? { qty: 0, cbm: 0, pc: 0 };
     const pq = eff.qty_valid && eff.cap_qty > 0 ? (o.qty / eff.cap_qty) * 100 : null;
     const pv = eff.cbm_valid && eff.cap_cbm > 0 ? (o.cbm / eff.cap_cbm) * 100 : null;
     const pct = (eff.basis === "qty" ? pq : pv) ?? (eff.basis === "qty" ? pv : pq) ?? 0;
@@ -1323,7 +1394,7 @@ export async function getZoneDetail(
                  AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
                 THEN s.occupied_cbm ELSE 0 END), 0)::DOUBLE AS occ_cbm
        FROM effective e
-       LEFT JOIN vw_stock_latest s
+       LEFT JOIN ${STOCK()} s
          ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
        GROUP BY e.location_id, e.sloc_code
      ), ratios AS (
@@ -1349,7 +1420,7 @@ export async function getZoneDetail(
               s.status, s.stock_qty::DOUBLE AS qty, s.occupied_cbm::DOUBLE AS cbm,
               e.sloc_pct, e.basis AS sloc_basis
        FROM scored e
-       JOIN vw_stock_latest s
+       JOIN ${STOCK()} s
          ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
      ), filtered AS (
        SELECT *
@@ -1424,7 +1495,7 @@ export async function getZoneDetailFacets(wh: string, zone: string): Promise<Zon
             coalesce(s.l1_category, '') AS category,
             e.rack_zone
      FROM scoped e
-     LEFT JOIN vw_stock_latest s
+     LEFT JOIN ${STOCK()} s
        ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code`,
     [scope.wh, scope.zone],
   );
@@ -1574,15 +1645,16 @@ export async function getSlocDetail(
 ): Promise<{ stock: StockLine[]; movements: MovementRow[] }> {
   const scope = cleanScope({ wh, operational: true });
   if (wh && !scope.wh) return { stock: [], movements: [] };
+  const standards = skuStandardMap();
   const [stock, movements] = await Promise.all([
-    queryHistory<StockLine>(
+    queryHistory<Omit<StockLine, "cbm_standard">>(
       `${WH_MAP()}, valid AS (
          SELECT v.location_id, v.sloc_code FROM vw_sloc v ${JOIN_WH}
          WHERE ${OPERATIONAL_SLOC}${scope.wh ? " AND m.wh = ?" : ""}
        )
        SELECT product_id, product_name, sku_number, coalesce(l1_category,'') AS l1_category,
                status, stock_qty AS qty, occupied_cbm AS cbm
-        FROM vw_stock_latest s
+        FROM ${STOCK()} s
         JOIN valid v ON v.location_id = s.location_id AND v.sloc_code = s.sloc_code
         WHERE s.sloc_code = ?
         ORDER BY occupied_cbm DESC LIMIT 50`,
@@ -1593,7 +1665,13 @@ export async function getSlocDetail(
     // dengan tipe aksi yang sama.
     getRecentMovements(code, 12, scope.wh).catch(() => []),
   ]);
-  return { stock, movements };
+  return {
+    stock: stock.map((line) => ({
+      ...line,
+      cbm_standard: standards.get((line.sku_number ?? "").trim().toUpperCase())?.unit_cbm ?? null,
+    })),
+    movements,
+  };
 }
 
 export async function getSyncHealth() {
@@ -2133,7 +2211,7 @@ export async function getMovementBreaches(
               coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS occ_cbm,
               count(DISTINCT s.product_id)::INT AS sku_count
        FROM effective e
-       JOIN vw_stock_latest s
+       JOIN ${STOCK()} s
          ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
        WHERE ${statusPredicateSQL("s.status")}
          AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
@@ -2190,7 +2268,7 @@ export async function searchData(q: string) {
       `${WH_MAP()}
        SELECT s.product_name, s.sku_number, m.wh, v.zone, s.sloc_code,
               sum(s.stock_qty)::DOUBLE AS qty
-       FROM vw_stock_latest s
+       FROM ${STOCK()} s
        JOIN vw_sloc v
          ON v.location_id = s.location_id AND v.sloc_code = s.sloc_code ${JOIN_WH}
         WHERE ${OPERATIONAL_SLOC} AND (s.product_name ILIKE ? OR s.sku_number ILIKE ?)
@@ -2258,7 +2336,7 @@ export async function getSlocBasisReadings(
               coalesce(sum(s.stock_qty), 0)::DOUBLE AS occ_qty,
               coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS occ_cbm
        FROM effective e
-       JOIN vw_stock_latest s
+       JOIN ${STOCK()} s
          ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
        WHERE ${statusPredicateSQL("s.status")}
          AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
@@ -2476,7 +2554,7 @@ function slocSqlPlan(filter: SlocFilter): SlocSqlPlan {
               coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS occ_cbm,
               count(DISTINCT s.product_id)::INT AS sku_count
        FROM effective e
-       JOIN vw_stock_latest s
+       JOIN ${STOCK()} s
          ON s.location_id = e.location_id AND s.sloc_code = e.sloc_code
        WHERE ${statusPredicateSQL("s.status")}
          AND ${categoryPredicateSQL("s.l1_category", "e", "e")}
@@ -2788,4 +2866,321 @@ export async function getSlocFacets(): Promise<SlocFacets> {
     loadSlocFacets,
     { freshMs: DASHBOARD_TTL },
   );
+}
+
+
+// ---- Katalog SKU untuk editor standar CBM -----------------------------------
+//
+// Editor standar CBM tidak dapat memakai dropdown: dataset ini memuat ribuan
+// SKU dan berubah setiap sinkronisasi. Yang dibutuhkan admin sebelum mengetik
+// sebuah angka juga bukan sekadar nama produknya, melainkan JAWABAN atas
+// "apakah SKU ini cukup berarti untuk diurus" dan "berapa yang berubah kalau
+// saya ubah". Dua pertanyaan itu dijawab kolom `locations`, `qty`, dan
+// `source_cbm` di bawah.
+//
+// `source_cbm` sengaja dibaca dari `vw_stock_latest` MENTAH, bukan lewat
+// STOCK(). Nilai itulah pembanding yang dicari admin: angka yang datang dari
+// sumber data, sebelum standar yang ia tetapkan sendiri menimpanya.
+
+export interface SkuCatalogRow {
+  sku: string;
+  name: string;
+  category: string;
+  /** Berapa lokasi aktif yang menyimpan SKU ini pada snapshot terakhir. */
+  locations: number;
+  /** Total unit pada snapshot terakhir — dasar dampak sebuah perubahan. */
+  qty: number;
+  /** Volume satuan menurut sumber data (m³). */
+  source_unit_cbm: number;
+  /** Total volume menurut sumber data (m³). */
+  source_cbm: number;
+  warehouses: string[];
+}
+
+export interface SkuCatalogResult {
+  rows: SkuCatalogRow[];
+  /** Berapa SKU berbeda yang cocok dengan pencarian, sebelum dipotong limit. */
+  total: number;
+}
+
+/**
+ * Cari SKU beserta jejaknya pada snapshot stok terakhir.
+ *
+ * `skus` mengambil baris untuk nomor SKU tertentu tanpa peduli pencarian —
+ * dipakai editor untuk menampilkan SKU yang SUDAH punya standar tersimpan,
+ * termasuk yang sudah tidak ada lagi pada snapshot terbaru. Tanpa itu, sebuah
+ * override akan lenyap dari layar begitu SKU-nya habis, dan tidak ada cara
+ * melihat atau menghapusnya lagi.
+ */
+export async function searchSkuCatalog(options: {
+  query?: string;
+  skus?: string[];
+  limit?: number;
+} = {}): Promise<SkuCatalogResult> {
+  const needle = (options.query ?? "").trim().toLowerCase();
+  const wanted = [...new Set((options.skus ?? [])
+    .map((sku) => sku.trim().toUpperCase())
+    .filter(Boolean))].slice(0, 500);
+  const limit = Math.min(200, Math.max(1, Math.floor(options.limit ?? 30) || 30));
+
+  const params: unknown[] = [];
+  const filters: string[] = [];
+  if (needle) {
+    filters.push(`(lower(coalesce(s.sku_number, '')) LIKE CAST(? AS VARCHAR)
+                   OR lower(coalesce(s.product_name, '')) LIKE CAST(? AS VARCHAR))`);
+    params.push(`%${needle}%`, `%${needle}%`);
+  }
+  if (wanted.length) {
+    filters.push(`upper(trim(coalesce(s.sku_number, ''))) IN (${sqlList(wanted)})`);
+  }
+  // Pencarian dan daftar SKU tersimpan digabung dengan OR: keduanya adalah
+  // "baris yang ingin dilihat editor", bukan dua penyaring yang saling
+  // mempersempit.
+  const where = filters.length ? `AND (${filters.join(" OR ")})` : "";
+  params.push(limit);
+
+  const rows = await queryHistory<{
+    sku: string; name: string; category: string; locations: number;
+    qty: number; source_unit_cbm: number; source_cbm: number;
+    warehouses: string; total: number;
+  }>(
+    `${WH_MAP()}, scoped AS (
+       SELECT m.wh, s.location_id, s.sloc_code,
+              upper(trim(s.sku_number)) AS sku,
+              coalesce(s.product_name, '') AS name,
+              coalesce(s.l1_category, '') AS category,
+              coalesce(s.sku_cbm, 0)::DOUBLE AS unit_cbm,
+              coalesce(s.stock_qty, 0)::DOUBLE AS qty,
+              coalesce(s.occupied_cbm, 0)::DOUBLE AS cbm
+       FROM vw_stock_latest s
+       JOIN vw_sloc v ON v.location_id = s.location_id AND v.sloc_code = s.sloc_code
+       ${JOIN_WH}
+       WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()}
+         AND nullif(trim(coalesce(s.sku_number, '')), '') IS NOT NULL
+         ${where}
+     ), grouped AS (
+       SELECT sku,
+              coalesce(max(name), '') AS name,
+              coalesce(max(category), '') AS category,
+              count(DISTINCT location_id::VARCHAR || '|' || sloc_code)::INT AS locations,
+              sum(qty)::DOUBLE AS qty,
+              coalesce(max(unit_cbm), 0)::DOUBLE AS source_unit_cbm,
+              sum(cbm)::DOUBLE AS source_cbm,
+              string_agg(DISTINCT wh, ',') AS warehouses,
+              count(*) OVER ()::INT AS total
+       FROM scoped GROUP BY sku
+     )
+     SELECT * FROM grouped ORDER BY qty DESC, sku LIMIT ?`,
+    params,
+  );
+  return {
+    total: rows[0]?.total ?? 0,
+    rows: rows.map((row) => ({
+      sku: row.sku,
+      name: row.name,
+      category: row.category,
+      locations: Number(row.locations ?? 0),
+      qty: r1(Number(row.qty ?? 0)),
+      source_unit_cbm: Number(row.source_unit_cbm ?? 0),
+      source_cbm: r3(Number(row.source_cbm ?? 0)),
+      warehouses: (row.warehouses ?? "").split(",").filter(Boolean).sort(),
+    })),
+  };
+}
+
+/**
+ * Selisih volume total antara sumber data dan standar yang sedang diedit.
+ *
+ * Ini angka yang menjawab pertanyaan yang paling penting sebelum menyimpan:
+ * "berapa besar okupansi CBM saya bergeser karenanya". Dihitung dari standar
+ * yang DIKIRIM editor, bukan yang tersimpan, sehingga admin melihat akibatnya
+ * sebelum menekan Simpan alih-alih sesudahnya.
+ */
+export interface SkuStandardImpact {
+  /** Volume total menurut sumber data, untuk SKU yang punya standar (m³). */
+  source_cbm: number;
+  /** Volume total dengan standar yang sedang diedit (m³). */
+  override_cbm: number;
+  /** Volume total seluruh gudang menurut sumber data (m³). */
+  total_source_cbm: number;
+  /** Berapa SKU pada daftar yang benar-benar punya stok saat ini. */
+  matched: number;
+  /** SKU pada daftar yang tidak ditemukan pada snapshot terakhir. */
+  missing: string[];
+}
+
+export async function skuStandardImpact(
+  standards: Array<{ sku: string; unit_cbm: number }>,
+): Promise<SkuStandardImpact> {
+  const cleaned = standards
+    .map((entry) => ({ sku: entry.sku.trim().toUpperCase(), unit_cbm: Number(entry.unit_cbm) }))
+    .filter((entry) => entry.sku && Number.isFinite(entry.unit_cbm) && entry.unit_cbm > 0);
+
+  const totals = await queryHistory<{ total_cbm: number }>(
+    `${WH_MAP()}
+     SELECT coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS total_cbm
+     FROM vw_stock_latest s
+     JOIN vw_sloc v ON v.location_id = s.location_id AND v.sloc_code = s.sloc_code
+     ${JOIN_WH}
+     WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()} AND ${statusPredicateSQL("s.status")}`,
+  );
+  const totalSource = r3(Number(totals[0]?.total_cbm ?? 0));
+  if (!cleaned.length) {
+    return {
+      source_cbm: 0, override_cbm: 0, total_source_cbm: totalSource, matched: 0, missing: [],
+    };
+  }
+
+  const values = cleaned
+    .map((entry) => `(${sqlString(entry.sku)}, ${Number(entry.unit_cbm)})`)
+    .join(", ");
+  const rows = await queryHistory<{
+    sku: string; source_cbm: number; override_cbm: number;
+  }>(
+    `${WH_MAP()}, wanted(sku, unit_cbm) AS (VALUES ${values}), agg AS (
+       SELECT upper(trim(coalesce(s.sku_number, ''))) AS sku,
+              coalesce(sum(s.occupied_cbm), 0)::DOUBLE AS source_cbm,
+              coalesce(sum(s.stock_qty), 0)::DOUBLE AS qty
+       FROM vw_stock_latest s
+       JOIN vw_sloc v ON v.location_id = s.location_id AND v.sloc_code = s.sloc_code
+       ${JOIN_WH}
+       WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()} AND ${statusPredicateSQL("s.status")}
+       GROUP BY 1
+     )
+     SELECT w.sku,
+            coalesce(a.source_cbm, 0)::DOUBLE AS source_cbm,
+            (coalesce(a.qty, 0) * w.unit_cbm)::DOUBLE AS override_cbm
+     FROM wanted w
+     LEFT JOIN agg a ON a.sku = w.sku`,
+  );
+  let source = 0;
+  let override = 0;
+  let matched = 0;
+  const missing: string[] = [];
+  for (const row of rows) {
+    const rowSource = Number(row.source_cbm ?? 0);
+    const rowOverride = Number(row.override_cbm ?? 0);
+    if (rowSource === 0 && rowOverride === 0) missing.push(row.sku);
+    else matched += 1;
+    source += rowSource;
+    override += rowOverride;
+  }
+  return {
+    source_cbm: r3(source),
+    override_cbm: r3(override),
+    total_source_cbm: totalSource,
+    matched,
+    missing: missing.sort(),
+  };
+}
+
+// ---- Pratinjau aturan kapasitas --------------------------------------------
+//
+// KENAPA INI ADA
+// --------------
+// Sebuah aturan kapasitas gagal dengan cara yang paling merepotkan: DIAM-DIAM.
+// Satu salah ketik pada zona, level yang ditulis "L2" padahal data master
+// menyimpan "2", atau kode gudang yang sudah tidak ada — semuanya menghasilkan
+// baris yang tersimpan rapi, tampil di editor, dan tidak pernah menyentuh satu
+// lokasi pun. Tidak ada satu pun tanda di layar yang membedakannya dari aturan
+// yang bekerja, sehingga satu-satunya cara menemukannya adalah menyadari bahwa
+// sebuah persentase terasa aneh, berbulan-bulan kemudian.
+//
+// Dua angka menutup jarak itu, dan keduanya dihitung dari data master yang
+// sama dengan yang dipakai okupansi:
+//   matched   — berapa lokasi aktif yang cocok dengan scope aturan ini;
+//   governing — berapa di antaranya yang benar-benar MEMAKAI nilainya, yaitu
+//               tidak ditimpa aturan lain yang berada di bawahnya.
+// `matched = 0` berarti salah ketik. `governing = 0` sementara `matched > 0`
+// berarti aturannya tertutup penuh oleh aturan lain — sama tidak berartinya,
+// tetapi dengan sebab yang sama sekali berbeda.
+
+export interface CapacityRuleImpact {
+  index: number;
+  matched: number;
+  governing: number;
+  /** Aturan ini memang tidak menetapkan nilai kapasitas apa pun. */
+  passive: boolean;
+}
+
+interface CapacityImpactInput {
+  scope: Record<string, string | undefined>;
+  set: { basis?: string; max_qty?: number; max_cbm?: number; utilization_pct?: number; count?: boolean };
+}
+
+function hasCapacityValues(rule: CapacityImpactInput): boolean {
+  return rule.set.basis !== undefined
+    || rule.set.max_qty !== undefined
+    || rule.set.max_cbm !== undefined
+    || rule.set.utilization_pct !== undefined;
+}
+
+/**
+ * Hitung dampak sekumpulan aturan TANPA menyimpannya.
+ *
+ * Menerima aturan sebagai argumen, bukan membacanya dari konfigurasi, supaya
+ * editor dapat memperlihatkan akibat sebuah perubahan sebelum admin menekan
+ * Simpan — yang justru saat pemeriksaan itu paling berguna.
+ */
+export async function capacityRuleImpact(rules: CapacityImpactInput[]): Promise<CapacityRuleImpact[]> {
+  const locationRules = rules
+    .map((rule, index) => ({ rule, index }))
+    .filter((entry) => !entry.rule.scope.l1_category);
+  if (!locationRules.length) {
+    return rules.map((rule, index) => ({
+      index, matched: 0, governing: 0, passive: !hasCapacityValues(rule),
+    }));
+  }
+
+  // Semua kolom scope diratakan ke satu CTE beralias `v`, sehingga predikatnya
+  // dapat memakai alias yang sama untuk lokasi maupun gudang.
+  const predicates = locationRules.map((entry) =>
+    locationScopePredicateSQL(entry.rule.scope, "v", "v"));
+
+  // Rantai "siapa yang menang" dibangun dari atas ke bawah sehingga aturan
+  // TERAKHIR yang cocok berada di lapisan terluar — persis urutan menang yang
+  // dipakai resolveSloc().
+  const winnerChain = (setsValue: (index: number) => boolean): string => {
+    let expression = "-1";
+    for (let i = 0; i < locationRules.length; i += 1) {
+      if (!setsValue(i)) continue;
+      expression = `CASE WHEN ${predicates[i]} THEN ${locationRules[i].index} ELSE ${expression} END`;
+    }
+    return expression;
+  };
+  const winQty = winnerChain((i) => locationRules[i].rule.set.max_qty !== undefined);
+  const winCbm = winnerChain((i) => locationRules[i].rule.set.max_cbm !== undefined);
+  const winBasis = winnerChain((i) =>
+    locationRules[i].rule.set.basis !== undefined
+    || locationRules[i].rule.set.utilization_pct !== undefined);
+
+  const matchedColumns = locationRules
+    .map((entry, i) => `count(*) FILTER (WHERE ${predicates[i]})::INT AS m_${entry.index}`)
+    .join(", ");
+  const governingColumns = locationRules
+    .map((entry) => `count(*) FILTER (WHERE win_qty = ${entry.index} OR win_cbm = ${entry.index}`
+      + ` OR win_basis = ${entry.index})::INT AS g_${entry.index}`)
+    .join(", ");
+
+  const rows = await queryHistory<Record<string, number>>(
+    `${WH_MAP()}, base AS MATERIALIZED (
+       SELECT m.wh AS wh, coalesce(v.zone, '') AS zone, coalesce(v.rack_zone, '') AS rack_zone,
+              coalesce(v.aisle, '') AS aisle, coalesce(v.bay, '') AS bay,
+              coalesce(v.level, '') AS level, coalesce(v.bin, '') AS bin,
+              coalesce(v.storage_handling, '') AS storage_handling
+       FROM vw_sloc v ${JOIN_WH}
+       WHERE ${ACTIVE_SLOC} AND ${zoneEnabledSQL()}
+     ), scored AS (
+       SELECT v.*, ${winQty} AS win_qty, ${winCbm} AS win_cbm, ${winBasis} AS win_basis
+       FROM base v
+     )
+     SELECT ${matchedColumns}, ${governingColumns} FROM scored v`,
+  );
+  const counts = rows[0] ?? {};
+  return rules.map((rule, index) => ({
+    index,
+    matched: Number(counts[`m_${index}`] ?? 0),
+    governing: Number(counts[`g_${index}`] ?? 0),
+    passive: !hasCapacityValues(rule),
+  }));
 }

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ZodError } from "zod";
 import { currentUser, isAdmin } from "@/lib/auth";
-import { writeSection, getThresholds, getRules, getRecipients, getWarehouses, getCapacity, whMapSQL, type ConfigSection, type RecipientsConfig } from "@/lib/config";
+import { describeConfigIssues } from "@/lib/config-schema";
+import { writeSection, getThresholds, getRules, getRecipients, getWarehouses, getCapacity, getSkuStandards, whMapSQL, type ConfigSection, type RecipientsConfig } from "@/lib/config";
 import { queryHistory } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { invalidateOccupancyReadCaches } from "@/lib/queries";
@@ -8,6 +10,7 @@ import { invalidateOccupancyReadCaches } from "@/lib/queries";
 const readers: Record<ConfigSection, () => unknown> = {
   thresholds: getThresholds, rules: getRules, recipients: getRecipients,
   warehouses: getWarehouses, capacity: getCapacity,
+  "sku-standards": getSkuStandards,
 };
 
 /** Meta utk editor kapasitas: nilai distinct dari DB (WH, zona, storage, kategori, status). */
@@ -51,6 +54,38 @@ async function capacityMeta() {
 
 function valid(section: string): section is ConfigSection {
   return section in readers;
+}
+
+/**
+ * Catat siapa mengubah standar CBM sebuah SKU, dan kapan.
+ *
+ * Angka pengganti volume adalah keputusan operasional yang membentuk setiap
+ * persentase CBM di aplikasi ini. Enam bulan kemudian pertanyaannya bukan
+ * "berapa nilainya" melainkan "siapa yang menetapkannya dan atas dasar apa" —
+ * dan Audit Trail hanya mencatat perubahan berkasnya secara utuh, bukan baris
+ * mana yang baru. Stempel per baris diisi server, bukan klien, supaya tidak
+ * dapat dipalsukan dari antarmuka.
+ */
+function stampAuthor(section: ConfigSection, body: unknown, username: string): unknown {
+  if (section !== "sku-standards") return body;
+  const payload = body as { standards?: Array<Record<string, unknown>> };
+  if (!Array.isArray(payload?.standards)) return body;
+  const previous = new Map(
+    (getSkuStandards().standards ?? []).map((entry) => [entry.sku, entry]),
+  );
+  const now = new Date().toISOString();
+  return {
+    ...payload,
+    standards: payload.standards.map((entry) => {
+      const sku = typeof entry.sku === "string" ? entry.sku.trim().toUpperCase() : "";
+      const before = previous.get(sku);
+      const unchanged = before && Number(before.unit_cbm) === Number(entry.unit_cbm)
+        && String(before.note ?? "") === String(entry.note ?? "");
+      return unchanged
+        ? { ...entry, updated_at: before.updated_at, updated_by: before.updated_by }
+        : { ...entry, updated_at: now, updated_by: username };
+    }),
+  };
 }
 
 function auditSafeConfig(section: ConfigSection, value: unknown): unknown {
@@ -101,7 +136,7 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ section: st
   if (!body) return NextResponse.json({ error: "Body JSON tidak valid." }, { status: 400 });
   try {
     const before = readers[section]();
-    const after = writeSection(section, body);
+    const after = writeSection(section, stampAuthor(section, body, user.username));
     // Capacity, warehouse allowlist, and thresholds all affect the read model.
     // Do not make an admin wait for the short in-process cache TTL.
     invalidateOccupancyReadCaches();
@@ -114,6 +149,22 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ section: st
     );
     return NextResponse.json({ section, data: after });
   } catch (e) {
+    // Pesan galat Zod mentah adalah blok JSON multi-baris. Ditampilkan apa
+    // adanya di layar admin, ia hanya berkata "sesuatu salah" — sementara
+    // yang dibutuhkan adalah BARIS MANA yang salah. Jalur di setiap issue
+    // dikirim terpisah agar editor dapat menyorot aturan yang bersangkutan.
+    if (e instanceof ZodError) {
+      return NextResponse.json(
+        {
+          error: describeConfigIssues(e, 4),
+          issues: e.issues.slice(0, 40).map((issue) => ({
+            path: issue.path.map((part) => String(part)),
+            message: issue.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
     return NextResponse.json(
       { error: `Validasi gagal: ${(e as Error).message}` },
       { status: 400 }

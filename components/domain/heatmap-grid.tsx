@@ -1160,7 +1160,15 @@ export default function HeatmapGrid({
                       </div>
                       <div className="heat-detail-list-value">
                         <b className="num">{f.num(stockLine.qty)}</b>
-                        <span>{f.cbm(stockLine.cbm)} m³</span>
+                        <span>
+                          {f.cbm(stockLine.cbm)} m³
+                          {stockLine.cbm_standard !== null && (
+                            <b
+                              className="sku-standard-mark"
+                              title={`${t("set.ui.sku.markTitle")} ${f.capCbm(stockLine.cbm_standard)} m³/${t("common.unit")}`}
+                            >★</b>
+                          )}
+                        </span>
                       </div>
                     </li>
                   ))}

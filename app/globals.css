@@ -607,6 +607,13 @@
     margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px;
     background: var(--surface-sunken); color: var(--text-muted); font-size: 12px;
   }
+  /* Gagal menyimpan tidak boleh terbaca sama dengan berhasil menyimpan: pesan
+     validasi menyebut baris yang salah, dan warnanya harus mengatakan bahwa
+     ada yang perlu diperbaiki sebelum dibaca. */
+  .settings-message.is-error {
+    border-color: color-mix(in oklab, var(--st-breach-fg) 34%, var(--border));
+    background: var(--st-breach-bg); color: var(--st-breach-fg);
+  }
   /* Hanya dipakai untuk memperingatkan bahwa penyimpanan tidak dapat ditulis.
      Jalur normal tidak menampilkan apa pun. */
   .config-storage-note {
@@ -1816,15 +1823,244 @@
   .zone-scope-reset { justify-self: end; margin-top: 0; }
   .zone-chip { min-height: 34px; padding-inline: 10px; }
 }
-.capacity-rules-wrap { max-height: min(62dvh, 720px); border: 1px solid var(--border); border-radius: 8px; }
-.capacity-rules-table { min-width: 1430px; }
-.capacity-rules-table thead { position: sticky; z-index: 3; top: 0; background: var(--surface-raised); }
-.capacity-rules-table th:first-child,
-.capacity-rules-table td:first-child {
-  position: sticky; z-index: 2; left: 0; background: var(--surface-raised);
-  box-shadow: 1px 0 0 var(--border);
+/* Editor kapasitas.
+   Menggantikan tabel 16 kolom selebar 1430px yang hanya dapat dibaca dengan
+   menggulir mendatar. Setiap aturan kini satu baris ringkasan yang muat di
+   layar apa adanya — scope sebagai chip, nilai sebagai angka, dampak sebagai
+   satu lencana — dan editor lengkapnya baru muncul ketika barisnya dibuka. */
+.cap-settings { display: grid; gap: 14px; }
+
+/* Bilah simpan menempel di DASAR layar. Topbar aplikasi sudah `sticky top: 0`,
+   jadi bilah kedua yang menempel di atas hanya akan tertutup olehnya. Pola yang
+   sama dipakai panel Eskalasi, sehingga tombol Simpan berada di tempat yang
+   sama pada kedua layar Pengaturan. */
+.cap-actionbar {
+  position: sticky; z-index: 5; bottom: 8px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 9px 12px; border: 1px solid var(--border-strong); border-radius: 9px;
+  background: var(--surface-raised); box-shadow: 0 8px 24px rgb(8 12 24 / 12%);
 }
-.capacity-rules-table thead th:first-child { z-index: 4; }
+.cap-actionbar.is-dirty {
+  border-color: color-mix(in oklab, var(--st-warning-fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--st-warning-fg) 8%, var(--surface-raised));
+}
+.cap-actionbar-status { display: grid; min-width: 0; gap: 1px; }
+.cap-actionbar-status strong { font-size: 13px; }
+.cap-actionbar-status span { color: var(--text-muted); font-size: 11px; }
+.cap-actionbar.is-dirty .cap-actionbar-status span { color: var(--st-warning-fg); }
+.cap-actionbar-buttons { display: flex; flex: none; flex-wrap: wrap; gap: 6px; }
+
+.cap-columns { display: grid; grid-template-columns: minmax(280px, 320px) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 1080px) { .cap-columns { grid-template-columns: 1fr; } }
+
+.cap-base { display: grid; align-content: start; gap: 11px; }
+.cap-hint { margin: 0; max-width: 68ch; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.cap-category-list {
+  max-height: 11rem; overflow-y: auto; display: grid; gap: 4px;
+  padding: 8px; border: 1px solid var(--border); border-radius: 8px;
+}
+
+.cap-rules { display: grid; min-width: 0; align-content: start; gap: 9px; }
+.cap-rules-head {
+  display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px 16px;
+}
+.cap-rules-stats { display: flex; flex: none; flex-wrap: wrap; gap: 5px; }
+.cap-chip-warn {
+  border-color: color-mix(in oklab, var(--st-warning-fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--st-warning-fg) 12%, transparent);
+  color: var(--st-warning-fg);
+}
+
+.cap-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cap-search { flex: 1 1 220px; min-width: 0; }
+.cap-impact-state { color: var(--text-muted); font-size: 10.5px; }
+.cap-impact-state.is-idle { visibility: hidden; }
+
+.cap-empty {
+  margin: 0; padding: 18px 12px; border: 1px dashed var(--border-strong); border-radius: 8px;
+  color: var(--text-muted); font-size: 11.5px; text-align: center;
+}
+
+.cap-rule-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.cap-rule {
+  min-width: 0; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-raised);
+}
+.cap-rule.is-open { border-color: var(--border-strong); }
+.cap-rule.is-warned { border-left: 3px solid var(--st-warning-fg); }
+.cap-rule.is-invalid { border-left: 3px solid var(--st-breach-fg); }
+.cap-rule-summary { display: flex; align-items: stretch; gap: 4px; min-width: 0; }
+.cap-rule-toggle {
+  display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  min-width: 0; padding: 8px 4px 8px 10px;
+  border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer;
+}
+.cap-rule-toggle:hover { background: var(--surface-sunken); }
+.cap-rule-index {
+  flex: none; min-width: 22px; color: var(--text-muted); font-size: 10.5px; text-align: right;
+}
+.cap-kind {
+  flex: none; padding: 1px 6px; border: 1px solid var(--border); border-radius: 5px;
+  font-size: 9.5px; letter-spacing: .02em; text-transform: uppercase;
+}
+.cap-kind-category { color: var(--text-muted); }
+.cap-rule-scope { display: flex; flex: 1 1 260px; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.cap-rule-scope em { color: var(--text-muted); font-size: 11px; font-style: normal; }
+.cap-scope-chip {
+  display: inline-flex; align-items: baseline; gap: 4px; padding: 1px 6px;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--surface-sunken); font-size: 10.5px;
+}
+.cap-scope-chip i { color: var(--text-muted); font-size: 9px; font-style: normal; }
+.cap-rule-values { display: flex; flex: none; flex-wrap: wrap; gap: 3px 9px; font-size: 11px; }
+.cap-rule-values b { font-size: 10px; letter-spacing: .03em; }
+.cap-rule-impact { flex: none; }
+.cap-badge {
+  display: inline-flex; align-items: baseline; gap: 2px; padding: 1px 6px;
+  border: 1px solid var(--border); border-radius: 5px;
+  color: var(--text-muted); font-size: 10px; white-space: nowrap;
+}
+.cap-badge em { font-style: normal; opacity: .65; }
+.cap-badge.is-warn {
+  border-color: color-mix(in oklab, var(--st-warning-fg) 45%, var(--border));
+  background: color-mix(in oklab, var(--st-warning-fg) 12%, transparent);
+  color: var(--st-warning-fg);
+}
+.cap-rule-actions { display: flex; flex: none; align-items: center; gap: 0; padding-right: 4px; }
+.cap-rule-actions .btn { min-width: 26px; padding-inline: 5px; }
+
+.cap-rule-flags { display: grid; gap: 2px; padding: 0 10px 7px 36px; }
+.cap-flag { margin: 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.45; }
+.cap-flag.is-error { color: var(--st-breach-fg); }
+
+.cap-rule-body {
+  display: grid; gap: 11px; padding: 11px 12px 13px;
+  border-top: 1px solid var(--border); background: var(--surface-sunken);
+}
+.cap-fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.cap-fieldset legend {
+  padding: 0 0 5px; color: var(--text-muted);
+  font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
+}
+.cap-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px;
+}
+.cap-grid-wide { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); margin-top: 8px; }
+.cap-grid > label,
+.cap-grid-wide > label { display: grid; align-content: start; gap: 3px; min-width: 0; }
+
+.cap-add-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cap-add-row .rules-add { flex: 1 1 200px; width: auto; }
+
+.cap-tool { display: grid; gap: 11px; }
+.cap-tool-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.cap-tool-foot {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
+  padding-top: 3px; border-top: 1px solid var(--border);
+}
+.cap-tool-foot em { font-style: normal; color: var(--st-warning-fg); }
+.cap-picklist { display: grid; gap: 5px; }
+.cap-picklist em { font-style: normal; text-transform: none; letter-spacing: 0; opacity: .75; }
+.cap-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.cap-paste-area { min-height: 130px; font-family: var(--font-mono); font-size: 11px; resize: vertical; }
+
+/* Editor Standar CBM per SKU.
+   Tabel, bukan kartu: setiap baris di sini adalah perbandingan angka — sumber
+   data, pengganti, rasio, selisih volume — dan perbandingan angka dibaca paling
+   cepat ketika kolomnya sejajar. */
+.sku-intro { display: grid; gap: 6px; }
+.sku-picker { display: grid; gap: 8px; }
+.sku-picker-results {
+  display: grid; gap: 2px; max-height: 280px; overflow-y: auto;
+  padding: 4px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-sunken);
+}
+.sku-picker-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto 20px;
+  align-items: center; gap: 4px 10px;
+  padding: 6px 8px; border: 0; border-radius: 6px;
+  background: transparent; color: inherit; text-align: left; cursor: pointer;
+}
+.sku-picker-row:hover:not(:disabled),
+.sku-picker-row:focus-visible { background: var(--surface-raised); }
+.sku-picker-row:disabled { cursor: default; opacity: .55; }
+.sku-picker-row strong { font-size: 11.5px; }
+.sku-picker-row span { color: var(--text-muted); font-size: 10.5px; }
+.sku-picker-cta { justify-self: end; color: var(--accent) !important; font-size: 13px; }
+
+/* Dampak total. Satu salah ketik desimal di layar ini menggeser okupansi
+   seluruh perusahaan, jadi angkanya berdiri sendiri di atas daftar — bukan
+   tersembunyi di dalam sebuah baris. */
+.sku-impact {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--surface-raised);
+}
+.sku-impact.is-stale { opacity: .55; }
+.sku-impact > div { display: grid; gap: 1px; }
+.sku-impact strong { font-size: 13px; }
+.sku-impact-arrow { color: var(--text-muted); }
+.sku-impact-delta strong em { font-style: normal; font-size: 11px; opacity: .8; }
+.sku-impact-delta.is-up strong { color: var(--st-warning-fg); }
+.sku-impact-delta.is-down strong { color: var(--st-normal-fg); }
+
+.sku-table-wrap { max-width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.sku-table { min-width: 940px; }
+.sku-table thead { position: sticky; z-index: 2; top: 0; background: var(--surface-raised); }
+.sku-table td { vertical-align: top; }
+.sku-table td small {
+  display: block; margin-top: 1px; color: var(--text-muted); font-size: 9.5px; line-height: 1.35;
+}
+.sku-table tr.is-warned td:first-child { box-shadow: inset 2px 0 0 var(--st-warning-fg); }
+.sku-table tr.is-invalid td:first-child { box-shadow: inset 2px 0 0 var(--st-breach-fg); }
+.sku-name { display: block; max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sku-input { width: 108px; }
+/* Rasio terhadap nilai sumber: 10x dan 0,1x adalah jarak antara "0,0658" dan
+   "0,658", dan itu salah ketik yang paling sering terjadi di kolom ini. */
+.sku-ratio { display: block; margin-top: 2px; color: var(--text-muted); font-size: 9.5px; }
+.sku-ratio.is-warn { color: var(--st-warning-fg); font-weight: 600; }
+.sku-issue { color: var(--st-breach-fg) !important; }
+.sku-up { color: var(--st-warning-fg); }
+.sku-down { color: var(--st-normal-fg); }
+/* Penanda pada layar okupansi: volume baris ini dihitung dari standar admin,
+   bukan dari nilai sumber data. Kecil, tetapi harus ada — angka yang berbeda
+   dari Superset tanpa penjelasan adalah cara tercepat kehilangan kepercayaan. */
+.sku-standard-mark {
+  margin-left: 3px; color: var(--accent); font-size: 9px; cursor: help;
+}
+.sku-row-actions { display: flex; gap: 0; }
+.sku-row-actions .btn { min-width: 26px; padding-inline: 5px; }
+
+@media (max-width: 720px) {
+  .sku-picker-row { grid-template-columns: minmax(0, 1fr) 20px; }
+  .sku-picker-row span { grid-column: 1 / 2; }
+  .sku-impact { gap: 8px 12px; }
+}
+
+@media (max-width: 720px) {
+  .cap-rule-toggle { padding-right: 8px; }
+  .cap-rule-values, .cap-rule-impact { flex-basis: 100%; }
+  .cap-rule-flags { padding-left: 12px; }
+}
+
+/* Pratinjau pemulihan cadangan: apa yang ada di berkas, sebelum ia ditulis. */
+.backup-preview {
+  display: grid; gap: 7px; padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--st-warning-fg) 35%, var(--border));
+  border-radius: 8px; background: color-mix(in oklab, var(--st-warning-fg) 7%, transparent);
+}
+.backup-preview-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px;
+}
+.backup-preview-head strong { font-size: 12.5px; }
+.backup-preview-head span { color: var(--text-muted); font-size: 10.5px; }
+.backup-preview p { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.backup-preview-files { display: flex; flex-wrap: wrap; gap: 4px; }
+.backup-preview-accounts {
+  display: flex; align-items: flex-start; gap: 6px;
+  font-size: 11px; line-height: 1.45; cursor: pointer;
+}
+.backup-preview-warn { color: var(--st-warning-fg) !important; }
 .settings-panel-loading-head { display: grid; gap: 7px; }
 .settings-panel-loading-head span,
 .settings-panel-loading-head strong,

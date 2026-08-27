@@ -26,6 +26,7 @@
 // menimpa apa pun yang sudah disimpan.
 import fs from "node:fs";
 import path from "node:path";
+import { checkConfigCoherence, checkConfigFile } from "@/lib/config-schema";
 
 const ROOT = process.cwd();
 
@@ -209,6 +210,7 @@ const MANAGED_FILES = [
   "rules.json",
   "warehouses.json",
   "capacity.json",
+  "sku-standards.json",
   "recipients.json",
   "superset-sync.json",
   ".superset-sync.secrets.json",
@@ -221,6 +223,7 @@ const SEEDABLE_FILES = [
   "rules.json",
   "warehouses.json",
   "capacity.json",
+  "sku-standards.json",
   "recipients.json",
   "superset-sync.json",
 ];
@@ -278,14 +281,49 @@ function decodeBundleText(text: string): unknown {
   return JSON.parse(Buffer.from(trimmed, "base64").toString("utf8"));
 }
 
+/** Satu berkas cadangan yang ditolak, beserta alasan yang dapat dibaca admin. */
+export interface RejectedConfigFile {
+  file: string;
+  reason: string;
+}
+
+export interface ParsedConfigBundle {
+  bundle: ConfigBundle;
+  /** Berkas yang gagal diperiksa — kosong pada mode "strict" (ia melempar). */
+  rejected: RejectedConfigFile[];
+}
+
 /**
  * Validasi cadangan sebelum satu byte pun ditulis.
  *
- * Nama berkas TIDAK pernah dipercaya apa adanya: hanya nama yang ada pada
- * daftar terkelola yang diterima, sehingga cadangan yang dibuat-buat tidak
- * dapat menulis ke path lain melalui `..` atau nama tak dikenal.
+ * DUA LAPIS, DAN KEDUANYA PERNAH DIBUTUHKAN
+ * -----------------------------------------
+ * 1. Nama berkas TIDAK pernah dipercaya apa adanya: hanya nama yang ada pada
+ *    daftar terkelola yang diterima, sehingga cadangan yang dibuat-buat tidak
+ *    dapat menulis ke path lain melalui `..` atau nama tak dikenal.
+ * 2. ISI setiap berkas diperiksa terhadap skemanya. Lapis ini dulu tidak ada,
+ *    dan tanpanya sebuah cadangan yang bentuknya sudah tidak cocok — unduhan
+ *    dari versi aplikasi lama, berkas yang disunting tangan, unduhan yang
+ *    terpotong — tetap ditulis ke volume. Pembacaan konfigurasi berikutnya
+ *    melempar, dan karena SETIAP halaman membaca kebijakan sebelum dirender,
+ *    seluruh aplikasi berubah menjadi layar galat. Termasuk halaman Pengaturan,
+ *    yaitu satu-satunya tempat keadaan itu dapat diperbaiki.
+ *
+ * Mode "strict" (pemulihan manual dari berkas) menolak seluruh cadangan begitu
+ * ada satu berkas yang tidak sah — memulihkan sebagian diam-diam justru
+ * meninggalkan konfigurasi campuran yang tidak pernah diminta siapa pun.
+ * Mode "lenient" (`WIOM_CONFIG_BUNDLE` saat start-up) melewati berkas yang
+ * bermasalah dan mencatatnya, karena di sana alternatifnya adalah container
+ * yang gagal menyala.
  */
-export function parseConfigBundle(input: unknown): ConfigBundle {
+export function parseConfigBundle(input: unknown, mode: "strict" | "lenient" = "strict"): ConfigBundle {
+  return parseConfigBundleDetailed(input, mode).bundle;
+}
+
+export function parseConfigBundleDetailed(
+  input: unknown,
+  mode: "strict" | "lenient" = "strict",
+): ParsedConfigBundle {
   const raw = typeof input === "string" ? decodeBundleText(input) : input;
   if (!raw || typeof raw !== "object") {
     throw new Error("Cadangan konfigurasi tidak dapat dibaca.");
@@ -295,20 +333,45 @@ export function parseConfigBundle(input: unknown): ConfigBundle {
     throw new Error("Format cadangan konfigurasi tidak dikenal.");
   }
   const files: Record<string, unknown> = {};
+  const rejected: RejectedConfigFile[] = [];
+  let sawKnownName = false;
   for (const [basename, value] of Object.entries(candidate.files)) {
     if (!MANAGED_FILES.includes(basename)) continue;
+    sawKnownName = true;
     if (!value || typeof value !== "object") {
-      throw new Error(`Isi ${basename} pada cadangan tidak valid.`);
+      const reason = `Isi ${basename} pada cadangan tidak valid.`;
+      if (mode === "strict") throw new Error(reason);
+      rejected.push({ file: basename, reason });
+      continue;
     }
-    files[basename] = value;
+    try {
+      // Nilai hasil parse yang disimpan, bukan masukan mentah: bidang yang
+      // hilang terisi bawaannya, sehingga berkas yang mendarat di volume selalu
+      // berbentuk yang dapat dibaca ulang aplikasi.
+      files[basename] = checkConfigFile(basename, value);
+    } catch (error) {
+      const reason = `${basename}: ${(error as Error).message}`;
+      if (mode === "strict") throw new Error(reason);
+      rejected.push({ file: basename, reason });
+    }
   }
-  if (!Object.keys(files).length) {
+  if (!sawKnownName) {
     throw new Error("Cadangan tidak memuat satu pun berkas konfigurasi yang dikenal.");
   }
+  if (!Object.keys(files).length) {
+    throw new Error(
+      rejected.length
+        ? `Tidak ada berkas cadangan yang lolos pemeriksaan. ${rejected[0].reason}`
+        : "Cadangan tidak memuat satu pun berkas konfigurasi yang dikenal.",
+    );
+  }
   return {
-    version: 1,
-    created_at: typeof candidate.created_at === "string" ? candidate.created_at : new Date().toISOString(),
-    files,
+    bundle: {
+      version: 1,
+      created_at: typeof candidate.created_at === "string" ? candidate.created_at : new Date().toISOString(),
+      files,
+    },
+    rejected,
   };
 }
 
@@ -332,27 +395,185 @@ export function encodeConfigBundle(bundle: ConfigBundle): string {
   return Buffer.from(JSON.stringify(bundle), "utf8").toString("base64");
 }
 
-/** Pulihkan cadangan ke penyimpanan runtime; menimpa berkas yang ada. */
-export function importConfigBundle(input: unknown): string[] {
-  const bundle = parseConfigBundle(input);
-  const restored: string[] = [];
-  for (const [basename, value] of Object.entries(bundle.files)) {
-    writeConfigJsonAtomic(
-      runtimeConfigFile(basename),
-      value,
-      PRIVATE_FILES.has(basename) ? 0o600 : 0o644,
-    );
-    restored.push(basename);
-  }
-  return restored;
+/** Nama berkas salinan pengaman yang ditulis tepat sebelum sebuah pemulihan. */
+export const PRE_RESTORE_SNAPSHOT = ".pre-restore-backup.json";
+
+export interface RestoreOptions {
+  /**
+   * Ikut memulihkan `accounts.json`.
+   *
+   * Bawaannya TIDAK. Cadangan konfigurasi hampir selalu dipulihkan untuk
+   * mengembalikan kebijakan, bukan daftar orang — dan berkas akun dari cadangan
+   * lama menghapus setiap akun yang dibuat sesudahnya, termasuk akun admin yang
+   * sedang login saat itu juga. Memindahkannya menjadi pilihan sadar membuat
+   * "pulihkan pengaturan" tidak pernah lagi berarti "keluarkan saya dari
+   * aplikasi ini".
+   */
+  includeAccounts?: boolean;
 }
 
-/** Isi cadangan dari environment, atau kosong bila tidak ada/tidak sahih. */
+export interface RestoreReport {
+  restored: string[];
+  /** Berkas yang ada di cadangan tetapi sengaja tidak ditulis. */
+  skipped: RejectedConfigFile[];
+  /** Salinan keadaan sebelum pemulihan, bila berhasil dibuat. */
+  snapshot?: string;
+}
+
+/**
+ * Kapan salinan pengaman terakhir dibuat, bila ada.
+ *
+ * Salinan yang tidak dapat dijangkau dari antarmuka sama saja dengan tidak ada:
+ * admin yang baru saja memulihkan berkas yang salah tidak punya akses shell ke
+ * server — itulah justru alasan seluruh fitur cadangan ini dibuat. Halaman
+ * Pengaturan memakai nilai ini untuk menawarkan "batalkan pemulihan terakhir".
+ */
+export function preRestoreSnapshotAt(): string | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(runtimeConfigFile(PRE_RESTORE_SNAPSHOT), "utf8"));
+    return typeof raw?.created_at === "string" ? raw.created_at : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Isi salinan pengaman terakhir, siap dikirim kembali lewat importConfigBundle. */
+export function readPreRestoreSnapshot(): unknown {
+  return JSON.parse(fs.readFileSync(runtimeConfigFile(PRE_RESTORE_SNAPSHOT), "utf8"));
+}
+
+/** Baca satu berkas konfigurasi yang sedang berlaku; undefined bila tak terbaca. */
+function readEffectiveConfig(basename: string): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(resolveConfigFile(basename), "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Pulihkan cadangan ke penyimpanan runtime.
+ *
+ * SATU TRANSAKSI, BUKAN SEDERET PENULISAN
+ * ---------------------------------------
+ * Versi sebelumnya menulis berkas satu per satu di dalam perulangan. Kegagalan
+ * di berkas keempat — volume penuh, izin berubah, container dimatikan tepat di
+ * situ — meninggalkan tiga berkas baru berdampingan dengan lima berkas lama,
+ * yaitu konfigurasi campuran yang tidak pernah ada di mana pun dan tidak dapat
+ * dijelaskan oleh siapa pun.
+ *
+ * Sekarang: seluruh isi diperiksa, keadaan lama disalin ke memori, semua
+ * berkas ditulis, dan bila ada satu saja yang gagal, yang sudah terlanjur
+ * ditulis dikembalikan ke isi semula. Ditambah satu salinan pengaman di
+ * `.pre-restore-backup.json` supaya pemulihan yang berhasil tetapi ternyata
+ * salah berkas masih punya jalan pulang.
+ */
+export function importConfigBundle(input: unknown, options: RestoreOptions = {}): RestoreReport {
+  const bundle = parseConfigBundle(input, "strict");
+  const skipped: RejectedConfigFile[] = [];
+
+  const wanted: Record<string, unknown> = {};
+  for (const [basename, value] of Object.entries(bundle.files)) {
+    if (basename === "accounts.json" && !options.includeAccounts) {
+      skipped.push({
+        file: basename,
+        reason: "Daftar akun tidak ikut dipulihkan (aktifkan secara eksplisit bila memang diinginkan).",
+      });
+      continue;
+    }
+    wanted[basename] = value;
+  }
+  if (!Object.keys(wanted).length) {
+    throw new Error("Tidak ada berkas yang dipilih untuk dipulihkan.");
+  }
+
+  // Invarian lintas berkas dinilai pada bentuk GABUNGAN sesudah pemulihan:
+  // cadangan yang hanya memuat kapasitas tetap harus cocok dengan daftar gudang
+  // yang bertahan di volume.
+  const effective: Record<string, unknown> = {};
+  for (const basename of SEEDABLE_FILES) {
+    const value = basename in wanted ? wanted[basename] : readEffectiveConfig(basename);
+    if (value !== undefined) effective[basename] = value;
+  }
+  const problems = checkConfigCoherence(effective);
+  if (problems.length) throw new Error(problems.join(" "));
+
+  assertDurableConfigStorage();
+  fs.mkdirSync(RUNTIME_CONFIG_DIR, { recursive: true });
+
+  // Salinan pengaman ditulis sebelum apa pun disentuh. Kegagalannya tidak
+  // membatalkan pemulihan: sebuah volume yang tidak dapat menampung satu berkas
+  // tambahan tetap harus bisa memperbaiki konfigurasi yang rusak.
+  let snapshot: string | undefined;
+  try {
+    const before = exportConfigBundle();
+    const file = runtimeConfigFile(PRE_RESTORE_SNAPSHOT);
+    fs.writeFileSync(file, `${JSON.stringify(before, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    snapshot = PRE_RESTORE_SNAPSHOT;
+  } catch (error) {
+    console.warn(`[WIOM] Salinan pengaman sebelum pemulihan gagal dibuat: ${(error as Error).message}`);
+  }
+
+  // `null` = berkas belum ada, `undefined` = ada tetapi tidak terbaca.
+  // Yang tidak terbaca tidak dapat dikembalikan, tetapi ia juga tidak boleh
+  // membatalkan pemulihan sebelum dimulai: kegagalan sesungguhnya akan muncul
+  // saat penulisan, dan di sana rollback berkas LAIN tetap harus berjalan.
+  const previous = new Map<string, Buffer | null | undefined>();
+  for (const basename of Object.keys(wanted)) {
+    const file = runtimeConfigFile(basename);
+    try {
+      previous.set(basename, fs.existsSync(file) ? fs.readFileSync(file) : null);
+    } catch {
+      previous.set(basename, undefined);
+    }
+  }
+
+  const written: string[] = [];
+  try {
+    for (const [basename, value] of Object.entries(wanted)) {
+      writeConfigJsonAtomic(
+        runtimeConfigFile(basename),
+        value,
+        PRIVATE_FILES.has(basename) ? 0o600 : 0o644,
+      );
+      written.push(basename);
+    }
+  } catch (error) {
+    for (const basename of written) {
+      const file = runtimeConfigFile(basename);
+      const original = previous.get(basename);
+      try {
+        if (original === null) fs.rmSync(file, { force: true });
+        else if (original) fs.writeFileSync(file, original, { mode: PRIVATE_FILES.has(basename) ? 0o600 : 0o644 });
+      } catch (rollbackError) {
+        console.error(`[WIOM] Pengembalian ${basename} setelah pemulihan gagal: ${(rollbackError as Error).message}`);
+      }
+    }
+    throw new Error(`Pemulihan dibatalkan dan konfigurasi lama dikembalikan: ${(error as Error).message}`);
+  }
+
+  return { restored: written, skipped, snapshot };
+}
+
+/**
+ * Isi cadangan dari environment, atau kosong bila tidak ada/tidak sahih.
+ *
+ * Mode "lenient": satu berkas yang bentuknya tidak lagi cocok hanya
+ * dilewatkan — seksi itu memakai bawaan image dan alasannya masuk log deploy —
+ * alih-alih ditulis ke volume dan mematikan aplikasi pada permintaan pertama.
+ * Berkas yang ditulis di sini bertahan selamanya (seed tidak pernah menimpa
+ * berkas runtime yang sudah ada), jadi inilah satu-satunya kesempatan
+ * memeriksanya.
+ */
 function envBundleFiles(): Record<string, unknown> {
   const raw = process.env[CONFIG_BUNDLE_ENV]?.trim();
   if (!raw) return {};
   try {
-    return parseConfigBundle(raw).files;
+    const { bundle, rejected } = parseConfigBundleDetailed(raw, "lenient");
+    for (const entry of rejected) {
+      console.warn(`[WIOM] ${CONFIG_BUNDLE_ENV} — ${entry.reason} Seksi ini memakai nilai bawaan image.`);
+    }
+    return bundle.files;
   } catch (error) {
     // Cadangan yang rusak tidak boleh menghentikan start-up: aplikasi tetap
     // menyala memakai nilai bawaan, dan alasannya tercatat di log deploy.

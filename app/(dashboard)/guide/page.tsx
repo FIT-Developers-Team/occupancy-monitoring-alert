@@ -197,7 +197,7 @@ function ResolverDiagram({ t }: { t: TFn }) {
   return (
     <div className="guide-diagram-scroll">
       <svg
-        viewBox="0 0 900 258"
+        viewBox="0 0 900 282"
         className="guide-diagram guide-resolver-diagram"
         role="img"
         aria-label={t("guide.resolver.aria")}
@@ -278,7 +278,7 @@ function ResolverDiagram({ t }: { t: TFn }) {
         </text>
         <text
           x={280}
-          y={236}
+          y={252}
           textAnchor="middle"
           fontSize={9.5}
           fill="var(--text-muted)"
@@ -290,13 +290,26 @@ function ResolverDiagram({ t }: { t: TFn }) {
             di Pengaturan tidak sama dengan penyebut yang muncul di layar. */}
         <text
           x={280}
-          y={252}
+          y={267}
           textAnchor="middle"
           fontSize={9.5}
           fill="var(--text-muted)"
           fontFamily="var(--font-mono)"
         >
           {t("guide.resolver.effectiveNote")}
+        </text>
+        {/* Diagram ini menjelaskan PENYEBUT. Satu baris untuk mengatakan bahwa
+            pembilangnya pun dapat disetel, supaya volume yang tidak cocok
+            dengan sumber data punya penjelasan di tempat orang mencarinya. */}
+        <text
+          x={280}
+          y={282}
+          textAnchor="middle"
+          fontSize={9.5}
+          fill="var(--text-muted)"
+          fontFamily="var(--font-mono)"
+        >
+          {t("guide.resolver.skuStandardNote")}
         </text>
       </svg>
     </div>

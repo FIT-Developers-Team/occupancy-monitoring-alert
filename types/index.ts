@@ -150,6 +150,16 @@ export interface StockLine {
   status: string;
   qty: number;
   cbm: number;
+  /**
+   * Standar CBM satuan yang ditetapkan admin untuk SKU ini, bila ada.
+   *
+   * Volume di baris ini dihitung dari angka tersebut, bukan dari nilai sumber
+   * data. Tanpa penanda ini, satu-satunya cara mengetahuinya adalah membuka
+   * Pengaturan di tab lain dan mencocokkan sendiri — dan sebuah angka yang
+   * "tidak sama dengan Superset" tanpa penjelasan adalah cara tercepat
+   * kehilangan kepercayaan pada seluruh layar.
+   */
+  cbm_standard: number | null;
 }
 
 export interface Alert {

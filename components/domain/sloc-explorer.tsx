@@ -722,7 +722,18 @@ export default function SlocExplorer({
                     </div>
                     <div className="flex items-center justify-between gap-2" style={{ color: "var(--text-muted)" }}>
                       <span className="num">{t("common.skuNo")} {line.sku_number}</span>
-                      <span className="num">{f.cbm(line.cbm)} m³</span>
+                      {/* Volume yang dihitung dari standar admin harus terlihat
+                          sebagai keputusan, bukan sebagai angka yang diam-diam
+                          berbeda dari sumber data. */}
+                      <span className="num">
+                        {f.cbm(line.cbm)} m³
+                        {line.cbm_standard !== null && (
+                          <b
+                            className="sku-standard-mark"
+                            title={`${t("set.ui.sku.markTitle")} ${f.capCbm(line.cbm_standard)} m³/${t("common.unit")}`}
+                          >★</b>
+                        )}
+                      </span>
                     </div>
                     <div className="flex items-center justify-between gap-2" style={{ color: "var(--text-muted)" }}>
                       <span className="truncate">{line.l1_category || "—"}</span>

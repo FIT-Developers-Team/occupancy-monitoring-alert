@@ -204,9 +204,21 @@ Cadangan konfigurasi** menggantikan seluruh langkah tersebut dengan tiga tombol:
 
 | Tombol | Gunanya |
 |---|---|
-| **Unduh cadangan** | Satu berkas JSON berisi ambang, kapasitas, gudang, eskalasi, Superset (termasuk kredensialnya), dan akun. |
+| **Unduh cadangan** | Satu berkas JSON berisi ambang, kapasitas, standar SKU, gudang, eskalasi, Superset (termasuk kredensialnya), dan akun. |
 | **Salin nilai environment** | Isi yang sama dalam satu baris base64 untuk ditempel sebagai `WIOM_CONFIG_BUNDLE`. |
-| **Pulihkan dari berkas** | Menimpa seluruh konfigurasi runtime dengan isi berkas cadangan, lalu memuat ulang halaman. |
+| **Pulihkan dari berkas** | Memeriksa isinya, menampilkan apa yang ada di dalamnya, lalu menimpa konfigurasi runtime setelah dikonfirmasi. |
+
+**Pemulihan tidak dapat merusak tampilan.** Isi setiap berkas diperiksa terhadap
+skemanya sebelum satu byte ditulis; cadangan yang bentuknya tidak lagi cocok —
+unduhan dari versi lama, berkas yang disunting tangan, unduhan yang terpotong —
+ditolak seluruhnya, bukan ditulis sebagian. Penulisannya satu transaksi: bila
+ada berkas yang gagal ditulis, yang sudah terlanjur ditulis dikembalikan ke isi
+semula. Keadaan sebelum pemulihan disalin ke `.pre-restore-backup.json` di folder
+runtime, dan tombol **Batalkan pemulihan terakhir** di panel yang sama
+mengembalikannya lewat jalur pemeriksaan yang sama — tanpa perlu akses shell ke
+server. **Daftar akun tidak ikut dipulihkan kecuali dicentang** — cadangan lama
+menghapus setiap akun yang dibuat sesudahnya, termasuk akun admin yang sedang
+login — dan cadangan akun tanpa satu pun admin aktif ditolak.
 
 Urutan yang disarankan untuk memasang volume pada instalasi yang sudah hidup:
 **Unduh cadangan → pasang Persistent Storage `/app/db` → redeploy → Pulihkan
@@ -225,7 +237,8 @@ berkas runtime yang sudah ada  >  WIOM_CONFIG_BUNDLE  >  /app/config legacy  >  
 Berkas runtime yang sudah ada selalu menang, jadi nilai environment tidak
 pernah menimpa penyetelan yang lebih baru di volume — ia hanya mengisi yang
 kosong. Cadangan yang rusak diabaikan dengan peringatan di log, bukan
-menggagalkan start-up. Perbarui nilainya setiap kali Pengaturan berubah, karena
+menggagalkan start-up; satu seksi yang bentuknya tidak lagi cocok dilewatkan
+sendirian dan memakai bawaan image, tanpa menjatuhkan seksi lain bersamanya. Perbarui nilainya setiap kali Pengaturan berubah, karena
 ia adalah salinan beku, bukan cermin otomatis.
 
 Endpoint di baliknya (`GET`/`POST /api/config/backup`) khusus admin, tidak
@@ -336,8 +349,50 @@ Setiap SLOC dinilai dengan **satu basis kebijakan**: `pct = qty/max_qty` atau `c
 | Lapisan | Isi |
 |---|---|
 | Default | basis, utilisasi %, status yang dihitung (Available/Bad/Lost), kategori dikecualikan |
-| Aturan override (berurutan, bawah menimpa) | scope `WH · Zona (SRA/SRA1) · Storage · Kategori` → set `basis / max_qty / max_cbm / utilisasi` |
+| Aturan override (berurutan, bawah menimpa) | scope `WH · Zona (SRA/SRA1) · Rack · Aisle · Bay · Level · Bin · Storage` → set `basis / max_qty / max_cbm / utilisasi` |
 | Aturan kategori | hanya `Hitung ya/tidak` (kategori milik stok, bukan lokasi) |
+
+#### Standar CBM per SKU — menimpa sumber data
+
+Okupansi CBM adalah sebuah pecahan. Segala sesuatu di atas mengatur
+**penyebutnya** (berapa m³ yang muat di sebuah lokasi). **Pengaturan → Standar
+SKU** mengatur **pembilangnya**: berapa m³ yang dimakan satu unit sebuah SKU.
+
+Volume terpakai pada dataset stok adalah `stock_qty × sku_cbm` — diverifikasi
+terhadap basis data ini: **90.573 baris, nol yang menyimpang**. Jadi seluruh
+sisi pembilang berdiri di atas satu angka per SKU, dan angka itu datang dari
+master produk. Ketika master sebuah SKU salah — diisi dari dimensi kartonnya,
+dalam satuan yang keliru, atau nol — yang terlihat bukan "data master salah",
+melainkan sebuah gudang yang tampak 140% penuh; dan memperbaikinya menuntut
+mengubah master di sistem lain lalu menunggu sinkronisasi berikutnya.
+
+Nilai yang disimpan di tab Standar SKU **menggantikan** `sku_cbm` sumber data.
+Karena volume dihitung ulang dari `qty × standar baru`, seluruh tampilan
+langsung memakainya: heatmap, okupansi, penjelajah SLOC, alert, ekspor, dan
+proyeksi. Tidak ada satu jalur baca pun yang melewatinya — `stockLatestSQL()`
+di `lib/queries.ts` membungkus SETIAP pembacaan tabel stok, sehingga sebuah
+seksi baru tidak dapat lupa ikut menerapkannya.
+
+| Di layar | Yang ditampilkan |
+|---|---|
+| Editor Standar SKU | nilai sumber data berdampingan dengan penggantinya, rasio `×n`, stok saat ini, dan selisih volume per SKU |
+| Bilah dampak | total m³ menurut sumber data → total dengan standar ini → selisihnya, berikut persentasenya terhadap total gudang — dihitung SEBELUM disimpan |
+| Popup detail SLOC & heatmap | tanda ★ pada baris yang volumenya dihitung dari standar admin |
+| Catatan "Standar kapasitas yang berlaku" | jumlah SKU yang memakai standar admin |
+
+Rasio `×n` di sebelah kolom standar menandai selisih 10× atau 0,1× terhadap
+nilai sumber. Itu bukan hiasan: jarak antara `0,0658` dan `0,658` adalah satu
+tombol, dan satu salah ketik di kolom itu menggeser okupansi CBM seluruh
+perusahaan.
+
+Untuk menyetel banyak SKU sekaligus tersedia **Tempel dari spreadsheet**
+(`sku · unit_cbm · note`, dipisah tab atau koma, koma desimal diterima; SKU yang
+sudah punya standar diperbarui, bukan digandakan) dan **Salin standar sebagai
+CSV**. Setiap baris menyimpan siapa mengubahnya dan kapan, diisi server.
+
+Standar tersimpan di `sku-standards.json`, ikut dalam cadangan konfigurasi, dan
+ikut disidik-jari read model — menyimpan standar baru membatalkan cache okupansi
+lama, sehingga layar tidak pernah menampilkan angka sebelum perubahan.
 
 Kenapa perlu override: master **CBT & STL `max 1/1` per bin**, **SRG `max_volume 1`** — angka mentah ini tidak layak dipakai langsung, jadi demo menetapkan CBT/STL → CBM dengan kapasitas efektif 3.0/2.5 m³, SRG → Qty. Sesuaikan dengan angka rak sebenarnya.
 

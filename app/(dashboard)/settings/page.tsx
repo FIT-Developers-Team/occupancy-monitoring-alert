@@ -4,7 +4,7 @@ import Section from "@/components/ui/section";
 import SettingsTabs from "@/components/domain/settings-tabs";
 import PageHeader from "@/components/ui/page-header";
 import { getT } from "@/lib/i18n";
-import { configStorageInfo } from "@/lib/runtime-config";
+import { configStorageInfo, preRestoreSnapshotAt } from "@/lib/runtime-config";
 import { pageTitle } from "@/lib/page-metadata";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +18,13 @@ export default async function SettingsPage() {
   // folder di server bukan informasi yang membantu admin dan tidak perlu
   // ditampilkan di antarmuka; /api/health tetap melaporkannya untuk monitoring.
   const info = configStorageInfo();
-  const storage = { writable: info.writable, durable: info.durable };
+  // Kapan salinan pengaman terakhir dibuat, supaya panel cadangan dapat
+  // menawarkan pembatalan tanpa menuntut akses shell ke server.
+  const storage = {
+    writable: info.writable,
+    durable: info.durable,
+    snapshotAt: preRestoreSnapshotAt(),
+  };
   return (
     <div className="dashboard-page">
       {/* One heading, then the controls. The tab strip already names each

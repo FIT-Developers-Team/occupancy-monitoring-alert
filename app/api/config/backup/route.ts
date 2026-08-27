@@ -22,6 +22,8 @@ import {
   encodeConfigBundle,
   exportConfigBundle,
   importConfigBundle,
+  parseConfigBundleDetailed,
+  readPreRestoreSnapshot,
 } from "@/lib/runtime-config";
 
 export const runtime = "nodejs";
@@ -64,26 +66,80 @@ export async function GET(request: NextRequest) {
   });
 }
 
+/**
+ * Ringkasan isi cadangan tanpa menulis apa pun.
+ *
+ * Dipakai layar konfirmasi: sebelum ini satu-satunya keterangan yang diterima
+ * admin adalah kotak "yakin?" tanpa satu pun fakta tentang berkas yang baru
+ * saja ia pilih. Tanggal pembuatan dan daftar seksinya adalah dua hal yang
+ * membedakan cadangan yang benar dari cadangan bulan lalu.
+ */
+export async function PUT(request: NextRequest) {
+  const user = await requireAdmin();
+  if (!user) return NextResponse.json({ error: "Khusus admin." }, { status: 403 });
+  try {
+    const { bundle } = parseConfigBundleDetailed(await readBundlePayload(request), "strict");
+    return NextResponse.json({
+      created_at: bundle.created_at,
+      files: Object.keys(bundle.files),
+      has_accounts: "accounts.json" in bundle.files,
+    }, { headers: NO_STORE });
+  } catch (error) {
+    return NextResponse.json(
+      { error: (error as Error).message },
+      { status: 400, headers: NO_STORE },
+    );
+  }
+}
+
+/**
+ * Berkas unduhan dikirim apa adanya sebagai JSON; nilai environment yang
+ * disalin dari kolom "salin" datang sebagai base64 di dalam { bundle }.
+ */
+async function readBundlePayload(request: NextRequest): Promise<unknown> {
+  const body = await request.text();
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    return typeof parsed?.bundle === "string" ? parsed.bundle : parsed;
+  } catch {
+    return body;
+  }
+}
+
 export async function POST(request: NextRequest) {
   const user = await requireAdmin();
   if (!user) return NextResponse.json({ error: "Khusus admin." }, { status: 403 });
 
-  // Berkas unduhan dikirim apa adanya sebagai JSON; nilai environment yang
-  // disalin dari kolom "salin" datang sebagai base64 di dalam { bundle }.
-  const body = await request.text();
+  // Membatalkan pemulihan terakhir memakai jalur yang sama persis: salinan
+  // pengaman ADALAH sebuah cadangan, jadi ia melewati validasi, penulisan
+  // transaksional, dan rollback yang sama. Akun ikut dipulihkan di sini karena
+  // salinan itu memang keadaan yang berlaku beberapa saat lalu — mengembalikan
+  // sebagiannya justru bukan pembatalan.
+  const undo = request.nextUrl.searchParams.get("undo") === "1";
+  const includeAccounts = undo || request.nextUrl.searchParams.get("accounts") === "1";
   let payload: unknown;
   try {
-    const parsed = JSON.parse(body) as Record<string, unknown>;
-    payload = typeof parsed?.bundle === "string" ? parsed.bundle : parsed;
+    payload = undo ? readPreRestoreSnapshot() : await readBundlePayload(request);
   } catch {
-    payload = body;
+    return NextResponse.json(
+      { error: "Salinan pengaman sebelum pemulihan tidak ditemukan." },
+      { status: 404, headers: NO_STORE },
+    );
   }
 
   try {
-    const restored = importConfigBundle(payload);
+    const report = importConfigBundle(payload, { includeAccounts });
     invalidateOccupancyReadCaches();
-    await audit(user.username, "CONFIG_BACKUP_RESTORE", "config:backup", undefined, { files: restored });
-    return NextResponse.json({ restored, env_name: CONFIG_BUNDLE_ENV }, { headers: NO_STORE });
+    await audit(user.username, "CONFIG_BACKUP_RESTORE", "config:backup", undefined, {
+      files: report.restored,
+      skipped: report.skipped.map((entry) => entry.file),
+      accounts_included: includeAccounts,
+      undo,
+    });
+    return NextResponse.json(
+      { ...report, env_name: CONFIG_BUNDLE_ENV },
+      { headers: NO_STORE },
+    );
   } catch (error) {
     return NextResponse.json(
       { error: `Pemulihan gagal: ${(error as Error).message}` },
