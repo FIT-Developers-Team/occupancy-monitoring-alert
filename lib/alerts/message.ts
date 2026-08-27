@@ -18,7 +18,6 @@
 // ulang setiap kali alert berbunyi. Penjelasan itu kini tinggal di kode dan di
 // halaman Panduan, bukan di dalam notifikasi.
 import { fmtCbm, fmtNum } from "@/lib/utils";
-import type { Basis } from "@/types";
 
 /** Bentuk minimum yang dibutuhkan kalimat alert — sengaja bukan MovementBreach. */
 export interface BreachFacts {
@@ -82,27 +81,22 @@ export function excessOf(facts: BreachFacts): string | null {
 /**
  * Judul + detail untuk satu lokasi yang lewat kapasitas.
  *
- * `exceeded` adalah basis yang benar-benar melewati kapasitas, hasil
- * classifyOverflow(). Dua basis sepakat berarti lokasinya memang penuh; satu
- * basis saja masih menyisakan kemungkinan angka master basis itu yang keliru,
- * dan menyebut kemungkinan itu mencegah orang memindahkan barang tanpa perlu.
+ * Alert kapasitas kini HANYA dibuat ketika Qty DAN CBM sama-sama melewati
+ * kapasitas (lihat hasExceededBothBases). Karena itu fungsi ini tidak lagi
+ * menerima daftar basis: hanya ada satu kondisi yang dapat sampai ke sini, dan
+ * cabang "hanya satu basis" yang dulu ada di bawah sini sudah tidak dapat
+ * dijangkau. Menyisakannya berarti menyimpan kalimat yang menjanjikan sesuatu
+ * yang tidak akan pernah dikirim.
  */
-export function buildBreachMessage(facts: BreachFacts, exceeded: Basis[]): BreachMessage {
-  const dual = exceeded.length >= 2;
-  const basisLabel = dual ? "Qty & CBM" : exceeded[0] === "qty" ? "Qty" : "CBM";
-  const worst = Math.max(facts.pct_qty ?? 0, facts.pct_cbm ?? 0);
+export function buildBreachMessage(facts: BreachFacts): BreachMessage {
   const excess = excessOf(facts);
+  const worst = Math.max(facts.pct_qty ?? 0, facts.pct_cbm ?? 0);
 
-  const title = dual
-    ? `${facts.sloc_code} penuh — Qty & CBM lewat kapasitas`
-    : `${facts.sloc_code} lewat kapasitas ${basisLabel} (${fmtNum(worst, 0)}%)`;
-
-  const cause = `Masuk ${fmtNum(facts.qty_in)} unit pukul ${clockOf(facts.last_at)}`
-    + (facts.last_operator ? ` oleh ${facts.last_operator}` : "")
-    + ".";
-  const action = dual
-    ? `Pindahkan ${excess ?? "kelebihannya"} ke lokasi kosong terdekat.`
-    : `Pindahkan ${excess ?? "kelebihannya"}, atau perbaiki kapasitas ${basisLabel} lokasi ini bila angkanya keliru.`;
-
-  return { title, detail: `${cause} ${readingOf(facts)}. ${action}` };
+  return {
+    title: `${facts.sloc_code} penuh — Qty & CBM lewat kapasitas (${fmtNum(worst, 0)}%)`,
+    detail: `Masuk ${fmtNum(facts.qty_in)} unit pukul ${clockOf(facts.last_at)}`
+      + (facts.last_operator ? ` oleh ${facts.last_operator}` : "")
+      + `. ${readingOf(facts)}. `
+      + `Pindahkan ${excess ?? "kelebihannya"} ke lokasi kosong terdekat.`,
+  };
 }

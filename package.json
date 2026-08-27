@@ -7,7 +7,7 @@
     "dev": "next dev",
     "build": "node scripts/clean-next.mjs && next build --webpack && node scripts/prune-standalone.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/alert-severity.test.mjs tests/occupancy-status.test.mjs tests/heatmap-page.test.mjs tests/runtime-config.test.mjs tests/movement-taxonomy.test.mjs tests/history-timezone.test.mjs tests/alert-message.test.mjs",
+    "test": "node --test tests/alert-severity.test.mjs tests/occupancy-status.test.mjs tests/heatmap-page.test.mjs tests/runtime-config.test.mjs tests/movement-taxonomy.test.mjs tests/history-timezone.test.mjs tests/alert-message.test.mjs tests/theme-contrast.test.mjs",
     "start": "node scripts/start-production.mjs",
     "secret:generate": "node scripts/generate-secret.mjs",
     "seed": "node scripts/seed.mjs",

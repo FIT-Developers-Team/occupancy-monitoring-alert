@@ -5,7 +5,7 @@
 // Ditambah filter `active` dan basis ketiga: BIN (SLOC terisi vs kosong).
 import { historyDbVersion, queryHistory } from "@/lib/db";
 import { createHash } from "node:crypto";
-import { statusFor } from "@/lib/occupancy";
+import { occupancyStatuses, rungFor, statusForRow } from "@/lib/occupancy";
 import { hoursToTarget } from "@/lib/forecast";
 import { resolveSloc, categoryCounted, countedStatuses } from "@/lib/capacity";
 import type { SlocScope } from "@/lib/capacity";
@@ -553,9 +553,7 @@ export async function getSlocOccupancy(input: OccupancyScope = {}): Promise<Sloc
       pct_cbm: pv === null ? null : r1(pv),
       occupied, pct_bin: occupied ? 100 : 0,
       pct: r1(pct),
-      status: statusFor(pct, m.wh),
-      status_qty: pq === null ? null : statusFor(pq, m.wh),
-      status_cbm: pv === null ? null : statusFor(pv, m.wh),
+      ...occupancyStatuses({ pct_qty: pq, pct_cbm: pv }, pct, m.wh),
       // Cell-level Bin is categorical (empty/occupied), not a 0–100 capacity ladder.
       status_bin: "NORMAL",
       product_count: o.pc,
@@ -650,10 +648,10 @@ async function loadWarehouseBase(): Promise<WarehouseBase[]> {
         occ_qty: Math.round(a.qty), cap_qty: Math.round(a.cap_qty),
         occ_cbm: r1(a.cbm), cap_cbm: r1(a.cap_cbm),
         pct: r1(pct), pct_qty: pq === null ? null : r1(pq), pct_cbm: pv === null ? null : r1(pv), pct_bin: r1(pb),
-        status: statusFor(pct, a.wh),
-        status_qty: pq === null ? null : statusFor(pq, a.wh),
-        status_cbm: pv === null ? null : statusFor(pv, a.wh),
-        status_bin: statusFor(pb, a.wh),
+        ...occupancyStatuses({ pct_qty: pq, pct_cbm: pv }, pct, a.wh),
+        // Bin adalah rasio lokasi terisi terhadap total; ia tidak pernah dapat
+        // melewati 100%, jadi tangga satu-basis memang tempatnya.
+        status_bin: rungFor(pb, a.wh),
         sloc_total: a.total, sloc_occupied: a.filled, sloc_empty: a.total - a.filled,
       } satisfies WarehouseBase;
     }).sort((a, b) => a.code.localeCompare(b.code));
@@ -888,8 +886,8 @@ function summarizeRackZone(row: ZoneAggregateRow): RackZoneSummary {
     pct: r1(pct), pct_qty: pq === null ? null : r1(pq), pct_cbm: pv === null ? null : r1(pv),
     pct_bin: r1(pb), sloc_total: row.total, sloc_occupied: row.filled,
     sloc_empty: row.total - row.filled,
-    status: statusFor(pct, row.wh), status_qty: pq === null ? null : statusFor(pq, row.wh),
-    status_cbm: pv === null ? null : statusFor(pv, row.wh), status_bin: statusFor(pb, row.wh),
+    ...occupancyStatuses({ pct_qty: pq, pct_cbm: pv }, pct, row.wh),
+    status_bin: rungFor(pb, row.wh),
   };
 }
 
@@ -1124,8 +1122,7 @@ async function loadHeatmapPreviews(
       qty_valid: eff.qty_valid, cbm_valid: eff.cbm_valid,
       pct_qty: pq === null ? null : r1(pq), pct_cbm: pv === null ? null : r1(pv),
       occupied, pct_bin: occupied ? 100 : 0, pct: r1(pct),
-      status: statusFor(pct, m.wh), status_qty: pq === null ? null : statusFor(pq, m.wh),
-      status_cbm: pv === null ? null : statusFor(pv, m.wh), status_bin: "NORMAL",
+      ...occupancyStatuses({ pct_qty: pq, pct_cbm: pv }, pct, m.wh), status_bin: "NORMAL",
       product_count: o.pc,
     } satisfies SlocOccupancy;
     (data[`${m.zone}|${m.rack_zone}`] ??= []).push(cell);
@@ -1223,8 +1220,7 @@ export async function getHeatmapPage(
       qty_valid: eff.qty_valid, cbm_valid: eff.cbm_valid,
       pct_qty: pq === null ? null : r1(pq), pct_cbm: pv === null ? null : r1(pv),
       occupied, pct_bin: occupied ? 100 : 0, pct: r1(pct),
-      status: statusFor(pct, m.wh), status_qty: pq === null ? null : statusFor(pq, m.wh),
-      status_cbm: pv === null ? null : statusFor(pv, m.wh), status_bin: "NORMAL",
+      ...occupancyStatuses({ pct_qty: pq, pct_cbm: pv }, pct, m.wh), status_bin: "NORMAL",
       product_count: o.pc,
     } satisfies SlocOccupancy;
   });
@@ -1304,6 +1300,7 @@ export async function getZoneDetail(
     total: number; wh: string; sloc_code: string; rack_zone: string; storage: string;
     sku_number: string; product_name: string; l1_category: string; status: string;
     qty: number; cbm: number; sloc_pct: number; sloc_basis: Basis;
+    pct_qty: number | null; pct_cbm: number | null;
   }>(
     `${WH_MAP()}, effective AS MATERIALIZED (
        SELECT v.sloc_id, v.location_id, v.sloc_code, m.wh, v.zone,
@@ -1347,6 +1344,7 @@ export async function getZoneDetail(
        FROM ratios
      ), stock_rows AS (
        SELECT e.wh, e.location_id, e.sloc_code, e.rack_zone, e.storage,
+              e.pct_qty, e.pct_cbm,
               s.sku_number, s.product_name, coalesce(s.l1_category, '') AS l1_category,
               s.status, s.stock_qty::DOUBLE AS qty, s.occupied_cbm::DOUBLE AS cbm,
               e.sloc_pct, e.basis AS sloc_basis
@@ -1370,7 +1368,7 @@ export async function getZoneDetail(
        LIMIT ? OFFSET ?
      )
      SELECT total, wh, sloc_code, rack_zone, storage, sku_number, product_name,
-            l1_category, status, qty, cbm, sloc_pct, sloc_basis
+            l1_category, status, qty, cbm, sloc_pct, sloc_basis, pct_qty, pct_cbm
      FROM details
      ORDER BY ${sort} ${direction}, sloc_code ASC, sku_number ASC`,
     [
@@ -1387,7 +1385,11 @@ export async function getZoneDetail(
       status: r.status,
       qty: r1(r.qty), cbm: r3(r.cbm),
       sloc_pct: r1(r.sloc_pct), sloc_basis: r.sloc_basis,
-      sloc_status: statusFor(r.sloc_pct, r.wh),
+      // Lencana lokasi di sini harus identik dengan lencana lokasi yang sama di
+      // heatmap, jadi ia memakai bacaan dua basis — bukan satu angka kebijakan.
+      sloc_status: statusForRow(
+        { pct_qty: r.pct_qty, pct_cbm: r.pct_cbm }, r.sloc_pct, r.wh,
+      ),
     } satisfies ZoneLine;
   });
   const total = rows[0]?.total ?? 0;
@@ -2161,8 +2163,10 @@ export async function getMovementBreaches(
      FROM scored sc
      JOIN touched tc ON tc.location_id = sc.location_id AND tc.sloc_code = sc.sloc_code
      JOIN latest la ON la.location_id = sc.location_id AND la.sloc_code = sc.sloc_code
-     WHERE ${statusLadderSQL("sc.pct_qty", "sc.wh")} = 'BREACH'
-        OR ${statusLadderSQL("sc.pct_cbm", "sc.wh")} = 'BREACH'
+     -- Dulu: Qty Breach ATAU CBM Breach. Satu basis yang lewat sendirian jauh
+     -- lebih sering berarti angka master basis itu yang salah daripada lokasi
+     -- yang benar-benar penuh, dan alert untuk itu membuat papan tidak terbaca.
+     WHERE ${dualBreachSQL("sc.wh", "sc.pct_qty", "sc.pct_cbm")}
      ORDER BY greatest(coalesce(sc.pct_qty, 0), coalesce(sc.pct_cbm, 0)) DESC,
               sc.wh, sc.sloc_code
      LIMIT ${safeLimit}`,
@@ -2289,21 +2293,34 @@ export async function getSlocBasisReadings(
 // filter" benar-benar berarti sesuai filter yang sedang tampil.
 
 /**
- * Tangga status per gudang sebagai ekspresi SQL (cermin statusFor()).
+ * Tangga status per gudang sebagai ekspresi SQL — cermin occupancyStatuses().
  *
- * Perbandingan batas atasnya harus identik dengan lib/occupancy.ts: `>` untuk
- * BREACH, bukan `>=`. Tabel kepadatan dan ekspor Excel memakai ekspresi ini,
- * sedangkan heatmap dan kartu zona memakai statusFor(); satu tanda yang
- * berbeda saja membuat lokasi yang sama tampil "Breach" di satu halaman dan
- * "Kritis" di halaman lain.
+ * Dua hal harus identik dengan lib/occupancy.ts, dan keduanya pernah menyimpang:
+ *
+ *  1. Perbandingan batas atasnya `>`, bukan `>=`: isi yang tepat sama dengan
+ *     kapasitas maksimum adalah Kritis, bukan Breach.
+ *  2. BREACH menuntut KEDUA basis melewati kapasitas. Karena itu ekspresi ini
+ *     menerima kedua persentase, bukan satu. Versi sebelumnya hanya menerima
+ *     satu angka, dan itulah yang membuat tabel kepadatan serta ekspor Excel
+ *     menandai Breach pada lokasi yang di heatmap hanya Kritis.
+ *
+ * `pctExpr` tetap menentukan rung di bawah Breach — ia adalah persentase pada
+ * basis yang sedang ditampilkan.
  */
-function statusLadderSQL(pctExpr: string, whExpr: string): string {
-  const ladder = (t: { monitor: number; warning: number; critical: number; breach: number }) =>
-    `CASE WHEN ${pctExpr} > ${t.breach + CAPACITY_MATCH_TOLERANCE_PCT} THEN 'BREACH'
+function statusLadderSQL(
+  pctExpr: string,
+  whExpr: string,
+  qtyExpr: string,
+  cbmExpr: string,
+): string {
+  const ladder = (t: { monitor: number; warning: number; critical: number; breach: number }) => {
+    const over = (expr: string) => `${expr} > ${t.breach + CAPACITY_MATCH_TOLERANCE_PCT}`;
+    return `CASE WHEN ${over(qtyExpr)} AND ${over(cbmExpr)} THEN 'BREACH'
           WHEN ${pctExpr} >= ${t.critical} THEN 'CRITICAL'
           WHEN ${pctExpr} >= ${t.warning} THEN 'WARNING'
           WHEN ${pctExpr} >= ${t.monitor} THEN 'MONITOR'
           ELSE 'NORMAL' END`;
+  };
   let expression = ladder(getThresholds().default);
   for (const warehouse of getWarehouses().warehouses) {
     expression =
@@ -2311,6 +2328,11 @@ function statusLadderSQL(pctExpr: string, whExpr: string): string {
             ELSE ${expression} END`;
   }
   return expression;
+}
+
+/** Predikat "lokasi ini Breach" — dipakai mesin alert. */
+function dualBreachSQL(whExpr: string, qtyExpr: string, cbmExpr: string): string {
+  return `${statusLadderSQL(qtyExpr, whExpr, qtyExpr, cbmExpr)} = 'BREACH'`;
 }
 
 export interface SlocExplorerRow {
@@ -2411,7 +2433,8 @@ function slocSqlPlan(filter: SlocFilter): SlocSqlPlan {
     : "coalesce(pct_policy, 0)";
   const statusExpression = filter.view === "bin"
     ? "CASE WHEN occupied THEN 'OCCUPIED' ELSE 'EMPTY' END"
-    : `CASE WHEN view_pct IS NULL THEN 'UNAVAILABLE' ELSE ${statusLadderSQL("view_pct", "wh")} END`;
+    : `CASE WHEN view_pct IS NULL THEN 'UNAVAILABLE'
+            ELSE ${statusLadderSQL("view_pct", "wh", "pct_qty", "pct_cbm")} END`;
 
   const conditions: string[] = [];
   for (const token of filter.q.toLocaleLowerCase().split(/\s+/).filter(Boolean).slice(0, 6)) {

@@ -37,7 +37,7 @@ new Function("require", "module", "exports", compiled)(
   moduleRecord.exports,
 );
 
-const { classifyOverflow, hasExceededCapacity } = moduleRecord.exports;
+const { classifyOverflow, hasExceededBothBases } = moduleRecord.exports;
 
 function classify(pct_qty, pct_cbm, policy = {}) {
   activePolicy = { ...BASE_POLICY, ...policy };
@@ -92,25 +92,37 @@ test("both bases over max remain Breach and missing bases remain explicit", () =
   assert.deepEqual(unavailable.measurable, []);
 });
 
-// Kontrak pemicu setelah alert dijadikan berbasis kejadian: yang diberitakan
-// hanya lokasi yang benar-benar KELEBIHAN isi, bukan yang kebetulan penuh pas.
-// Sebuah lokasi bisa duduk berminggu-minggu tepat di angka maksimum tanpa satu
-// pun barang yang tidak punya tempat; memberitakannya membuat papan alert
-// menjadi daftar yang tidak pernah bisa dikosongkan.
-test("alert hanya dipicu ketika kapasitas benar-benar terlewati", () => {
-  assert.equal(hasExceededCapacity(classify(100, 100)), false, "tepat di max bukan alert");
-  assert.equal(hasExceededCapacity(classify(100, 80)), false, "satu basis pas di max bukan alert");
-  assert.equal(hasExceededCapacity(classify(99.9, 80)), false, "di dalam kapasitas bukan alert");
+// Kontrak pemicu: alert hanya dibuat ketika Qty DAN CBM sama-sama MELEWATI
+// kapasitas. Dua syarat yang menyaring hal berbeda — melewati (bukan menyentuh)
+// dan keduanya (bukan salah satu) — dan keduanya diuji di sini.
+test("alert menuntut KEDUA basis melewati kapasitas", () => {
+  assert.equal(hasExceededBothBases(classify(100.1, 120)), true, "dua basis lewat = alert");
 
-  assert.equal(hasExceededCapacity(classify(100.1, 80)), true, "satu basis lewat = alert");
-  assert.equal(hasExceededCapacity(classify(100.1, 120)), true, "dua basis lewat = alert");
-  assert.equal(hasExceededCapacity(classify(100, 100.1)), true, "satu lewat walau satunya pas");
+  // Satu basis lewat sendirian bukan alert: jauh lebih sering berarti angka
+  // master basis itu yang salah daripada lokasi yang benar-benar penuh.
+  assert.equal(hasExceededBothBases(classify(100.1, 80)), false, "hanya Qty lewat");
+  assert.equal(hasExceededBothBases(classify(80, 5000)), false, "hanya CBM lewat, sebesar apa pun");
+  assert.equal(hasExceededBothBases(classify(100, 100.1)), false, "satu lewat, satu pas di max");
+});
+
+test("mencapai batas bukan melewatinya", () => {
+  // Lokasi bisa duduk berminggu-minggu tepat di angka maksimum tanpa satu pun
+  // barang yang tidak punya tempat; memberitakannya membuat papan alert menjadi
+  // daftar yang tidak pernah bisa dikosongkan.
+  assert.equal(hasExceededBothBases(classify(100, 100)), false, "keduanya tepat di max");
+  assert.equal(hasExceededBothBases(classify(99.9, 99.9)), false, "di dalam kapasitas");
 });
 
 // Toleransi pembulatan berlaku sama untuk pemicunya: yang tampil "100,0%" di
 // layar tidak boleh diam-diam menjadi alert hanya karena angka mentahnya
 // 100,04%.
 test("pemicu memakai toleransi yang sama dengan angka di layar", () => {
-  assert.equal(hasExceededCapacity(classify(100.04, null)), false);
-  assert.equal(hasExceededCapacity(classify(100.06, null)), true);
+  assert.equal(hasExceededBothBases(classify(100.04, 100.04)), false);
+  assert.equal(hasExceededBothBases(classify(100.06, 100.06)), true);
+});
+
+test("satu basis tak terukur berarti tidak akan pernah beralert", () => {
+  // "Keduanya lewat" tidak dapat dibuktikan ketika hanya satu kapasitas sahih.
+  assert.equal(hasExceededBothBases(classify(5000, null)), false);
+  assert.equal(hasExceededBothBases(classify(null, 5000)), false);
 });

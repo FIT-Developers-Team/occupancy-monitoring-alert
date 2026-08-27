@@ -66,31 +66,20 @@ const dual = {
   last_operator: "Angga",
 };
 
-test("satu basis lewat: judul menyebut basis dan persentasenya", () => {
-  const { title } = buildBreachMessage(cbmOnly, ["cbm"]);
-  assert.match(title, /^CBT-PLA1-01-01-L1-01 lewat kapasitas CBM/);
-  assert.match(title, /5\.962%/, "persentase dibulatkan ke bilangan bulat");
-  assert.ok(!title.includes("Qty"), "basis yang masih aman tidak disebut di judul");
-});
-
-test("dua basis lewat: judul menyatakan lokasinya memang penuh", () => {
-  const { title } = buildBreachMessage(dual, ["qty", "cbm"]);
-  assert.equal(title, "STL-SRA1-23-12-L1-C10 penuh — Qty & CBM lewat kapasitas");
+test("judul menyatakan lokasinya memang penuh, dengan persentase terparah", () => {
+  // Alert kapasitas hanya dibuat ketika KEDUA basis lewat, jadi hanya ada satu
+  // bentuk judul. Cabang "hanya satu basis" sengaja tidak ada lagi: kalimat
+  // yang tidak akan pernah dikirim tidak perlu dipelihara.
+  const { title } = buildBreachMessage(dual);
+  assert.equal(title, "STL-SRA1-23-12-L1-C10 penuh — Qty & CBM lewat kapasitas (4.267%)");
 });
 
 test("detail selalu menjawab apa yang berubah, siapa, dan berapa", () => {
-  const { detail } = buildBreachMessage(dual, ["qty", "cbm"]);
+  const { detail } = buildBreachMessage(dual);
   assert.match(detail, /Masuk 480 unit pukul 08\.21 oleh Angga\./, "penyebabnya disebut lebih dulu");
   assert.match(detail, /Qty 2\.189%/);
   assert.match(detail, /CBM 4\.267%/);
   assert.match(detail, /Pindahkan 459 unit ke lokasi kosong terdekat\./, "tindakannya berupa angka");
-});
-
-test("satu basis lewat tetap menyebut kemungkinan kapasitas master keliru", () => {
-  const { detail } = buildBreachMessage(cbmOnly, ["cbm"]);
-  // Qty masih 54,8% — memindahkan barang bisa jadi bukan jawabannya, dan alert
-  // tidak boleh menyuruh orang bekerja untuk data yang salah.
-  assert.match(detail, /perbaiki kapasitas CBM lokasi ini bila angkanya keliru/);
 });
 
 test("basis tanpa kapasitas sahih tidak pernah muncul sebagai angka", () => {

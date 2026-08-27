@@ -51,12 +51,23 @@ export default async function ExecutivePage() {
     return r !== 0 ? r : (a.hours_to_95 ?? 1e9) - (b.hours_to_95 ?? 1e9);
   }).slice(0, 4);
 
-  // KPI jaringan memakai tangga yang sama dengan sisa aplikasi, termasuk
-  // tingkat teratasnya: 100% ke atas berarti kapasitas terlampaui dan harus
-  // tampil merah, bukan berhenti di oranye seperti sebelumnya.
+  /**
+   * Warna KPI jaringan mengikuti aturan Breach yang sama dengan seluruh aplikasi.
+   *
+   * Sebelumnya blok ini punya tangganya sendiri: `p >= 100` langsung merah, per
+   * basis, tanpa melihat basis satunya. Akibatnya kartu "Okupansi Qty" bisa
+   * merah-Breach sementara tidak satu pun lokasi di bawahnya berstatus Breach —
+   * dua jawaban berbeda untuk pertanyaan yang sama, pada satu layar yang sama.
+   *
+   * Breach untuk jaringan berarti hal yang sama seperti untuk sebuah lokasi:
+   * Qty DAN CBM sama-sama melewati kapasitas. Selama hanya salah satunya lewat,
+   * kartu berhenti di Kritis — persis seperti lencana di heatmap.
+   */
+  const networkBreached =
+    netQ !== null && netV !== null && netQ > 100 && netV > 100;
   const tone = (p: number | null) =>
     p === null ? undefined
-    : p >= 100 ? "breach" as const
+    : networkBreached ? "breach" as const
     : p >= 95 ? "critical" as const
     : p >= 85 ? "warning" as const
     : p >= 70 ? "monitor" as const
@@ -73,7 +84,10 @@ export default async function ExecutivePage() {
             pembagian dengan f.num(…, 0) juga membuang seluruh desimal m³. */}
         <KpiCard label={t("exec.cbmOcc")} value={netV === null ? "—" : f.pct(netV)} tone={tone(netV)}
           sub={`${f.cbm(vOcc)} / ${f.cbm(vCap)} m³ · ${t("heat.cbmEffective")}`} />
-        <KpiCard label={t("exec.binOcc")} value={f.pct(netBin)} tone={tone(netBin)}
+        {/* Bin adalah rasio lokasi terisi, bukan basis kapasitas: ia tidak
+            pernah dapat melewati 100% dan tidak ikut menentukan Breach. */}
+        <KpiCard label={t("exec.binOcc")} value={f.pct(netBin)}
+          tone={netBin >= 95 ? "critical" : netBin >= 85 ? "warning" : netBin >= 70 ? "monitor" : "normal"}
           sub={`${f.num(slocFilled)} / ${f.num(slocTotal)} ${t("common.sloc").toLowerCase()}`} />
         <KpiCard label={t("exec.activeAlerts")} value={f.num(totalActive)}
           tone={worstSev ? SEVERITY_TONE[worstSev] : "normal"}

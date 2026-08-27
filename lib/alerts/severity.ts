@@ -171,19 +171,23 @@ export function classifyOverflow(reading: BasisReading): OverflowVerdict {
 }
 
 /**
- * Alert kapasitas hanya dibuat ketika sebuah basis benar-benar MELEWATI
- * kapasitas.
+ * Alert kapasitas hanya dibuat ketika Qty DAN CBM sama-sama MELEWATI kapasitas.
  *
- * Isi yang PERSIS sama dengan angka maksimum bukan kejadian yang perlu
- * membangunkan orang: lokasinya penuh, tidak boleh menerima inbound lagi, dan
- * itu sudah terbaca di heatmap sebagai Kritis. Yang layak diberitakan adalah
- * saat ada barang yang benar-benar tidak punya tempat — dan itulah yang
- * diperiksa di sini.
+ * Dua syarat, dan keduanya menyaring hal yang berbeda:
+ *
+ *  - MELEWATI, bukan menyentuh. Isi yang persis sama dengan angka maksimum
+ *    tidak perlu membangunkan siapa pun: lokasinya penuh dan sudah terbaca
+ *    Kritis di heatmap, tetapi belum ada barang yang tidak punya tempat.
+ *  - KEDUANYA, bukan salah satu. Satu basis yang lewat sendirian jauh lebih
+ *    sering berarti angka master basis itu yang salah — sebuah rak terbaca
+ *    5.000% penuh menurut CBM karena max_volume-nya 0,001 m³ — daripada lokasi
+ *    yang benar-benar penuh. Diukur pada basis data ini, syarat kedua saja
+ *    memangkas kandidat alert dari 29.012 lokasi menjadi 7.080.
  *
  * Pembeda tepat-di-max versus melewati-max tetap hidup di classifyOverflow()
- * karena tangga keparahannya masih memakai keduanya; yang berubah hanya
- * ambang untuk memberitakannya.
+ * karena tangga keparahannya masih memakai keduanya; yang berubah hanya ambang
+ * untuk memberitakannya.
  */
-export function hasExceededCapacity(verdict: OverflowVerdict): boolean {
-  return verdict.exceeded.length > 0;
+export function hasExceededBothBases(verdict: OverflowVerdict): boolean {
+  return verdict.exceeded.length >= 2;
 }

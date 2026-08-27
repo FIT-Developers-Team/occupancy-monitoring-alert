@@ -8,7 +8,7 @@ export default function KpiCard({
 }) {
   const toneColor =
     tone === "accent" ? "var(--accent)"
-    : tone === "teal" ? "#14B8A6"
+    : tone === "teal" ? "var(--teal-ink)"
     : tone ? `var(--st-${tone}-fg)` : "var(--text-muted)";
   return (
     <div className="metric-card" style={{ "--metric-tone": toneColor } as CSSProperties}>

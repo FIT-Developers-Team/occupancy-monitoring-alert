@@ -33,9 +33,9 @@ import {
   SLOC_BASIS_READING_MAX,
   type MovementBreach,
 } from "@/lib/queries";
-import { statusFor } from "@/lib/occupancy";
+import { isDualBreach } from "@/lib/occupancy";
 import { dispatchThroughLevel, dispatchToLevel, type DispatchResult } from "@/lib/notify/dispatch";
-import { classifyOverflow, hasExceededCapacity, type OverflowVerdict } from "@/lib/alerts/severity";
+import { classifyOverflow, hasExceededBothBases, type OverflowVerdict } from "@/lib/alerts/severity";
 import { audit } from "@/lib/audit";
 import { buildBreachMessage } from "@/lib/alerts/message";
 import type { Alert, Severity } from "@/types";
@@ -217,7 +217,7 @@ async function systemResolve(alertId: string, note: string): Promise<void> {
  * sama.
  */
 function breachViolation(row: MovementBreach, verdict: OverflowVerdict): Violation {
-  const { title, detail } = buildBreachMessage(row, verdict.exceeded);
+  const { title, detail } = buildBreachMessage(row);
   return {
     rule_id: SLOC_BREACH_RULE,
     rule_name: "Lokasi Lewat Kapasitas",
@@ -292,10 +292,10 @@ async function evaluateMovementBreaches(result: TickResult): Promise<void> {
   for (const row of breaches) {
     const verdict = classifyOverflow(row);
     // Pertahanan berlapis: kuerinya sudah menyaring ke status Breach, tetapi
-    // alert hanya boleh dibuat bila ada basis yang benar-benar MELEWATI
-    // kapasitas — bukan sekadar menyentuhnya. Kontraknya diuji di
-    // tests/alert-severity.test.mjs.
-    if (!hasExceededCapacity(verdict)) continue;
+    // alert hanya boleh dibuat bila Qty DAN CBM sama-sama MELEWATI kapasitas —
+    // bukan sekadar menyentuhnya, dan bukan hanya salah satunya. Kontraknya
+    // diuji di tests/alert-severity.test.mjs.
+    if (!hasExceededBothBases(verdict)) continue;
     const violation = breachViolation(row, verdict);
     const existing = await openAlertByKey(violation.dedup_key);
     if (existing) {
@@ -348,13 +348,11 @@ async function resolveRecovered(result: TickResult): Promise<void> {
       result.auto_resolved++;
       continue;
     }
-    // Tangga yang sama dengan layar: selama salah satu basis masih Breach,
-    // alertnya tetap terbuka.
-    const stillBreaching = (["pct_qty", "pct_cbm"] as const).some((key) => {
-      const pct = reading[key];
-      return pct !== null && statusFor(pct, alert.warehouse_code) === "BREACH";
-    });
-    if (stillBreaching) continue;
+    // Aturan penutupan HARUS cermin aturan pembukaan. Selama ia dibuka hanya
+    // ketika kedua basis lewat, ia juga hanya tetap terbuka selama keduanya
+    // masih lewat — kalau tidak, alert yang sudah tidak memenuhi syaratnya
+    // sendiri akan menggantung selamanya di papan.
+    if (isDualBreach(reading, alert.warehouse_code)) continue;
     const worst = Math.max(reading.pct_qty ?? 0, reading.pct_cbm ?? 0);
     await systemResolve(
       alert.alert_id,

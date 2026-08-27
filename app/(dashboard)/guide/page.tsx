@@ -62,14 +62,14 @@ function FlowDiagram({ t }: { t: TFn }) {
         {nodes.map((node, index) => (
           <g key={node.x}>
             <rect x={node.x} y={16} width={144} height={56} rx={9} {...box} strokeWidth={1} />
-            <circle cx={node.x + 16} cy={32} r={8} fill="var(--accent)" />
+            <circle cx={node.x + 16} cy={32} r={8} fill="var(--accent-fill)" />
             <text
               x={node.x + 16}
               y={35.5}
               textAnchor="middle"
               fontSize={9.5}
               fontWeight={700}
-              fill="#fff"
+              fill="var(--on-accent)"
               fontFamily="var(--font-mono)"
             >
               {index + 1}
